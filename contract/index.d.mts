@@ -219,13 +219,101 @@ export interface AgentLiveStatus {
   readonly capabilities?: readonly string[];
   readonly lastSeenAt?: number;
 }
+export interface PagePersonEntry {
+  readonly id: string;
+  readonly handle: string;
+  readonly role: "owner" | "guest";
+  readonly is_self?: boolean;
+}
+export interface PageViewerInfo {
+  readonly role: Role;
+  readonly handle: string;
+  readonly email?: string;
+}
 export interface PageAgentRoster {
   readonly primary_agent_id: string | null;
   readonly agents: readonly import("./publication-watch.mjs").PageAgentEntry[];
   readonly can_manage?: boolean;
   readonly dashboard?: string;
   readonly connections?: string;
+  readonly platforms?: string;
+  readonly viewer?: PageViewerInfo;
+  readonly people?: readonly PagePersonEntry[];
+  readonly pending_guests?: number;
   readonly live?: Readonly<Record<string, AgentLiveStatus>>;
+}
+export interface RuntimeChatMessage {
+  readonly id: string;
+  readonly role: "user" | "agent" | "system";
+  readonly text: string;
+  readonly at?: number;
+  readonly status?: "sending" | "delivered" | "seen" | "thinking" | "answered" | "error";
+  readonly senderHandle?: string;
+  readonly senderRole?: "owner" | "guest" | "agent";
+  readonly senderId?: string;
+  readonly isSelf?: boolean;
+  readonly isPrimary?: boolean;
+  readonly toHandles?: readonly string[];
+  readonly contextLabel?: string;
+  readonly actions?: ReadonlyArray<{ readonly id: string; readonly label: string; readonly primary?: boolean }>;
+}
+export interface RuntimeChatStream {
+  readonly id: string;
+  readonly senderHandle?: string;
+  readonly text: string;
+}
+export interface RuntimeChatActivity {
+  readonly id: string;
+  readonly senderHandle: string;
+  readonly toHandles?: readonly string[];
+  readonly text: string;
+  readonly at?: number;
+}
+export interface RuntimeChatSendInput {
+  readonly text: string;
+  readonly via: "text" | "voice";
+  readonly target?: string | null | "*";
+  readonly to?: readonly string[];
+}
+export interface RuntimeChatProvider {
+  readonly title?: string;
+  onSend(input: RuntimeChatSendInput): void | Promise<void>;
+  onAction?(action: { messageId: string; actionId: string; label: string }): void | Promise<void>;
+  onAttach?(file: File): void | Promise<void>;
+  onSelectTarget?(target: string | null | "*"): void;
+  onSetPrimary?(agentId: string | null): void | Promise<void>;
+}
+export interface RuntimeChatSnapshot {
+  readonly connected: boolean;
+  readonly title: string;
+  readonly messages: readonly RuntimeChatMessage[];
+  readonly streams: readonly RuntimeChatStream[];
+  readonly activity: readonly RuntimeChatActivity[];
+  readonly people: readonly PagePersonEntry[];
+  readonly userHandle: string;
+  readonly unreadCount: number;
+  readonly lastIncomingAt: number;
+  readonly targetId: string | null | "*";
+  readonly presence?: { readonly status: "online" | "busy" | "offline" | "unknown"; readonly label?: string };
+}
+export interface RuntimeChat {
+  snapshot(): RuntimeChatSnapshot;
+  onChange(listener: (snapshot: RuntimeChatSnapshot) => void): () => void;
+  register(provider: RuntimeChatProvider): () => void;
+  readonly hasProvider: boolean;
+  setMessages(messages: readonly RuntimeChatMessage[]): void;
+  setStreams(streams: readonly RuntimeChatStream[]): void;
+  setActivity(items: readonly RuntimeChatActivity[]): void;
+  setPeople(people: readonly PagePersonEntry[]): void;
+  setPresence(presence: { status: "online" | "busy" | "offline" | "unknown"; label?: string } | undefined): void;
+  setTarget(targetId: string | null | "*"): void;
+  setUserHandle(handle: string): void;
+  notifyIncoming(info?: { id?: string; senderHandle?: string; text?: string }): void;
+  clearUnread(): void;
+  send(input: RuntimeChatSendInput): Promise<void>;
+  onOpenRequest(listener: (open: boolean) => void): () => void;
+  open(): void;
+  close(): void;
 }
 export interface HostedMcpConnectInput {
   readonly grantId: string;
@@ -282,6 +370,8 @@ export interface RuntimeServices {
   readonly application: import("./application.mjs").ApplicationBinding;
   /** Page-level agent roster (handles, bios, primary selection, live status). */
   readonly agents: RuntimeAgents;
+  /** Shared reactive chat state bridged to the floating Talk/Assistant modal. */
+  readonly chat?: RuntimeChat;
   /** Local authenticated-link observation; explicit refresh never opens network work. */
   readonly transport: import("./transport-diagnostics.mjs").RuntimeTransport;
   /** Bounded boot-to-runtime error ring buffer; zero network work. */

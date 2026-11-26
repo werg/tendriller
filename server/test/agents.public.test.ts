@@ -168,6 +168,29 @@ it('lets the page owner grant and remove account agents, pick primary, and propa
 
   const stranger = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: 'ag_' + 'a'.repeat(26), granted: true }) });
   expect(stranger.status).toBe(404);
+
+  // Owner can create a one-time join code directly from the page and join a new agent with it.
+  const joinRes = await req(h.page_url + '_tendril/agents/join', { method: 'POST', headers: json, body: '{}' });
+  expect(joinRes.status).toBe(201);
+  const joinData = await joinRes.json() as { code: string; expires_at: number; blurb: string; command: string; page_id: string };
+  expect(joinData.code).toMatch(/^tj_[a-z2-7]{26}$/);
+  expect(joinData.blurb).toContain(joinData.code);
+  expect(joinData.command).toContain(joinData.code);
+  expect(joinData.page_id).toBe(h.id);
+  const joined = await req('/api/agents/join', { method: 'POST', anonymous: true, headers: json, body: JSON.stringify({
+    code: joinData.code, handle: 'pagejoined', bio: 'Joined from page UI', publicKey: testPublicKey(), wrapKey: testWrapKey(),
+  }) });
+  expect(joined.status).toBe(201);
+  const afterJoin = await (await req(h.page_url + '_tendril/agents')).json() as {
+    viewer: { role: string; handle: string };
+    people: { handle: string; role: string; is_self: boolean }[];
+    account_agents: { handle: string; granted: boolean }[];
+  };
+  expect(afterJoin.viewer.role).toBe('owner');
+  expect(afterJoin.viewer.handle).toMatch(/^[a-z][a-z0-9_-]{1,31}$/);
+  expect(afterJoin.people.some(p => p.is_self && p.role === 'owner')).toBe(true);
+  expect(afterJoin.account_agents.some(a => a.handle === 'pagejoined' && !a.granted)).toBe(true);
+
   // Visitors without a session get the page's sign-in screen, never the agent list.
   const visitor = await req(h.page_url + '_tendril/agents', { anonymous: true });
   expect(visitor.headers.get('content-type')).toMatch(/^text\/html/);

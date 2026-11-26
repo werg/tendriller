@@ -1,20 +1,29 @@
-import { mountTransportInspector } from "./transport-view";
-import { nameTransportAgents } from "./transport";
 import { encodePublicationPath } from "./paths";
 import { observeUtilityBar, observeVisualViewport, utilityBottom, utilityLeft, utilityMaxWidth, utilityRight, utilityTop } from "./utility-layout";
-import { renderQrSvg } from "./qr";
 import type { RuntimeApi, SensorStatus } from "../../contract/index.mjs";
+import { btn, clearChildren, el, iconEl, setData } from "./utility/dom";
+import type { IconName } from "./utility/icons";
+import { UTILITY_CSS } from "./utility/styles";
+import { createChatModal, type TalkDockState } from "./utility/chat-modal";
+import {
+  createAgentsModal,
+  createAppModal,
+  createDiagnosticsModal,
+  createShareModal,
+  createSyncModal,
+  createVoiceModal,
+  type ShareAgentsSharedState,
+} from "./utility/modals";
 
 const labels: Record<string, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion", wake_lock: "Keep awake" };
 const SUGGEST_AFTER_MS = 12_000;
 const DISMISS_FOR_MS = 30 * 24 * 60 * 60 * 1000;
+const HOLD_TO_TALK_MS = 280;
 
 /** Local-only presentation; caller inserts message as text, never markup. */
 export function sensorSummary(status: SensorStatus) {
   const resources = status.resources ?? [];
   const name = (kind: string) => labels[kind] ?? kind;
-  // A pending custom loop must not mask an independently active core sensor
-  // of the same kind (and vice versa). Deduplicate only within the same phase.
   const describedActive = new Set(resources.filter(r => r.state === "active").map(r => r.kind));
   const describedPending = new Set(resources.filter(r => r.state === "pending").map(r => r.kind));
   const active = status.active.filter(kind => !describedActive.has(kind));
@@ -26,868 +35,220 @@ export function sensorSummary(status: SensorStatus) {
     ...resources.map(resource => (resource.label ?? name(resource.kind)) + " " + phase[resource.state]),
   ].filter(Boolean);
   const names = [...new Set([...active, ...pending].map(name).concat(resources.map(resource => resource.label ?? name(resource.kind))))];
-  return { message: parts.join(". "), names, visible: parts.length > 0,
-    // A page can report stopping/failed before the runtime has cancelled it.
-    // Keep Stop reachable; repeating a requested cleanup is already idempotent.
-    canStop: status.active.length > 0 || status.pending.length > 0 || resources.length > 0 };
+  return {
+    message: parts.join(". "),
+    names,
+    visible: parts.length > 0,
+    canStop: status.active.length > 0 || status.pending.length > 0 || resources.length > 0,
+  };
 }
 
-/** Page installation, explicit offline saving and always-reachable sensor cancellation. */
+type ModalId = "chat" | "share" | "agents" | "voice" | "sync" | "app" | "diagnostics";
+type Corner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
+const CORNERS: ReadonlyArray<[Corner, string]> = [
+  ["top-left", "Top left"],
+  ["top-right", "Top right"],
+  ["bottom-left", "Bottom left"],
+  ["bottom-right", "Bottom right"],
+];
+
+/** Reactive floating dock (Talk + Page Options icon), compact menu, and mobile-first modals. */
 export function mountUtility(api: RuntimeApi): () => void {
   const host = document.createElement("tendril-utility");
-  host.style.cssText = `position:fixed!important;inset:auto ${utilityRight} ${utilityBottom} auto!important;z-index:2147483647!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;max-width:${utilityMaxWidth}!important;max-height:calc(100vh - ${utilityTop} - ${utilityBottom})!important;max-height:calc(100dvh - ${utilityTop} - ${utilityBottom})!important;contain:layout style!important;`;
+  host.style.cssText = `position:fixed!important;inset:auto ${utilityRight} ${utilityBottom} auto!important;z-index:2147483647!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;max-width:${utilityMaxWidth}!important;max-height:calc(100vh - ${utilityTop} - ${utilityBottom})!important;max-height:calc(100dvh - ${utilityTop} - ${utilityBottom})!important;contain:style!important;`;
   const root = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
-  style.textContent = `
-    :host{all:initial;color-scheme:light dark;font:14px/1.5 system-ui,sans-serif;color:CanvasText}
-    *{box-sizing:border-box}[hidden]{display:none!important}
-    nav,.card{border:1px solid #8886;background:Canvas;color:CanvasText;box-shadow:0 4px 24px #0002}
-    nav{display:flex;flex-shrink:0;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;padding:4px;border-radius:14px;margin-left:auto;width:fit-content;max-width:100%;transition:opacity .15s}
-    nav.tucked{opacity:0;pointer-events:none}
-    nav{touch-action:none;user-select:none;-webkit-user-select:none}nav.dragging{cursor:grabbing;box-shadow:0 10px 36px #0004;opacity:.92}
-    :host([data-h=left]) nav,:host([data-h=left]) .card{margin-left:0;margin-right:auto}
-    :host([data-v=top]) .card{margin-top:10px;margin-bottom:0}
-    .corners{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.corners button{border:1px solid #8886;min-height:38px;padding:6px 8px;font-size:12px;font-weight:600}
-    .corners button[aria-pressed=true]{background:#1e644a;color:white;border-color:#1e644a}
-    @media(prefers-color-scheme:dark){.corners button[aria-pressed=true]{background:#a6dfbd;color:#123b2b;border-color:#a6dfbd}}
-    a,button{font:inherit;color:inherit;min-height:44px;padding:10px 12px;border:0;border-radius:9px;background:transparent;text-decoration:none;cursor:pointer;touch-action:manipulation}
-    a:focus-visible,button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
-    button:hover,a:hover{background:#8882}button:disabled{opacity:.65;cursor:default}
-    .stop{background:#a32020;color:white}.stop:hover{background:#8e1717}
-    .sensors{padding:0 8px;max-width:min(54vw,260px);font-size:12px;overflow-wrap:anywhere}
-    .options{font-weight:650}.card{flex-shrink:1;min-height:0;width:min(360px,calc(100vw - 24px));max-width:100%;border-radius:16px;padding:18px;margin:0 0 10px auto;overflow:auto;max-height:calc(100vh - var(--tendril-utility-height,54px) - 10px - ${utilityTop} - ${utilityBottom});max-height:calc(100dvh - var(--tendril-utility-height,54px) - 10px - ${utilityTop} - ${utilityBottom})}
-    .heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
-    h2{font-size:18px;line-height:1.3;margin:3px 0 10px;font-weight:700;letter-spacing:-.02em}h2:focus{outline:none}
-    h3{font-size:14px;margin:0 0 6px}p{margin:0 0 12px}ol{margin:0 0 12px;padding-left:22px}li+li{margin-top:7px}
-    .close{font-size:22px;line-height:1;padding:4px;min-width:44px;flex:none;margin:-8px -8px 0 0}
-    .primary{display:block;background:#1e644a;color:white;font-weight:650;width:100%;margin-bottom:10px}.primary:hover{background:#174d39}
-    .secondary{border:1px solid #8888;width:100%;font-weight:600}.note{font-size:12px;opacity:.8}
-    .section{border-top:1px solid #8885;padding-top:14px;margin-top:14px}.links{display:flex;flex-wrap:wrap;gap:2px;margin:12px -8px -8px;border-top:1px solid #8885;padding-top:6px}.links a{font-size:12px}
-    .diag-list{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:6px}.diag-item{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 8px;border-radius:8px;background:#8881;overflow-wrap:anywhere}
-    .conn-list{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:8px}.conn-item{border:1px solid #8884;border-radius:10px;padding:8px 10px;display:grid;gap:2px;background:#8881;min-width:0}
-    .conn-name{font-weight:700;font-size:13px;overflow-wrap:anywhere}.conn-item p{margin:0;font-size:12px;overflow-wrap:anywhere}.conn-route{opacity:.85}
-    .conn-tech{margin:4px 0 10px}.conn-tech summary{font-size:12px;opacity:.85;cursor:pointer;padding:6px 0;min-height:32px}.conn-tech ul{margin:4px 0 8px;padding-left:18px;font-size:12px}.conn-tech li+li{margin-top:4px}.conn-tech p{font-size:12px;opacity:.8;margin:0 0 6px}
-    .diag-actions{display:flex;gap:6px;flex-wrap:wrap}.diag-actions .secondary{width:auto;flex:1}
-    .share-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}.share-bar button{flex:1;min-width:110px}
-    .share-primary-row{display:flex;gap:6px;margin-bottom:8px}.share-primary-row .primary{margin-bottom:0;flex:1}.share-primary-row .qr-toggle{flex:0 0 auto;border:1px solid #8888;font-weight:600;white-space:nowrap}
-    .qr-box{margin:8px 0;padding:12px;border-radius:12px;background:#fff;color:#111;border:1px solid #8884;display:grid;justify-items:center;gap:6px}
-    .qr-box svg{display:block;width:184px;height:184px;max-width:100%;height:auto}
-    .qr-caption{font-size:11px;color:#444;text-align:center}
-    .ready-share{border:1px solid #1e644a88;background:#1e644a14;border-radius:12px;padding:10px;margin:8px 0;display:grid;gap:6px}
-    .ready-share strong{font-size:13px}
-    .share-opts{margin:6px 0 8px}.share-opts summary{font-size:12px;opacity:.85;cursor:pointer;padding:4px 0}
-    .share-fields{display:grid;gap:6px;margin-top:6px}.share-fields input,.share-fields select{font:inherit;font-size:13px;padding:7px 9px;border:1px solid #8886;border-radius:8px;background:Canvas;color:CanvasText;width:100%}
-    .share-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}
-    .share-item{border:1px solid #8884;border-radius:10px;padding:8px 10px;display:grid;gap:6px;background:#8881}
-    .share-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:13px}.share-role{font-size:11px;font-weight:650;padding:2px 7px;border-radius:999px;background:#1e644a22;color:#1e644a}
-    .share-url{font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.8;overflow-wrap:anywhere}
-    .share-row-actions{display:flex;gap:6px;flex-wrap:wrap}.share-row-actions button{min-height:34px;padding:5px 10px;font-size:12px;border:1px solid #8886;width:auto;flex:1}
-    .share-row-actions .revoke{color:#a32020;border-color:#a3202055;flex:0 0 auto}.share-row-actions .revoke:hover{background:#a3202018}
-    .guest-box{margin-top:8px;padding-top:8px;border-top:1px solid #8884}
-    .add{display:inline-flex;align-items:center;gap:6px;font-weight:650}.add svg{width:18px;height:18px;flex:none}
-    .seg{display:flex;gap:3px;padding:3px;border-radius:12px;background:#8881;border:1px solid #8883;margin:0 0 12px}
-    .seg button{flex:1;min-height:38px;padding:6px 8px;font-size:13px;font-weight:600;border-radius:9px;opacity:.8}
-    .seg button[aria-selected=true]{background:Canvas;opacity:1;box-shadow:0 1px 3px #0003}
-    .tabpanel h4{font-size:13px;margin:0 0 6px}
-    .scopes{display:grid;gap:2px;font-size:12px}.scopes label{display:flex;gap:8px;align-items:flex-start;padding:5px 2px;cursor:pointer}.scopes input{margin-top:2px}
-    .agent-grants{font-size:14px;margin:4px 0 12px}.agent-grants label{align-items:center}
-    .agent-roster{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:8px}
-    .agent-card{border:1px solid #8884;border-radius:10px;padding:8px 10px;display:grid;gap:4px;background:#8881}
-    .agent-card-top{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
-    .agent-handle{font-weight:700;font-size:13px}.agent-bio{font-size:12px;opacity:.8}
-    .agent-pills{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
-    .agent-pill{font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;background:#8882}
-    .agent-pill.primary{background:#1e644a22;color:#1e644a}.agent-pill.online{background:#1f8b4c22;color:#1f8b4c}.agent-pill.warn{background:#d9822b22;color:#9a5b13}
-    .agent-pill.danger{background:#b4232322;color:#b42323}
-    .broadcast-card{border-left:4px solid #1e644a}.broadcast-card.warn{border-left-color:#d9822b}.broadcast-card.danger{border-left-color:#b42323}
-    .broadcast-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap}
-    .broadcast-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px}.broadcast-actions a,.broadcast-actions button{min-height:36px;padding:6px 10px;font-size:12px}
-    .broadcast-actions .primary{width:auto;margin:0;flex:1;text-align:center}.broadcast-actions .secondary{width:auto}
-    .agent-primary-row{display:grid;gap:6px;margin:8px 0 12px}.agent-primary-row select{font:inherit;font-size:13px;padding:7px 9px;border:1px solid #8886;border-radius:8px;background:Canvas;color:CanvasText;width:100%}
-    .agent-links{display:grid;gap:6px;margin-top:8px}
-    .message{font-size:13px;margin:10px 0 0}.suggestion p{margin:0 0 8px}.suggestion strong{font-size:16px}.actions{display:flex;align-items:center;gap:6px}.actions .primary{width:auto;margin:0;flex:1}.actions button{white-space:nowrap}
-    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role,.agent-pill.primary{background:#a6dfbd22;color:#a6dfbd}.agent-pill.online{background:#4ade8022;color:#86efac}.agent-pill.warn{background:#fbbf2422;color:#fcd34d}.agent-pill.danger{background:#f8717122;color:#fca5a5}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
-  `;
-  const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
-    const node = document.createElement(tag);
-    if (text) node.textContent = text;
-    if (className) node.className = className;
-    return node;
-  };
-  const button = (text: string, className?: string) => {
-    const node = element("button", text, className); node.type = "button"; return node;
-  };
+  style.textContent = UTILITY_CSS;
 
   let disposed = false;
-  let voiceControls: { dispose(): void; element: HTMLElement } | null = null;
-  // The runtime owns the page's one publication watch and switches at the next safe
-  // point. This card is shown while a switch waits (unsaved input, an application hold,
-  // or a page pinned to its release), with an explicit way to open the update now.
-  const update = element("aside", undefined, "card"); update.hidden = true;
-  update.setAttribute("aria-label", "Publication update"); update.setAttribute("role", "status"); update.setAttribute("aria-live", "polite");
-  // A link to the page's own address: following it loads the latest selected release.
-  const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.documentPath && api.identity.documentPath !== "index.html"
-    ? new URL(encodePublicationPath(api.identity.documentPath), api.identity.base).href : api.identity.base;
-  update.append(element("strong", "New version published"), element("p", api.publication.pinned
-    ? "This address shows a fixed version. Open the latest version when you are ready."
-    : "This page switches to it as soon as no unsaved changes are open.", "note"), openUpdate);
-  // Live pages (the default) switch on their own: no prompt. Careful or pinned pages offer the update.
-  // Live hot-swapped slot/facet updates are already applied in-place and need no reload prompt.
-  const offUpdate = api.publication.onUpdate(({ version, kind }) => {
-    if (!disposed) update.hidden = version === null || kind === "hot-swapped" || (!api.publication.pinned && api.publication.policy !== "careful");
-  });
-  const nav = element("nav"); nav.setAttribute("aria-label", "Page operations");
-  const active = element("span", undefined, "sensors"); active.setAttribute("role", "status");
-  const stop = button("Stop sensors", "stop");
-  stop.addEventListener("click", () => { api.sensors.stopAll(); options.focus(); });
-  const addPeople = button("", "add");
-  addPeople.setAttribute("aria-label", "Add people & devices"); addPeople.title = "Add people & devices";
-  addPeople.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>';
-  addPeople.setAttribute("aria-controls", "page-options");
-  const options = button("Page options", "options");
-  options.setAttribute("aria-expanded", "false"); options.setAttribute("aria-controls", "page-options");
-  nav.append(active, stop, addPeople, options);
+  let activeModal: ModalId | null = null;
+  let modalOpener: HTMLElement | null = null;
 
-  const panel = element("section", undefined, "card"); panel.id = "page-options"; panel.hidden = true;
-  panel.setAttribute("aria-label", "Save and manage page");
-  const heading = element("h2", "Keep this page handy"); heading.tabIndex = -1;
-  const close = button("×", "close"); close.setAttribute("aria-label", "Close page options");
-  const headingRow = element("div", undefined, "heading"); headingRow.append(heading, close);
-  const introduction = element("p", "Add it to your Home Screen for a shortcut back to this page.");
-  const nativeInstall = button("Add to Home Screen", "primary");
-  const steps = element("ol");
-  const fallback = element("p", undefined, "note");
-  const deviceNote = element("p", "When you first open the Home Screen app, it may ask you to sign in or connect this device again.", "note");
-  const installMessage = element("p", undefined, "message"); installMessage.hidden = true; installMessage.setAttribute("role", "status");
-  const installSection = element("section");
-  installSection.append(introduction, nativeInstall, steps, fallback, deviceNote, installMessage);
-  panel.append(headingRow, installSection);
-
-  const offline = element("section", undefined, "section");
-  const save = button("Save for offline use", "secondary");
-  const savedMessage = element("p", undefined, "message"); savedMessage.hidden = true; savedMessage.setAttribute("role", "status");
-  offline.append(element("h3", "Use without a connection"),
-    element("p", "Save this version’s page files on this device. Your app’s data and connections are managed separately.", "note"), save, savedMessage);
-  offline.hidden = !api.identity.publication || !("serviceWorker" in navigator);
-
-  type ShareLink = { id: string; url: string; role: "owner" | "guest" | "display"; label: string | null; email?: string | null; expires_at: number | null };
-  const canNativeShare = () => typeof navigator.share === "function";
-  const buildQrBox = (url: string, caption: string) => {
-    const box = element("div", undefined, "qr-box");
-    try {
-      box.innerHTML = renderQrSvg(url, { label: caption, sizePx: 184 });
-      box.append(element("span", caption, "qr-caption"));
-    } catch {
-      box.append(element("span", "Link is too long for a QR code.", "qr-caption"));
-    }
-    return box;
+  const shared: ShareAgentsSharedState = {
+    pageName: (typeof document !== "undefined" && document.title) || "Tendriller page",
+    canManage: false,
+    ownerChecked: false,
+    links: [],
+    pendingGuests: [],
+    accountAgents: [],
+    dashboardUrl: "/dashboard#agents",
+    connectionsUrl: "/connections",
+    platformsUrl: "/agents",
+    mcpGrants: null,
   };
-  const shareSection = element("section", undefined, "section");
-  const shareHeading = element("h3", "Add people & devices"); shareHeading.tabIndex = -1;
-  const shareIntro = element("p", "Open this page on another device, invite someone, or connect another agent.", "note");
-  const shareMessage = element("p", undefined, "message"); shareMessage.hidden = true; shareMessage.setAttribute("role", "status");
-  // Segmented tabs: nothing is fetched until a person or agent tab is chosen.
-  const seg = element("div", undefined, "seg"); seg.setAttribute("role", "tablist"); seg.setAttribute("aria-label", "Add people and devices");
-  const tabNames = ["My device", "A person", "An agent"] as const;
-  const tabs = tabNames.map(name => { const tab = button(name); tab.setAttribute("role", "tab"); return tab; });
-  const panels = tabNames.map(() => { const panel = element("div", undefined, "tabpanel"); panel.setAttribute("role", "tabpanel"); return panel; });
-  seg.append(...tabs);
-  const [devicePanel, personPanel, agentPanel] = panels as [HTMLDivElement, HTMLDivElement, HTMLDivElement];
 
-  const shareCurrentRow = element("div", undefined, "share-primary-row");
-  const shareCurrentBtn = button(canNativeShare() ? "Share this page" : "Copy page link", "primary");
-  const shareCurrentQrBtn = button("QR code", "qr-toggle");
-  shareCurrentQrBtn.setAttribute("aria-expanded", "false");
-  const shareCurrentQrSlot = element("div"); shareCurrentQrSlot.hidden = true;
-  shareCurrentRow.append(shareCurrentBtn, shareCurrentQrBtn);
-  devicePanel.append(element("p", "Scan the code with your other device’s camera, or send it the link. Sign in there with the same account.", "note"),
-    shareCurrentRow, shareCurrentQrSlot);
-
-  const readyShareBox = element("div", undefined, "ready-share"); readyShareBox.hidden = true;
-  const inviteDetails = element("details", undefined, "share-opts");
-  const inviteSummary = element("summary", "Manage existing links");
-  const shareOwnerBox = element("div"); shareOwnerBox.hidden = true;
-  const inviteBtn = button("Invite person", "secondary");
-  const displayBtn = button("Page-only link", "secondary");
-  const shareBar = element("div", undefined, "share-bar"); shareBar.append(inviteBtn, displayBtn);
-  const shareFields = element("div", undefined, "share-fields");
-  const shareEmail = document.createElement("input"); shareEmail.type = "email"; shareEmail.maxLength = 254; shareEmail.placeholder = "Their email (optional, locks the invite)";
-  shareEmail.setAttribute("aria-label", "Restrict invite to email (optional)");
-  const shareLabel = document.createElement("input"); shareLabel.type = "text"; shareLabel.maxLength = 100; shareLabel.placeholder = "Optional label (e.g. Alex or Tablet)";
-  shareLabel.setAttribute("aria-label", "Invite label (optional)");
-  const shareExpiry = document.createElement("select"); shareExpiry.setAttribute("aria-label", "Link expiry");
-  for (const [val, text] of [["604800", "Expires in 7 days"], ["86400", "Expires in 24 hours"], ["2592000", "Expires in 30 days"], ["", "No expiry"]]) {
-    const opt = document.createElement("option"); opt.value = val; opt.textContent = text; shareExpiry.append(opt);
-  }
-  shareFields.append(shareEmail, shareLabel, shareExpiry);
-  const shareList = element("ul", undefined, "share-list");
-  inviteDetails.append(inviteSummary, shareList);
-  shareOwnerBox.append(element("p", "They sign in with GitHub or Google to join. Page-only links open the page files without sign-in.", "note"), shareFields, shareBar, readyShareBox, inviteDetails);
-  const shareVisitorNote = element("p", "Only the page owner can create invite or page-only links.", "note"); shareVisitorNote.hidden = true;
-  const ownerLoading = element("p", "Loading…", "note");
-  personPanel.append(ownerLoading, shareOwnerBox, shareVisitorNote);
-
-  // Agents on this page: unified roster, honest live/enrollment status, primary picker, and owner grants.
-  const agentRosterList = element("ul", undefined, "agent-roster");
-  const agentPrimaryBox = element("div", undefined, "agent-primary-row"); agentPrimaryBox.hidden = true;
-  const agentPrimaryLabel = element("label", "Primary agent (answers general messages)", "note");
-  const agentPrimarySelect = document.createElement("select");
-  agentPrimarySelect.setAttribute("aria-label", "Primary agent");
-  agentPrimaryBox.append(agentPrimaryLabel, agentPrimarySelect);
-  const agentOwnerBox = element("div"); agentOwnerBox.hidden = true;
-  const agentList = element("div", undefined, "scopes agent-grants"); agentList.setAttribute("role", "group"); agentList.setAttribute("aria-label", "Account agents granted access");
-  const agentMcpBox = element("div", undefined, "agent-mcp-box"); agentMcpBox.hidden = true;
-  const agentMcpList = element("ul", undefined, "agent-roster");
-  agentMcpBox.append(
-    element("h4", "Hosted MCP (ChatGPT / OAuth)"),
-    element("p", "Connect an OAuth client directly to this page. Keys are wrapped to its Bearer token with zero plaintext keys stored on Tendriller.", "note"),
-    agentMcpList,
+  // ── Floating Status Cards (Broadcast, Publication Update, Install Suggestion) ──
+  const updateCard = el("aside", undefined, "float-card"); updateCard.hidden = true;
+  updateCard.setAttribute("aria-label", "Publication update"); updateCard.setAttribute("role", "status"); updateCard.setAttribute("aria-live", "polite");
+  const openUpdate = el("a", "Open update", "btn primary full");
+  openUpdate.href = api.identity?.documentPath && api.identity.documentPath !== "index.html"
+    ? new URL(encodePublicationPath(api.identity.documentPath), api.identity.base).href : (api.identity?.base || "/");
+  updateCard.append(
+    el("strong", "New version published"),
+    el("p", api.publication?.pinned
+      ? "This address shows a fixed version. Open the latest version when you are ready."
+      : "This page switches to it as soon as no unsaved changes are open."),
+    openUpdate,
   );
-  const agentEmpty = element("p", "No agents on this page yet.", "note"); agentEmpty.hidden = true;
-  const agentDashboard = element("a", "Add an agent on your dashboard", "secondary"); agentDashboard.target = "_blank"; agentDashboard.rel = "noopener";
-  const agentConnections = element("a", "Hosted MCP connections", "secondary"); agentConnections.target = "_blank"; agentConnections.rel = "noopener";
-  const agentLinks = element("div", undefined, "agent-links"); agentLinks.append(agentDashboard, agentConnections);
-  agentOwnerBox.append(element("h4", "Account agent access"), element("p", "Checked agents can maintain this page. Add new agents from your dashboard.", "note"),
-    agentList, agentMcpBox, agentLinks);
-  const agentVisitorNote = element("p", "Only the page owner can change agent access or the primary agent.", "note"); agentVisitorNote.hidden = true;
-  const agentLoading = element("p", "Loading…", "note");
-  agentPanel.append(agentLoading, agentRosterList, agentEmpty, agentPrimaryBox, agentOwnerBox, agentVisitorNote);
 
-  const manualLink = document.createElement("input"); manualLink.type = "text"; manualLink.readOnly = true; manualLink.hidden = true;
-  manualLink.setAttribute("aria-label", "Link to copy"); manualLink.style.cssText = "width:100%;font:inherit";
-  shareSection.append(shareHeading, shareIntro, seg, ...panels, shareMessage, manualLink);
-  let ownerChecked = false;
-  const selectTab = (index: number) => {
-    tabs.forEach((tab, i) => { tab.setAttribute("aria-selected", String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
-    panels.forEach((panel, i) => { panel.hidden = i !== index; });
-    if (index > 0 && !ownerChecked) void refreshShareState();
-  };
-  tabs.forEach((tab, index) => {
-    tab.addEventListener("click", () => selectTab(index));
-    tab.addEventListener("keydown", event => {
-      const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-      if (!step) return;
-      const next = (index + step + tabs.length) % tabs.length; selectTab(next); tabs[next]!.focus(); event.preventDefault();
-    });
-  });
-  selectTab(0);
+  const broadcastCard = el("aside", undefined, "float-card broadcast-card"); broadcastCard.hidden = true;
+  broadcastCard.setAttribute("aria-label", "System notice"); broadcastCard.setAttribute("role", "status"); broadcastCard.setAttribute("aria-live", "polite");
 
-  const notifSection = element("section", undefined, "section");
-  const notifHeading = element("h3", "Notifications");
-  const notifNote = element("p", "Receive alerts from this page even when it is closed.", "note");
-  const notifBtn = button("Enable notifications", "secondary");
-  const notifMessage = element("p", undefined, "message"); notifMessage.hidden = true; notifMessage.setAttribute("role", "status");
-  notifSection.append(notifHeading, notifNote, notifBtn, notifMessage);
-  notifSection.hidden = !api.notifications;
-  let notifSubscribed = false;
-  const renderNotifications = async () => {
-    if (!api.notifications || disposed) return;
-    try {
-      const st = await api.notifications.status();
-      if (disposed) return;
-      notifSubscribed = st.subscribed;
-      if (st.state === "unsupported") {
-        notifSection.hidden = true;
-        return;
-      }
-      notifSection.hidden = false;
-      if (st.state === "install_required") {
-        notifNote.textContent = "Add this page to your Home Screen first to enable push notifications on iOS.";
-        notifBtn.hidden = true;
-      } else if (st.state === "denied") {
-        notifNote.textContent = "Notifications are blocked in your browser settings for this site.";
-        notifBtn.hidden = true;
-      } else {
-        notifNote.textContent = st.subscribed
-          ? "Push notifications are enabled on this device."
-          : "Receive alerts from this page even when it is closed.";
-        notifBtn.hidden = false;
-        notifBtn.disabled = false;
-        notifBtn.textContent = st.subscribed ? "Disable notifications" : "Enable notifications";
-      }
-    } catch { /* keep silent */ }
-  };
-  notifBtn.addEventListener("click", async () => {
-    if (!api.notifications || notifBtn.disabled) return;
-    notifBtn.disabled = true;
-    notifMessage.hidden = false;
-    try {
-      if (notifSubscribed) {
-        notifMessage.textContent = "Disabling notifications…";
-        await api.notifications.disable();
-        if (!disposed) notifMessage.textContent = "Notifications disabled on this device.";
-      } else {
-        notifMessage.textContent = "Enabling notifications…";
-        const next = await api.notifications.enable();
-        if (!disposed) {
-          notifMessage.textContent = next.subscribed
-            ? "Notifications enabled."
-            : next.state === "denied"
-              ? "Notifications were blocked."
-              : next.state === "install_required"
-                ? "Add this page to your Home Screen first."
-                : "Notifications were not enabled.";
-        }
-      }
-    } catch (err) {
-      if (!disposed) notifMessage.textContent = err instanceof Error ? err.message : "Could not update notifications.";
-    } finally {
-      if (!disposed) { notifBtn.disabled = false; void renderNotifications(); }
-    }
-  });
+  const suggestion = el("aside", undefined, "float-card"); suggestion.hidden = true;
+  suggestion.setAttribute("aria-label", "Home screen suggestion");
+  const suggestAdd = btn("Show me how", "btn primary sm"); suggestAdd.style.flex = "1";
+  const suggestDismiss = btn("Not now", "btn sm");
+  const suggestActions = el("div", undefined, "row"); suggestActions.append(suggestAdd, suggestDismiss);
+  suggestion.append(el("strong", "Keep this page one tap away"), el("p", "Add a shortcut to your Home Screen."), suggestActions);
 
-  panel.append(shareSection, notifSection, offline);
+  // ── Floating Dock (Always-reachable Stop + Talk Icon + Options Icon) ──
+  const nav = el("nav", undefined, "dock");
+  nav.setAttribute("aria-label", "Page operations");
 
-  let sharePageName = document.title || "Tendriller page";
-  const showShareStatus = (msg: string) => { shareMessage.hidden = false; shareMessage.textContent = msg; };
-  const copyText = async (value: string, label = "Link copied.") => {
-    manualLink.hidden = true;
-    try { await navigator.clipboard.writeText(value); if (!disposed) showShareStatus(label); return true; }
-    catch {
-      if (disposed) return false;
-      manualLink.value = value; manualLink.hidden = false; manualLink.focus(); manualLink.select();
-      showShareStatus("Copy the selected link below."); return false;
-    }
+  const activeSensors = el("span", undefined, "sensors-pill");
+  activeSensors.setAttribute("role", "status");
+  activeSensors.hidden = true;
+  const stopSensors = btn("Stop sensors", "stop-btn");
+  stopSensors.hidden = true;
+
+  const recChip = el("div", undefined, "rec-chip"); recChip.hidden = true;
+  const recPulse = el("span", undefined, "rec-pulse");
+  const recText = el("span", "Listening…");
+  const recCancel = btn("Cancel", "rec-cancel");
+  recChip.append(recPulse, recText, recCancel);
+
+  const talkBtn = btn("", "dock-btn dock-talk");
+  talkBtn.setAttribute("aria-label", "Talk to assistant");
+  talkBtn.title = "Tap for chat · Hold for voice input";
+  talkBtn.append(iconEl("assistant"));
+  const talkDot = el("span", undefined, "dock-dot"); talkDot.hidden = true;
+  const talkBadge = el("span", "", "dock-badge"); talkBadge.hidden = true;
+  talkBtn.append(talkDot, talkBadge);
+
+  const optionsBtn = btn("", "dock-btn");
+  optionsBtn.setAttribute("aria-label", "Page options");
+  optionsBtn.setAttribute("aria-expanded", "false");
+  optionsBtn.setAttribute("aria-controls", "page-options");
+  optionsBtn.title = "Page options";
+  optionsBtn.append(iconEl("options"));
+  const optionsDot = el("span", undefined, "dock-dot"); optionsDot.hidden = true;
+  optionsBtn.append(optionsDot);
+
+  nav.append(activeSensors, stopSensors, recChip, talkBtn, optionsBtn);
+
+  // ── Compact Options Popover Menu (Launches Dedicated Modals) ──────────
+  const panel = el("section", undefined, "popover");
+  panel.id = "page-options";
+  panel.hidden = true;
+  panel.setAttribute("aria-label", "Save and manage page");
+
+  const popHead = el("div", undefined, "pop-head");
+  const popTitleWrap = el("div", undefined, "pop-title-wrap");
+  const popHeading = el("h2", shared.pageName, "pop-title"); popHeading.tabIndex = -1;
+  const popMeta = el("div", undefined, "pop-meta");
+  const popVersion = el("span", api.identity?.version ? `v${api.identity.version}` : "Draft", "pill");
+  const popSync = el("span", "Local", "pill");
+  popMeta.append(popVersion, popSync);
+  popTitleWrap.append(popHeading, popMeta);
+  const popClose = btn("", "pop-close");
+  popClose.setAttribute("aria-label", "Close page options");
+  popClose.append(iconEl("close"));
+  popHead.append(popTitleWrap, popClose);
+
+  const popBody = el("div", undefined, "pop-body");
+  const popUpdateBanner = el("div", undefined, "pop-banner"); popUpdateBanner.hidden = true;
+  const popUpdateLink = el("a", "Update", "btn primary sm");
+  popUpdateLink.href = openUpdate.href;
+  popUpdateBanner.append(el("div", "New version available"), popUpdateLink);
+  popBody.append(popUpdateBanner);
+
+  const makeMenuItem = (icon: IconName, title: string, subtitle: string, onClick: () => void) => {
+    const item = btn("", "menu-item");
+    const ico = el("span", undefined, "menu-ico"); ico.append(iconEl(icon));
+    const copy = el("span", undefined, "menu-copy");
+    const lbl = el("span", title, "menu-label");
+    const sub = el("span", subtitle, "menu-sub");
+    copy.append(lbl, sub);
+    const trail = el("span", undefined, "menu-trail");
+    const badge = el("span", "", "pill accent"); badge.hidden = true;
+    trail.append(badge, iconEl("chevronRight"));
+    item.append(ico, copy, trail);
+    item.addEventListener("click", onClick);
+    return { item, sub, badge };
   };
-  const deliverLink = async (url: string, title: string, text: string) => {
-    if (canNativeShare()) {
-      try { await navigator.share({ title, text, url }); showShareStatus("Shared."); return; }
-      catch (err) { if ((err as { name?: string })?.name === "AbortError") return; }
-    }
-    await copyText(url, "Link copied to clipboard.");
-  };
-  shareCurrentBtn.addEventListener("click", () => {
-    void deliverLink(location.href, sharePageName, `Open ${sharePageName}`);
-  });
-  shareCurrentQrBtn.addEventListener("click", () => {
-    const show = shareCurrentQrSlot.hidden;
-    shareCurrentQrSlot.hidden = !show;
-    shareCurrentQrBtn.setAttribute("aria-expanded", String(show));
-    if (show) {
-      while (shareCurrentQrSlot.firstChild) shareCurrentQrSlot.firstChild.remove();
-      shareCurrentQrSlot.append(buildQrBox(location.href, "Scan to open this page on another device"));
-    }
-  });
-  const showReadyShare = (link: ShareLink) => {
-    while (readyShareBox.firstChild) readyShareBox.firstChild.remove();
-    const title = link.role === "guest" ? `Join ${sharePageName}` : `View ${sharePageName}`;
-    readyShareBox.append(
-      element("strong", link.role === "guest" ? "Invite link ready" : "Page-only link ready"),
-      element("div", link.url, "share-url"),
-    );
-    const qrSlot = element("div"); qrSlot.hidden = true;
-    const actionsRow = element("div", undefined, "share-row-actions");
-    if (canNativeShare()) {
-      const shareNow = button("Share", "primary");
-      shareNow.addEventListener("click", () => { void deliverLink(link.url, sharePageName, title); });
-      actionsRow.append(shareNow);
-    }
-    const copyNow = button("Copy");
-    copyNow.addEventListener("click", () => { void copyText(link.url, "Link copied."); });
-    const qrNow = button("QR");
-    qrNow.addEventListener("click", () => {
-      const show = qrSlot.hidden;
-      qrSlot.hidden = !show;
-      if (show && !qrSlot.firstChild) qrSlot.append(buildQrBox(link.url, "Scan on nearby device"));
-    });
-    actionsRow.append(copyNow, qrNow);
-    readyShareBox.append(actionsRow, qrSlot);
-    readyShareBox.hidden = false;
-  };
-  const renderShareLinks = (links: ShareLink[]) => {
-    while (shareList.firstChild) shareList.firstChild.remove();
-    // Keep expired links revocable: they still consume the host's link limits.
-    const active = links.filter(l => l.role !== "owner");
-    shareList.hidden = active.length === 0;
-    for (const link of active) {
-      const li = element("li", undefined, "share-item");
-      const top = element("div", undefined, "share-top");
-      const roleLabel = link.role === "guest" ? (link.email ? link.email : "Guest invite") : "Page-only";
-      top.append(element("strong", link.label || (link.role === "guest" ? "Guest invite" : "Page-only")), element("span", roleLabel, "share-role"));
-      const expired = link.expires_at !== null && link.expires_at <= Date.now();
-      const urlEl = element("div", expired ? "Expired" : link.url, "share-url");
-      const rowActions = element("div", undefined, "share-row-actions");
-      const qrSlot = element("div"); qrSlot.hidden = true;
-      if (!expired && canNativeShare()) {
-        const shareBtn = button("Share");
-        shareBtn.addEventListener("click", () => {
-          void deliverLink(link.url, sharePageName, link.role === "guest" ? `Join ${sharePageName}` : `View ${sharePageName}`);
-        });
-        rowActions.append(shareBtn);
-      }
-      const copyBtn = button("Copy");
-      copyBtn.addEventListener("click", () => { void copyText(link.url, `${link.role === "guest" ? "Guest invite" : "Page-only"} link copied.`); });
-      if (!expired) {
-        const qrBtn = button("QR");
-        qrBtn.addEventListener("click", () => {
-          const show = qrSlot.hidden;
-          qrSlot.hidden = !show;
-          if (show && !qrSlot.firstChild) qrSlot.append(buildQrBox(link.url, "Scan to open on another device"));
-        });
-        rowActions.append(copyBtn, qrBtn);
-      } else {
-        rowActions.append(copyBtn);
-      }
-      const revokeBtn = button("Revoke", "revoke");
-      revokeBtn.addEventListener("click", async () => {
-        revokeBtn.disabled = true;
-        try {
-          const res = await fetch(`${api.identity.base}_tendril/links/${encodeURIComponent(link.id)}`, { method: "DELETE", credentials: "same-origin" });
-          if (!res.ok) throw Error();
-          showShareStatus("Link revoked.");
-          await refreshShareState();
-        } catch {
-          revokeBtn.disabled = false;
-          showShareStatus("Could not revoke link.");
-        }
-      });
-      copyBtn.disabled = expired;
-      rowActions.append(revokeBtn);
-      li.append(top, urlEl, rowActions, qrSlot);
-      shareList.append(li);
-    }
-  };
-  const showOwner = (owner: boolean) => {
-    ownerLoading.hidden = agentLoading.hidden = true;
-    shareOwnerBox.hidden = agentOwnerBox.hidden = !owner;
-    shareVisitorNote.hidden = agentVisitorNote.hidden = owner;
-  };
-  let lastAccountAgents: Array<{ id: string; handle: string; bio: string; granted: boolean }> = [];
-  let canManageAgents = false;
-  const agentSnap = () => api.agents?.snapshot?.() ?? { primary_agent_id: null, agents: [], live: {} };
-  const renderRosterView = () => {
-    const snap = agentSnap();
-    agentRosterList.replaceChildren();
-    agentEmpty.hidden = snap.agents.length > 0;
-    for (const agent of snap.agents) {
-      const li = element("li", undefined, "agent-card");
-      const top = element("div", undefined, "agent-card-top");
-      top.append(element("span", `@${agent.handle}`, "agent-handle"));
-      const pills = element("div", undefined, "agent-pills");
-      if (agent.is_primary || agent.id === snap.primary_agent_id) pills.append(element("span", "Primary", "agent-pill primary"));
-      if (agent.kind === "hosted-mcp") {
-        pills.append(element("span", "Hosted MCP", "agent-pill"));
-      } else {
-        const liveStatus = snap.live?.[agent.public_key] ?? snap.live?.[agent.id];
-        if (liveStatus?.state === "online") pills.append(element("span", "Online", "agent-pill online"));
-        else if (liveStatus?.state === "busy") pills.append(element("span", "Busy", "agent-pill online"));
-        else if (liveStatus?.enrolled === false) pills.append(element("span", "Host-granted · awaiting data enrollment", "agent-pill warn"));
-        else if (liveStatus?.enrolled === true) pills.append(element("span", "Enrolled · Offline", "agent-pill"));
-        else pills.append(element("span", "Offline", "agent-pill"));
-      }
-      top.append(pills);
-      li.append(top);
-      if (agent.bio) li.append(element("div", agent.bio, "agent-bio"));
-      agentRosterList.append(li);
-    }
-    agentPrimaryBox.hidden = !canManageAgents || snap.agents.length === 0;
-    if (!agentPrimaryBox.hidden) {
-      agentPrimarySelect.replaceChildren();
-      const noneOpt = document.createElement("option");
-      noneOpt.value = ""; noneOpt.textContent = "None (only direct @mentions)";
-      noneOpt.selected = !snap.primary_agent_id;
-      agentPrimarySelect.append(noneOpt);
-      for (const agent of snap.agents) {
-        const opt = document.createElement("option");
-        opt.value = agent.id;
-        opt.textContent = `@${agent.handle}${agent.kind === "hosted-mcp" ? " (Hosted MCP)" : ""}`;
-        opt.selected = agent.id === snap.primary_agent_id;
-        agentPrimarySelect.append(opt);
-      }
-    }
-  };
-  agentPrimarySelect.addEventListener("change", async () => {
-    const next = agentPrimarySelect.value || null;
-    agentPrimarySelect.disabled = true;
-    showShareStatus("Updating primary agent…");
-    try {
-      await api.agents?.setPrimary?.(next);
-      if (!disposed) showShareStatus(next ? "Primary agent updated." : "Primary agent cleared.");
-    } catch (err) {
-      if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not update primary agent.");
-      renderRosterView();
-    } finally {
-      if (!disposed) agentPrimarySelect.disabled = false;
-    }
-  });
-  let lastMcpGrants: { configured: boolean; grants: Array<{ id: string; client_id: string; client_name: string; wrap_public_key: string }>; connections: Array<{ grant_id: string; handle: string; label: string }> } | null = null;
-  const renderHostedMcpGrants = () => {
-    if (!canManageAgents || !lastMcpGrants || !lastMcpGrants.configured) {
-      agentMcpBox.hidden = true;
-      return;
-    }
-    agentMcpBox.hidden = false;
-    agentMcpList.replaceChildren();
-    const byGrant = new Map(lastMcpGrants.connections.map(c => [c.grant_id, c]));
-    if (lastMcpGrants.grants.length === 0) {
-      const li = element("li", undefined, "agent-card");
-      li.append(element("p", "No active OAuth clients yet. Authorize ChatGPT or another MCP client first, then connect it here.", "note"));
-      agentMcpList.append(li);
-      return;
-    }
-    for (const grant of lastMcpGrants.grants) {
-      const conn = byGrant.get(grant.id);
-      const li = element("li", undefined, "agent-card");
-      const top = element("div", undefined, "agent-card-top");
-      top.append(element("span", grant.client_name || grant.client_id, "agent-handle"));
-      const pills = element("div", undefined, "agent-pills");
-      pills.append(element("span", conn ? `Connected as @${conn.handle}` : "Not connected", conn ? "agent-pill online" : "agent-pill"));
-      top.append(pills);
-      li.append(top);
-      const actions = element("div", undefined, "agent-links");
-      if (conn) {
-        const discBtn = button("Disconnect", "secondary");
-        discBtn.addEventListener("click", async () => {
-          discBtn.disabled = true;
-          showShareStatus(`Disconnecting @${conn.handle}…`);
-          try {
-            const res = await fetch(`${api.identity.base}_tendril/mcp/${encodeURIComponent(grant.id)}`, { method: "DELETE", credentials: "same-origin" });
-            if (!res.ok) throw Error("Could not disconnect hosted MCP.");
-            await api.agents?.refresh?.().catch(() => {});
-            await refreshHostedMcpGrants();
-            if (!disposed) showShareStatus(`Disconnected @${conn.handle}.`);
-          } catch (err) {
-            if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not disconnect hosted MCP.");
-          } finally { if (!disposed) discBtn.disabled = false; }
-        });
-        actions.append(discBtn);
-      } else if (api.agents?.canConnectMcp) {
-        const defaultHandle = (grant.client_id || "assistant").toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[^a-z]+/, "") || "assistant";
-        const handleInput = document.createElement("input");
-        handleInput.type = "text";
-        handleInput.value = defaultHandle.slice(0, 32);
-        handleInput.placeholder = "handle (e.g. chatgpt)";
-        handleInput.setAttribute("aria-label", `Handle for ${grant.client_name || grant.client_id}`);
-        handleInput.style.cssText = "flex:1;min-width:8rem";
-        const connBtn = button("Connect to this page", "primary");
-        connBtn.addEventListener("click", async () => {
-          const handle = handleInput.value.trim().replace(/^@+/, "").toLowerCase();
-          if (!/^[a-z][a-z0-9_-]{1,31}$/.test(handle)) {
-            showShareStatus("Choose a lowercase handle (2–32 chars: a-z, 0-9, _, -).");
-            return;
-          }
-          connBtn.disabled = true; handleInput.disabled = true;
-          showShareStatus(`Connecting @${handle}…`);
-          try {
-            await api.agents?.connectMcp?.({
-              grantId: grant.id,
-              wrapPublicKey: grant.wrap_public_key,
-              handle,
-              bio: `Hosted MCP (${grant.client_name || grant.client_id})`,
-              label: sharePageName,
-            });
-            await refreshHostedMcpGrants();
-            if (!disposed) showShareStatus(`Connected @${handle} to this page.`);
-          } catch (err) {
-            if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not connect hosted MCP.");
-          } finally { if (!disposed) { connBtn.disabled = false; handleInput.disabled = false; } }
-        });
-        actions.append(handleInput, connBtn);
-      } else {
-        actions.append(element("span", "This page does not expose an in-browser key connector.", "note"));
-      }
-      li.append(actions);
-      agentMcpList.append(li);
-    }
-  };
-  const refreshHostedMcpGrants = async () => {
-    if (disposed || !api.identity.base || !canManageAgents) return;
-    try {
-      const res = await fetch(`${api.identity.base}_tendril/mcp/grants`, { credentials: "same-origin", cache: "no-store" });
-      if (!res.ok) return;
-      lastMcpGrants = await res.json();
-      if (!disposed) renderHostedMcpGrants();
-    } catch { /* offline or unavailable */ }
-  };
-  const offAgents = api.agents?.onChange?.(() => { if (!disposed) { renderRosterView(); renderHostedMcpGrants(); } }) ?? (() => {});
-  const refreshShareState = async () => {
-    if (disposed || !api.identity.base) return;
-    try {
-      const linksRes = await fetch(`${api.identity.base}_tendril/links`, { credentials: "same-origin", cache: "no-store" });
-      if (disposed) return;
-      if (linksRes.status === 403 || linksRes.status === 401) {
-        ownerChecked = true; canManageAgents = false; showOwner(false);
-        void refreshAgents();
-        return;
-      }
-      if (!linksRes.ok) throw Error();
-      const data = await linksRes.json() as { name?: string; links?: ShareLink[] };
-      if (data.name) sharePageName = data.name;
-      ownerChecked = true; canManageAgents = true; showOwner(true);
-      renderShareLinks(data.links ?? []);
-      void refreshAgents();
-    } catch {
-      if (disposed) return;
-      showOwner(false);
-      shareVisitorNote.textContent = agentVisitorNote.textContent = "Could not load sharing options while offline.";
-      renderRosterView();
-    }
-  };
-  const renderAccountAgentChecks = (agents: { id: string; handle: string; bio: string; granted: boolean }[], dashboard: string, connections: string) => {
-    lastAccountAgents = agents;
-    agentDashboard.href = dashboard;
-    agentConnections.href = connections;
-    agentList.replaceChildren();
-    for (const agent of agents) {
-      const row = document.createElement("label"), box = document.createElement("input");
-      box.type = "checkbox"; box.value = agent.id; box.defaultChecked = box.checked = agent.granted;
-      box.addEventListener("change", async () => {
-        const want = box.checked; box.disabled = true; showShareStatus("Saving…");
-        try {
-          const res = await fetch(`${api.identity.base}_tendril/agents`, { method: "POST", credentials: "same-origin",
-            headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: agent.id, granted: want }) });
-          const data = await res.json().catch(() => null) as { error?: { message?: string } } | null;
-          if (!res.ok) throw Error(data?.error?.message || "Could not change access. Try again.");
-          box.defaultChecked = want;
-          await api.agents?.refresh?.().catch(() => {});
-          if (!disposed) showShareStatus(want ? `@${agent.handle} can now maintain this page.` : `@${agent.handle} no longer has access.`);
-        } catch (err) {
-          if (disposed) return;
-          box.checked = !want; showShareStatus(err instanceof Error ? err.message : "Could not change access. Try again.");
-        } finally { if (!disposed) box.disabled = false; }
-      });
-      row.append(box, element("span", `@${agent.handle}${agent.bio ? ` — ${agent.bio}` : ""}`));
-      agentList.append(row);
-    }
-    if (lastAccountAgents.length === 0) {
-      agentList.append(element("p", "No workspace agents on your account yet.", "note"));
-    }
-  };
-  const refreshAgents = async () => {
-    if (disposed || !api.identity.base) return;
-    try {
-      const res = await fetch(`${api.identity.base}_tendril/agents`, { credentials: "same-origin", cache: "no-store" });
-      if (!res.ok) throw Error();
-      const data = await res.json() as {
-        can_manage?: boolean;
-        dashboard?: string;
-        connections?: string;
-        account_agents?: { id: string; handle: string; bio: string; granted: boolean }[];
-      };
-      await api.agents?.refresh?.().catch(() => {});
-      if (disposed) return;
-      canManageAgents = Boolean(data.can_manage);
-      if (data.account_agents) renderAccountAgentChecks(data.account_agents, data.dashboard ?? "/dashboard#agents", data.connections ?? "/connections");
-      renderRosterView();
-      if (canManageAgents) void refreshHostedMcpGrants();
-    } catch {
-      if (!disposed) {
-        renderRosterView();
-        if (agentSnap().agents.length === 0) {
-          agentEmpty.textContent = "Could not load agents right now.";
-          agentEmpty.hidden = false;
-        }
-      }
-    }
-  };
-  const createShareLink = async (role: "guest" | "display", trigger: HTMLButtonElement) => {
-    if (trigger.disabled) return;
-    trigger.disabled = true;
-    showShareStatus(role === "guest" ? "Creating invite link…" : "Creating page-only link…");
-    try {
-      const body: Record<string, unknown> = { role };
-      if (role === "guest" && shareEmail.value.trim()) body.email = shareEmail.value.trim();
-      if (shareLabel.value.trim()) body.label = shareLabel.value.trim();
-      if (shareExpiry.value) body.expires_in = Number(shareExpiry.value);
-      const res = await fetch(`${api.identity.base}_tendril/links`, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => null) as { error?: { message?: string } } | null;
-        throw Error(err?.error?.message || "Could not create link.");
-      }
-      const created = await res.json() as ShareLink;
-      shareEmail.value = "";
-      shareLabel.value = "";
-      showReadyShare(created);
-      await refreshShareState();
-      if (canNativeShare()) {
-        showShareStatus("Link created. Tap Share, Copy, or QR below.");
-      } else {
-        await copyText(created.url, "Link created and copied to clipboard.");
-      }
-    } catch (err) {
-      showShareStatus(err instanceof Error ? err.message : "Could not create link.");
-    } finally {
-      if (!disposed) trigger.disabled = false;
-    }
-  };
-  inviteBtn.addEventListener("click", () => { void createShareLink("guest", inviteBtn); });
-  displayBtn.addEventListener("click", () => { void createShareLink("display", displayBtn); });
-  const voiceSection = element("section", undefined, "section");
-  const voiceSetup = button("Set up voice input", "secondary");
-  const voiceMessage = element("p", undefined, "message"); voiceMessage.hidden = true; voiceMessage.setAttribute("role", "status");
-  const voiceContainer = element("div");
-  voiceSection.append(element("h3", "Speech input"),
-    element("p", "Tap to talk or choose an optional wake word while this page is visible. Review and copy your text. Microphone access and model downloads need your consent.", "note"),
-    voiceSetup, voiceMessage, voiceContainer);
-  panel.append(voiceSection);
-  voiceSetup.addEventListener("click", async event => {
-    if (!event.isTrusted || disposed || voiceSetup.disabled) return;
-    voiceSetup.disabled = true; voiceMessage.hidden = false; voiceMessage.textContent = "Opening voice controls…";
-    try {
-      // Optional presentation loads only on a local click. The headless kernel,
-      // initial page graph and service worker never acquire a microphone.
-      const url = api.assetUrl("voice.mjs");
-      const module = await import(/* @vite-ignore */ url) as typeof import("./voice/index");
-      if (disposed) return;
-      voiceControls = module.mountVoiceControls(api, { container: voiceContainer });
-      voiceSetup.hidden = true; voiceMessage.hidden = true;
-      const toggle = voiceControls.element.shadowRoot?.querySelector<HTMLButtonElement>('button[aria-controls="voice-panel"]');
-      toggle?.focus();
-    } catch {
-      if (disposed) return;
-      voiceSetup.disabled = false; voiceMessage.textContent = "Voice controls could not load. Check your connection and try again; typed input remains available.";
-    }
-  });
-  const transportInspector = mountTransportInspector(api.transport); panel.append(transportInspector.element);
-  // Links to a page agent show its public @handle; admission state names the rest.
-  const nameTransportLinks = () => nameTransportAgents(api.transport, () => agentSnap().agents);
-  nameTransportLinks(); const offTransportNames = api.agents?.onChange?.(() => { if (!disposed) nameTransportLinks(); }) ?? (() => {});
-  const diagnostics = element("section", undefined, "section"); diagnostics.hidden = true;
-  const diagHeading = element("h3", "Diagnostics");
-  const diagList = element("ul", undefined, "diag-list");
-  const diagCopy = button("Copy diagnostic report", "secondary");
-  const diagShare = button("Share report", "secondary");
-  diagShare.hidden = !canNativeShare();
-  const diagClear = button("Clear");
-  const diagActions = element("div", undefined, "diag-actions"); diagActions.append(diagCopy, diagShare, diagClear);
-  const diagMessage = element("p", undefined, "message"); diagMessage.hidden = true; diagMessage.setAttribute("role", "status");
-  diagnostics.append(diagHeading, diagList, diagActions, diagMessage);
-  panel.append(diagnostics);
-  const renderDiagnostics = () => {
-    const entries = api.errors?.list?.() ?? [];
-    diagnostics.hidden = entries.length === 0;
-    diagHeading.textContent = `Diagnostics (${entries.length})`;
-    while (diagList.firstChild) diagList.firstChild.remove();
-    for (const entry of entries.slice(-3).reverse()) {
-      const time = new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      diagList.append(element("li", `[${time}] ${entry.kind}: ${entry.message}`, "diag-item"));
-    }
-  };
-  const buildDiagReport = () => JSON.stringify({
-    page: api.identity.page,
-    version: api.identity.version,
-    publication: api.identity.publication,
-    documentPath: api.identity.documentPath,
-    viewport: { width: window.innerWidth, height: window.innerHeight },
-    userAgent: navigator.userAgent,
-    transport: api.transport?.status?.() ?? null,
-    errors: api.errors?.list?.() ?? [],
-  }, null, 2);
-  diagCopy.addEventListener("click", async () => {
-    const report = buildDiagReport();
-    diagMessage.hidden = false;
-    try {
-      await navigator.clipboard.writeText(report);
-      diagMessage.textContent = "Diagnostic report copied.";
-    } catch {
-      diagMessage.textContent = "Could not access clipboard on this device.";
-    }
-  });
-  diagShare.addEventListener("click", async () => {
-    const report = buildDiagReport();
-    diagMessage.hidden = false;
-    try {
-      await navigator.share({ title: `${sharePageName} diagnostics`, text: report });
-      diagMessage.textContent = "Diagnostic report shared.";
-    } catch (err) {
-      if ((err as { name?: string })?.name === "AbortError") { diagMessage.hidden = true; return; }
-      diagMessage.textContent = "Could not share report on this device.";
-    }
-  });
-  diagClear.addEventListener("click", () => {
-    api.errors?.clear?.();
-    diagMessage.hidden = true;
-    renderDiagnostics();
-  });
-  // Position: the bar can sit in any corner so it never covers important page content.
-  // Drag it (it snaps to the nearest corner) or choose here; remembered per page on this device.
-  type Corner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
-  const CORNERS: ReadonlyArray<[Corner, string]> = [["top-left", "Top left"], ["top-right", "Top right"], ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]];
-  const cornerKey = "tendril:utility-corner:" + api.identity.base;
+  const shareItem = makeMenuItem("share", "Share & invite", "My device, invite people & links", () => openModal("share", optionsBtn));
+  const agentsItem = makeMenuItem("agents", "Agents & MCP", "Add agents, primary & ChatGPT MCP", () => openModal("agents", optionsBtn));
+  const voiceItem = makeMenuItem("voice", "Voice & audio", "Mic, wake word & spoken replies", () => openModal("voice", optionsBtn));
+  const syncItem = makeMenuItem("sync", "Sync & connections", "Peer links & local session status", () => openModal("sync", optionsBtn));
+  const appItem = makeMenuItem("app", "App & offline", "Install, offline cache & notifications", () => openModal("app", optionsBtn));
+  const diagItem = makeMenuItem("device", "Device & diagnostics", "Permissions, notices & error logs", () => openModal("diagnostics", optionsBtn));
+
+  popBody.append(shareItem.item, agentsItem.item, voiceItem.item, syncItem.item, appItem.item, diagItem.item);
+
+  // Footer with clean links + compact visual mini-screen 4-corner dock picker
+  const popFoot = el("div", undefined, "pop-foot");
+  const links = el("div", undefined, "links pop-links");
+  const latest = el("a", "Open latest version", "pop-link"); latest.href = api.identity?.base || "/";
+  latest.title = "Open the currently selected publication";
+  const manage = el("a", "Manage page", "pop-link"); manage.href = api.identity?.managementUrl || "_tendril/manage";
+  manage.title = "Page recovery and device management"; manage.target = "_blank"; manage.rel = "noopener";
+  if ((api.identity?.version ?? 0) > 0) links.append(latest);
+  links.append(manage);
+
+  const cornerKey = "tendril:utility-corner:" + (api.identity?.base ?? "");
   let corner: Corner = "bottom-right";
-  try { const saved = localStorage.getItem(cornerKey); if (CORNERS.some(([value]) => value === saved)) corner = saved as Corner; } catch { /* Storage may be blocked; the default corner still works. */ }
-  const positionSection = element("section", undefined, "section");
-  const cornerGrid = element("div", undefined, "corners"); cornerGrid.setAttribute("role", "group"); cornerGrid.setAttribute("aria-label", "Button position");
+  try { const saved = localStorage.getItem(cornerKey); if (CORNERS.some(([v]) => v === saved)) corner = saved as Corner; } catch { /* ignore */ }
+  const cornerPicker = el("div", undefined, "corner-picker");
+  cornerPicker.setAttribute("role", "group");
+  cornerPicker.setAttribute("aria-label", "Button position");
+  cornerPicker.title = "Dock corner (or drag the dock)";
   const cornerButtons = CORNERS.map(([value, label]) => {
-    const choice = button(label); choice.setAttribute("aria-pressed", "false");
+    const choice = btn("", "corner-dot");
+    choice.setAttribute("aria-label", label);
+    choice.setAttribute("aria-pressed", "false");
+    choice.setAttribute("data-corner", value);
+    choice.title = label;
     choice.addEventListener("click", () => { setCorner(value); choice.focus(); });
     return choice;
   });
-  cornerGrid.append(...cornerButtons);
-  positionSection.append(element("h3", "Button position"), element("p", "Drag the page options button to any corner, or choose one here.", "note"), cornerGrid);
-  panel.append(positionSection);
-  const links = element("div", undefined, "links");
-  const latest = element("a", "Open latest version"); latest.href = api.identity.base;
-  latest.title = "Open the currently selected publication";
-  const manage = element("a", "Manage page"); manage.href = api.identity.managementUrl;
-  manage.title = "Page recovery and device management"; manage.target = "_blank"; manage.rel = "noopener";
-  if (api.identity.version > 0) links.append(latest);
-  links.append(manage); panel.append(links);
+  cornerPicker.append(...cornerButtons);
+  popFoot.append(links, cornerPicker);
 
-  // Signed system-wide broadcasts matched locally for this page (e.g. security advisories, upgrade notices, maintenance).
-  const broadcastCard = element("aside", undefined, "card broadcast-card");
-  broadcastCard.hidden = true;
-  broadcastCard.setAttribute("aria-label", "System notice");
-  broadcastCard.setAttribute("role", "status");
-  broadcastCard.setAttribute("aria-live", "polite");
-  const renderBroadcastCard = () => {
-    if (disposed) return;
-    const activeBroadcasts = api.broadcasts?.active?.() ?? [];
-    if (!activeBroadcasts.length) {
-      broadcastCard.hidden = true;
-      return;
-    }
-    // Show the highest-severity (then newest) undismissed broadcast in the floating card.
-    const rank = { critical: 4, urgent: 3, recommended: 2, info: 1 } as const;
-    const sorted = [...activeBroadcasts].sort((a, b) => (rank[b.severity] - rank[a.severity]) || (b.seq - a.seq));
-    const current = sorted[0]!;
-    const tone = current.severity === "critical" || current.severity === "urgent" ? "danger"
-      : current.severity === "recommended" ? "warn" : "";
-    broadcastCard.className = `card broadcast-card${tone ? " " + tone : ""}`;
-    broadcastCard.replaceChildren();
-    const head = element("div", undefined, "broadcast-head");
-    const pillClass = tone ? `agent-pill ${tone}` : "agent-pill primary";
-    head.append(element("span", `${current.kind} · ${current.severity}`, pillClass));
-    if (sorted.length > 1) head.append(element("span", `+${sorted.length - 1} more`, "note"));
-    broadcastCard.append(head, element("strong", current.title), element("p", current.summary, "note"));
-    if (current.action?.requires_republish) {
-      broadcastCard.append(element("p", "Reconnect an agent from your dashboard to rebuild and republish this page.", "note"));
-    } else if (current.action?.requires_tab_reload) {
-      broadcastCard.append(element("p", "Close all tabs of this page and reopen it to apply the update.", "note"));
-    }
-    const row = element("div", undefined, "broadcast-actions");
-    if (current.docs_url) {
-      const detailsLink = element("a", "Details", "primary");
-      detailsLink.href = current.docs_url;
-      detailsLink.target = "_blank";
-      detailsLink.rel = "noopener";
-      row.append(detailsLink);
-    }
-    if (current.dismissible) {
-      const dismissBroadcast = button("Dismiss", "secondary");
-      dismissBroadcast.addEventListener("click", () => { api.broadcasts?.dismiss?.(current.id); });
-      row.append(dismissBroadcast);
-    }
-    if (row.childNodes.length) broadcastCard.append(row);
-    broadcastCard.hidden = false;
-  };
-  const offBroadcasts = api.broadcasts?.onChange?.(renderBroadcastCard) ?? (() => {});
+  panel.append(popHead, popBody, popFoot);
 
-  const suggestion = element("aside", undefined, "card suggestion"); suggestion.hidden = true;
-  suggestion.setAttribute("aria-label", "Home screen suggestion");
-  const pitch = element("p"); pitch.append(element("strong", "Keep this page one tap away"));
-  const suggestAdd = button("Show me how", "primary"), dismiss = button("Not now");
-  const actions = element("div", undefined, "actions"); actions.append(suggestAdd, dismiss);
-  suggestion.append(pitch, element("p", "Add a shortcut to your Home Screen."), actions);
-  root.append(style, broadcastCard, update, suggestion, panel, nav);
+  // ── Unified Reactive Modal Shell (Desktop Dialog / Mobile Bottom Sheet) ──
+  const modalBackdrop = el("div", undefined, "modal-backdrop");
+  modalBackdrop.hidden = true;
+  const modalBox = el("section", undefined, "modal");
+  modalBox.setAttribute("role", "dialog");
+  modalBox.setAttribute("aria-modal", "true");
+  const modalGrab = el("div", undefined, "modal-grab");
+  const modalHead = el("header", undefined, "modal-head");
+  const modalHeadLeft = el("div", undefined, "modal-head-left");
+  const modalHeadIco = el("span", undefined, "modal-head-ico");
+  const modalHeadCopy = el("div", undefined, "modal-head-copy");
+  const modalTitle = el("h2"); modalTitle.tabIndex = -1;
+  const modalSub = el("div", "", "modal-head-sub");
+  modalHeadCopy.append(modalTitle, modalSub);
+  modalHeadLeft.append(modalHeadIco, modalHeadCopy);
 
-  let engaged = false, suggested = false, suppressed = false, installing = false;
+  const modalHeadActions = el("div", undefined, "modal-head-actions");
+  const modalExtraSlot = el("div");
+  const modalCloseBtn = btn("", "pop-close");
+  modalCloseBtn.setAttribute("aria-label", "Close dialog");
+  modalCloseBtn.append(iconEl("close"));
+  modalHeadActions.append(modalExtraSlot, modalCloseBtn);
+  modalHead.append(modalHeadLeft, modalHeadActions);
+
+  const modalContentSlot = el("div");
+  modalContentSlot.style.cssText = "display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden";
+  modalBox.append(modalGrab, modalHead, modalContentSlot);
+  modalBackdrop.append(modalBox);
+
+  // ── Install Suggestion Lifecycle ──────────────────────────────────────
+  let engaged = false, suggested = false, suppressed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const dismissalKey = "tendril:install-dismissed:" + api.identity.base;
+  const dismissalKey = "tendril:install-dismissed:" + (api.identity?.base ?? "");
   const cancelSuggestion = () => { clearTimeout(timer); timer = undefined; };
   const isDismissed = () => {
     if (suppressed) return true;
@@ -897,134 +258,262 @@ export function mountUtility(api: RuntimeApi): () => void {
   const rememberDismissal = () => {
     suppressed = true; suggestion.hidden = true; cancelSuggestion();
     try { localStorage.setItem(dismissalKey, String(Date.now() + DISMISS_FOR_MS)); }
-    catch { /* An in-memory dismissal still works when device storage is blocked. */ }
+    catch { /* ignore */ }
   };
   const eligible = () => {
-    const state = api.installation.status();
-    return !!api.identity.publication && state.platform !== "desktop"
-      && (state.state === "available" || state.platform === "ios" && state.state === "manual") && !isDismissed();
+    const st = api.installation.status();
+    return !!api.identity?.publication && st.platform !== "desktop"
+      && (st.state === "available" || (st.platform === "ios" && st.state === "manual")) && !isDismissed();
   };
   const scheduleSuggestion = () => {
-    if (!engaged || suggested || timer !== undefined || !panel.hidden || !eligible()) return;
+    if (!engaged || suggested || timer !== undefined || !panel.hidden || activeModal !== null || !eligible()) return;
     timer = setTimeout(() => {
       timer = undefined;
       const focused = document.activeElement;
-      const editing = focused?.matches("input,textarea,select,[contenteditable]:not([contenteditable=false])");
+      const editing = focused?.matches?.("input,textarea,select,[contenteditable]:not([contenteditable=false])");
       const sensors = api.sensors.status();
-      if (disposed || document.hidden || editing || !panel.hidden || sensors.active.length || sensors.pending.length || sensors.resources?.length || !eligible()) return;
+      if (disposed || document.hidden || editing || !panel.hidden || activeModal !== null || sensors.active.length || sensors.pending.length || sensors.resources?.length || !eligible()) return;
       suggested = true; suggestion.hidden = false;
     }, SUGGEST_AFTER_MS);
   };
-  const openPanel = () => {
-    suggested = true; suggestion.hidden = true; cancelSuggestion(); panel.hidden = false;
-    nav.classList?.remove("tucked");
-    options.setAttribute("aria-expanded", "true"); heading.focus(); transportInspector.open(); renderDiagnostics();
-    void renderNotifications();
-  };
-  const closePanel = () => {
-    panel.hidden = true; options.setAttribute("aria-expanded", "false"); options.focus();
-    updateKeyboardLayout();
-  };
-  options.addEventListener("click", () => { if (panel.hidden) openPanel(); else closePanel(); });
-  addPeople.addEventListener("click", () => {
-    if (panel.hidden) openPanel();
-    selectTab(0);
-    if (shareCurrentQrSlot.hidden) shareCurrentQrBtn.click();
-    shareSection.scrollIntoView?.({ block: "start" }); shareHeading.focus();
-  });
-  close.addEventListener("click", closePanel);
-  dismiss.addEventListener("click", () => { rememberDismissal(); options.focus(); });
-
-  const renderInstallation = () => {
-    const { state, platform } = api.installation.status();
-    const focused = root.activeElement;
-    const wasInstallFocused = focused && (focused === nativeInstall || suggestion.contains(focused));
-    nativeInstall.hidden = state !== "available";
-    nativeInstall.disabled = installing;
-    deviceNote.hidden = platform !== "ios" || state === "installed" || state === "unavailable";
-    steps.hidden = state !== "manual";
-    fallback.hidden = state !== "manual";
-    introduction.textContent = state === "installed" ? "This page is available as an app on this device."
-      : state === "unavailable" ? "Open this page in a secure browser window to add it to your Home Screen."
-      : "Add it to your Home Screen for a shortcut back to this page.";
-    while (steps.firstChild) steps.firstChild.remove();
-    if (platform === "ios") {
-      for (const text of ["Tap Share. It may be inside your browser’s page menu.", "Choose Add to Home Screen.", "Keep Open as Web App enabled if shown, then tap Add."]) steps.append(element("li", text));
-      fallback.textContent = "If the option is missing, open this page in Safari and check Share → Edit Actions.";
-    } else if (platform === "android") {
-      for (const text of ["Open your browser’s menu.", "Choose Add to Home Screen or Install app, then confirm."]) steps.append(element("li", text));
-      fallback.textContent = "If the option is missing, open this page in Chrome or another browser that supports web apps.";
-    } else {
-      steps.append(element("li", "Look for Install in the address bar or browser menu. In Safari on Mac, choose File → Add to Dock."));
-      fallback.textContent = "Available options depend on your browser. You can also bookmark this page.";
-    }
-    suggestAdd.textContent = state === "available" ? "Add to Home Screen" : "Show me how";
+  const renderInstallSuggestion = () => {
+    const st = api.installation.status();
+    suggestAdd.textContent = st.state === "available" ? "Add to Home Screen" : "Show me how";
     if (!eligible()) { suggestion.hidden = true; cancelSuggestion(); }
-    if (state === "installed") {
-      installMessage.hidden = true;
-      // When already installed as an app, promote Share & invite above Home Screen info.
-      if (typeof headingRow.after === "function" && shareSection.previousSibling !== headingRow) {
-        headingRow.after(shareSection);
-        shareSection.className = "";
-        installSection.className = "section";
-        shareSection.after(installSection);
-      }
-    } else if (typeof headingRow.after === "function" && installSection.previousSibling !== headingRow) {
-      headingRow.after(installSection);
-      installSection.className = "";
-      shareSection.className = "section";
-      installSection.after(shareSection);
-    }
-    if (!installing && wasInstallFocused && (state === "installed" || state === "unavailable")) options.focus();
     scheduleSuggestion();
   };
-  const install = async () => {
-    if (installing) return;
-    installing = true; nativeInstall.disabled = true; suggestAdd.disabled = true;
-    try {
-      // Invoke before awaiting anything: the browser requires this click’s activation.
-      const result = await api.installation.prompt();
-      if (disposed) return;
-      openPanel();
-      if (result === "accepted") {
-        rememberDismissal();
-        installMessage.textContent = "Installation requested. Follow your browser’s confirmation, then open the new app icon.";
-      } else if (result === "dismissed") {
-        rememberDismissal(); installMessage.textContent = "You can add this page later from Page options.";
-      } else {
-        installMessage.textContent = "Use your browser’s menu to add this page. The steps above will help.";
-      }
-      installMessage.hidden = false;
-    } catch {
-      if (!disposed) {
-        openPanel(); installMessage.hidden = false;
-        installMessage.textContent = "The browser could not start installation. Try its menu to add this page.";
-      }
-    } finally {
-      installing = false; suggestAdd.disabled = false;
-      if (!disposed) renderInstallation();
+
+  // ── Instantiate Modals ────────────────────────────────────────────────
+  const updateMenuMeta = () => {
+    if (disposed) return;
+    const roster = api.agents?.snapshot?.() ?? { primary_agent_id: null, agents: [], live: {} };
+    const count = roster.agents.length;
+    const primary = roster.agents.find(a => a.id === roster.primary_agent_id || a.is_primary);
+    agentsItem.sub.textContent = count === 0
+      ? "Add workspace agents or ChatGPT MCP"
+      : `${count} ${count === 1 ? "agent" : "agents"}${primary ? ` · @${primary.handle} primary` : ""}`;
+    agentsItem.badge.hidden = count === 0;
+    agentsItem.badge.textContent = String(count);
+
+    const pendingCount = shared.pendingGuests.length || (roster.pending_guests ?? 0);
+    shareItem.badge.hidden = pendingCount === 0;
+    shareItem.badge.textContent = `${pendingCount} pending`;
+    shareItem.badge.className = "pill warn";
+
+    const errCount = api.errors?.list?.().length ?? 0;
+    diagItem.badge.hidden = errCount === 0;
+    diagItem.badge.textContent = String(errCount);
+    diagItem.badge.className = "pill danger";
+
+    const tr = api.transport?.status?.();
+    const peers = tr?.authenticatedPeers;
+    if (peers && peers > 0) {
+      syncItem.sub.textContent = `Connected to ${peers} ${peers === 1 ? "device" : "devices"}`;
+      popSync.textContent = `${peers} ${peers === 1 ? "peer" : "peers"}`;
+      popSync.className = "pill ok";
+    } else if (tr?.phase === "connecting") {
+      syncItem.sub.textContent = "Connecting… saved locally";
+      popSync.textContent = "Connecting";
+      popSync.className = "pill warn";
+    } else {
+      syncItem.sub.textContent = "Local-first · peer links & sync";
+      popSync.textContent = api.application?.available ? "Local ready" : "Local";
+      popSync.className = "pill";
     }
+
+    const inst = api.installation.status();
+    appItem.sub.textContent = inst.state === "installed"
+      ? "Installed · offline files & alerts"
+      : "Install app, offline cache & alerts";
+
+    const broadcasts = api.broadcasts?.active?.() ?? [];
+    const hasAlert = Boolean(api.publication?.updateAvailable || pendingCount > 0 || errCount > 0 || broadcasts.length > 0);
+    optionsDot.hidden = !hasAlert;
+    setData(optionsDot, "tone", errCount > 0 || broadcasts.some(b => b.severity === "critical" || b.severity === "urgent") ? "danger" : "busy");
   };
-  nativeInstall.addEventListener("click", () => { void install(); });
-  suggestAdd.addEventListener("click", () => {
-    if (api.installation.status().state === "available") void install(); else openPanel();
+
+  const applyTalkDockState = (st: TalkDockState) => {
+    setData(talkBtn, "glow", String(st.glowing));
+    setData(talkBtn, "recording", String(st.recording));
+    setData(talkBtn, "working", String(st.working && !st.recording));
+    talkBtn.style.setProperty?.("--level", st.audioLevel.toFixed(3));
+    talkBadge.hidden = st.unreadCount <= 0;
+    if (st.unreadCount > 0) talkBadge.textContent = st.unreadCount > 9 ? "9+" : String(st.unreadCount);
+    talkDot.hidden = st.unreadCount > 0 || (st.presenceStatus !== "online" && st.presenceStatus !== "busy" && !st.wakeActive);
+    setData(talkDot, "tone", st.presenceStatus === "busy" ? "busy" : "online");
+
+    const showChip = Boolean(st.statusChip) && activeModal !== "chat";
+    recChip.hidden = !showChip;
+    if (showChip) recText.textContent = st.statusChip;
+    voiceItem.sub.textContent = st.wakeActive ? "Wake word listening" : st.speaking ? "Speaking reply…" : "Mic, wake word & spoken replies";
+  };
+
+  const chatModal = createChatModal(api, {
+    onDockStateChange: applyTalkDockState,
+    onOpenAgentsModal: () => openModal("agents", talkBtn, "add"),
+    onOpenVoiceModal: () => openModal("voice", talkBtn),
+    onRequestOpen: () => openModal("chat", talkBtn),
   });
-  save.addEventListener("click", async () => {
-    if (save.disabled) return;
-    save.disabled = true; save.textContent = "Saving page files…"; savedMessage.hidden = false;
-    savedMessage.textContent = "Keep this page open while its files are saved.";
-    try {
-      await api.publication.saveOffline();
-      if (disposed) return;
-      save.textContent = "Page files saved";
-      savedMessage.textContent = "This version’s page files are saved on this device. App data and live features depend on the page.";
-    } catch {
-      if (disposed) return;
-      save.disabled = false; save.textContent = "Try saving again";
-      savedMessage.textContent = "Could not save the page files. Check your connection and try again.";
+  const shareModal = createShareModal(api, shared, updateMenuMeta);
+  const agentsModal = createAgentsModal(api, shared, updateMenuMeta);
+  const voiceModal = createVoiceModal(api);
+  const syncModal = createSyncModal(api);
+  const appModal = createAppModal(api, {
+    onInstalledChange: () => { renderInstallSuggestion(); updateMenuMeta(); },
+    onDismissInstallSuggestion: () => rememberDismissal(),
+  });
+  const diagModal = createDiagnosticsModal(api, shared);
+
+  const MODAL_META: Record<ModalId, { icon: IconName; title: string; subtitle: string; closeLabel: string }> = {
+    chat: { icon: "chat", title: "Assistant", subtitle: "", closeLabel: "Close assistant chat" },
+    share: { icon: "share", title: "Share & invite", subtitle: "Open on another device or invite people", closeLabel: "Close share dialog" },
+    agents: { icon: "agents", title: "Agents & MCP", subtitle: "Manage page agents, join codes & Hosted MCP", closeLabel: "Close agents dialog" },
+    voice: { icon: "voice", title: "Voice & audio", subtitle: "On-device mic, wake word & spoken replies", closeLabel: "Close voice dialog" },
+    sync: { icon: "sync", title: "Sync & connections", subtitle: "Authenticated local peer links", closeLabel: "Close sync dialog" },
+    app: { icon: "app", title: "Keep this page handy", subtitle: "Install, offline files, notifications & release", closeLabel: "Close app dialog" },
+    diagnostics: { icon: "device", title: "Device & diagnostics", subtitle: "Permissions, system notices & error log", closeLabel: "Close diagnostics dialog" },
+  };
+
+  const closeMenu = (restoreFocus = false) => {
+    panel.hidden = true;
+    optionsBtn.setAttribute("aria-expanded", "false");
+    if (restoreFocus) optionsBtn.focus();
+    updateKeyboardLayout();
+  };
+
+  const closeModal = (restoreFocus = true) => {
+    if (!activeModal) return;
+    if (activeModal === "chat") chatModal.onClose();
+    activeModal = null;
+    modalBackdrop.hidden = true;
+    clearChildren(modalContentSlot);
+    clearChildren(modalExtraSlot);
+    const target = modalOpener;
+    modalOpener = null;
+    if (restoreFocus) (target ?? optionsBtn).focus();
+    updateKeyboardLayout();
+  };
+
+  function openModal(id: ModalId, opener?: HTMLElement, subTab?: string) {
+    if (disposed) return;
+    if (activeModal === "chat" && id !== "chat") chatModal.onClose();
+    closeMenu(false);
+    suggested = true; suggestion.hidden = true; cancelSuggestion();
+    activeModal = id;
+    if (opener) modalOpener = opener;
+    const meta = MODAL_META[id];
+    modalBox.className = id === "chat" ? "modal modal-chat" : "modal";
+    modalBox.setAttribute("aria-label", meta.title);
+    modalCloseBtn.setAttribute("aria-label", meta.closeLabel);
+    clearChildren(modalHeadIco); modalHeadIco.append(iconEl(meta.icon));
+    clearChildren(modalHeadCopy);
+    clearChildren(modalExtraSlot);
+    clearChildren(modalContentSlot);
+
+    if (id === "chat") {
+      modalHeadCopy.append(chatModal.headerTitle, chatModal.headerSub);
+      modalExtraSlot.append(chatModal.headerExtra);
+      modalContentSlot.append(chatModal.body);
+      modalBackdrop.hidden = false;
+      nav.classList?.remove("tucked");
+      chatModal.onOpen();
+      chatModal.focusInput();
+    } else {
+      modalTitle.textContent = meta.title;
+      modalSub.textContent = meta.subtitle;
+      modalHeadCopy.append(modalTitle, modalSub);
+      const map = {
+        share: () => { modalContentSlot.append(shareModal.body); shareModal.onOpen(subTab as "device" | "person" | "links" | undefined); },
+        agents: () => { modalContentSlot.append(agentsModal.body); agentsModal.onOpen(subTab as "roster" | "add" | "mcp" | undefined); },
+        voice: () => { modalContentSlot.append(voiceModal.body); voiceModal.onOpen(); },
+        sync: () => { modalContentSlot.append(syncModal.body); syncModal.onOpen(); },
+        app: () => { modalContentSlot.append(appModal.body); appModal.onOpen(); },
+        diagnostics: () => { modalContentSlot.append(diagModal.body); diagModal.onOpen(); },
+      };
+      map[id]();
+      modalBackdrop.hidden = false;
+      nav.classList?.remove("tucked");
+      modalTitle.focus();
     }
+    updateKeyboardLayout();
+  }
+
+  const openMenu = () => {
+    if (activeModal) closeModal(false);
+    suggested = true; suggestion.hidden = true; cancelSuggestion();
+    panel.hidden = false;
+    nav.classList?.remove("tucked");
+    optionsBtn.setAttribute("aria-expanded", "true");
+    popHeading.textContent = (typeof document !== "undefined" && document.title) || shared.pageName;
+    updateMenuMeta();
+    popHeading.focus();
+  };
+
+  // ── Floating Broadcast Card & Updates ─────────────────────────────────
+  const offUpdate = api.publication.onUpdate(({ version, kind }) => {
+    if (disposed) return;
+    const show = version !== null && kind !== "hot-swapped" && (api.publication.pinned || api.publication.policy === "careful");
+    updateCard.hidden = !show;
+    popUpdateBanner.hidden = version === null || kind === "hot-swapped";
+    updateMenuMeta();
   });
 
+  const renderBroadcastCard = () => {
+    if (disposed) return;
+    const activeBroadcasts = api.broadcasts?.active?.() ?? [];
+    if (!activeBroadcasts.length) { broadcastCard.hidden = true; updateMenuMeta(); return; }
+    const rank = { critical: 4, urgent: 3, recommended: 2, info: 1 } as const;
+    const sorted = [...activeBroadcasts].sort((a, b) => (rank[b.severity] - rank[a.severity]) || (b.seq - a.seq));
+    const current = sorted[0]!;
+    const tone = current.severity === "critical" || current.severity === "urgent" ? "danger"
+      : current.severity === "recommended" ? "warn" : "";
+    broadcastCard.className = `float-card broadcast-card${tone ? " " + tone : ""}`;
+    clearChildren(broadcastCard);
+    const head = el("div", undefined, "broadcast-head");
+    head.append(el("span", `${current.kind} · ${current.severity}`, tone ? `pill ${tone}` : "pill accent"));
+    if (sorted.length > 1) head.append(el("span", `+${sorted.length - 1} more`, "muted"));
+    broadcastCard.append(head, el("strong", current.title), el("p", current.summary));
+    if (current.action?.requires_republish) {
+      broadcastCard.append(el("p", "Reconnect an agent from your dashboard to rebuild and republish this page."));
+    } else if (current.action?.requires_tab_reload) {
+      broadcastCard.append(el("p", "Close all tabs of this page and reopen it to apply the update."));
+    }
+    const row = el("div", undefined, "row");
+    if (current.docs_url) {
+      const detailsLink = el("a", "Details", "btn primary sm");
+      detailsLink.href = current.docs_url; detailsLink.target = "_blank"; detailsLink.rel = "noopener";
+      row.append(detailsLink);
+    }
+    if (current.dismissible) {
+      const dismissBtn = btn("Dismiss", "btn sm");
+      dismissBtn.addEventListener("click", () => { api.broadcasts?.dismiss?.(current.id); });
+      row.append(dismissBtn);
+    }
+    if (row.firstChild) broadcastCard.append(row);
+    broadcastCard.hidden = false;
+    updateMenuMeta();
+  };
+  const offBroadcasts = api.broadcasts?.onChange?.(renderBroadcastCard) ?? (() => {});
+
+  suggestAdd.addEventListener("click", () => {
+    if (api.installation.status().state === "available") {
+      openModal("app", optionsBtn);
+      void appModal.triggerInstall();
+    } else {
+      openModal("app", optionsBtn);
+    }
+  });
+  suggestDismiss.addEventListener("click", () => { rememberDismissal(); optionsBtn.focus(); });
+
+  // ── Dock & Modal Controls ─────────────────────────────────────────────
+  optionsBtn.addEventListener("click", () => { if (panel.hidden) openMenu(); else closeMenu(true); });
+  popClose.addEventListener("click", () => closeMenu(true));
+  modalCloseBtn.addEventListener("click", () => closeModal(true));
+  modalBackdrop.addEventListener("click", (e: MouseEvent) => { if (e.target === modalBackdrop) closeModal(true); });
+  stopSensors.addEventListener("click", () => { api.sensors.stopAll(); optionsBtn.focus(); });
+  recCancel.addEventListener("click", () => chatModal.cancelHoldVoice());
+
+  // ── Corner Positioning & Drag-to-Snap + Hold-to-Talk Coexistence ──────
   let lastKeyboardHeight = 0;
   function applyCorner() {
     const [vertical, horizontal] = corner.split("-") as ["top" | "bottom", "left" | "right"];
@@ -1041,55 +530,99 @@ export function mountUtility(api: RuntimeApi): () => void {
   }
   function setCorner(next: Corner) {
     corner = next;
-    try { localStorage.setItem(cornerKey, next); } catch { /* Not remembered when storage is blocked. */ }
+    try { localStorage.setItem(cornerKey, next); } catch { /* ignore */ }
     applyCorner();
   }
-  // Drag: a short press is still a tap on the button under it; moving past a small
-  // threshold drags the whole bar and drops it into the nearest corner.
-  let drag: { id: number; x: number; y: number; moved: boolean } | null = null, suppressClick = false;
-  // The click that ends a drag lands on whichever button is under the pointer: swallow it.
-  nav.addEventListener("click", event => { if (suppressClick) { suppressClick = false; event.stopPropagation(); event.preventDefault(); } }, true);
-  // Follow the press on window: the pointer leaves the small bar on its first move.
+
+  let drag: { id: number; x: number; y: number; moved: boolean; onTalk: boolean } | null = null;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  let holdVoiceActive = false;
+  let suppressNavClick = false;
+
+  const clearHoldTimer = () => { if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; } };
+
+  nav.addEventListener("click", event => {
+    if (suppressNavClick) { suppressNavClick = false; event.stopPropagation(); event.preventDefault(); }
+  }, true);
+
+  talkBtn.addEventListener("click", () => {
+    if (activeModal === "chat") closeModal(true);
+    else openModal("chat", talkBtn);
+  });
+
   const onMove = (event: PointerEvent) => {
-    if (!drag || event.pointerId !== drag.id) return;
+    if (!drag || event.pointerId !== drag.id || holdVoiceActive) return;
     const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
     if (!drag.moved) {
       if (Math.hypot(dx, dy) < 8) return;
-      drag.moved = true; nav.classList?.add("dragging");
+      clearHoldTimer();
+      drag.moved = true;
+      nav.classList?.add("dragging");
     }
     event.preventDefault();
     host.style.setProperty?.("transform", `translate(${dx}px,${dy}px)`, "important");
   };
   const stopFollowing = () => {
-    window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); window.removeEventListener("pointercancel", onCancel);
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onCancel);
   };
   const onUp = (event: PointerEvent) => {
     if (!drag || event.pointerId !== drag.id) return;
-    const moved = drag.moved; drag = null; stopFollowing();
+    clearHoldTimer();
+    const wasHoldVoice = holdVoiceActive;
+    const moved = drag.moved;
+    drag = null;
+    stopFollowing();
+    if (wasHoldVoice) {
+      holdVoiceActive = false;
+      chatModal.finishHoldVoice();
+      suppressNavClick = true; setTimeout(() => { suppressNavClick = false; }, 0);
+      return;
+    }
     if (!moved) return;
     nav.classList?.remove("dragging"); host.style.removeProperty?.("transform");
-    const vertical = event.clientY < window.innerHeight / 2 ? "top" : "bottom", horizontal = event.clientX < window.innerWidth / 2 ? "left" : "right";
+    const vertical = event.clientY < window.innerHeight / 2 ? "top" : "bottom";
+    const horizontal = event.clientX < window.innerWidth / 2 ? "left" : "right";
     setCorner(`${vertical}-${horizontal}` as Corner);
-    // That click is dispatched in the same input sequence as this release.
-    suppressClick = true; setTimeout(() => { suppressClick = false; }, 0);
+    suppressNavClick = true; setTimeout(() => { suppressNavClick = false; }, 0);
   };
   const onCancel = (event: PointerEvent) => {
     if (!drag || event.pointerId !== drag.id) return;
-    drag = null; stopFollowing(); nav.classList?.remove("dragging"); host.style.removeProperty?.("transform");
+    clearHoldTimer();
+    drag = null;
+    stopFollowing();
+    if (holdVoiceActive) { holdVoiceActive = false; chatModal.cancelHoldVoice(); }
+    nav.classList?.remove("dragging"); host.style.removeProperty?.("transform");
   };
   nav.addEventListener("pointerdown", (event: PointerEvent) => {
-    if (!event.isPrimary || event.button !== 0) return;
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
-    window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onUp); window.addEventListener("pointercancel", onCancel);
+    if (!event.isPrimary || (event.button !== 0 && event.pointerType === "mouse")) return;
+    const path = event.composedPath?.() ?? [];
+    const onTalk = path.includes(talkBtn);
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, onTalk };
+    if (onTalk) {
+      clearHoldTimer();
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        if (!drag || drag.moved) return;
+        holdVoiceActive = true;
+        chatModal.startHoldVoice();
+      }, HOLD_TO_TALK_MS);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
   });
+
+  // ── Keyboard & Sensor Reactivity ──────────────────────────────────────
   const updateKeyboardLayout = () => {
     if (disposed) return;
     const focused = document.activeElement;
     const editingExternal = Boolean(
-      focused && !host.contains(focused)
-      && focused.matches("input,textarea,select,[contenteditable]:not([contenteditable=false])"),
+      focused && !host.contains?.(focused)
+      && focused.matches?.("input,textarea,select,[contenteditable]:not([contenteditable=false])"),
     );
-    const hasSensors = !stop.hidden;
+    const hasSensors = !stopSensors.hidden;
     const kbOpen = lastKeyboardHeight > 120;
     const atBottom = !corner.startsWith("top");
     if (kbOpen && hasSensors) {
@@ -1097,49 +630,98 @@ export function mountUtility(api: RuntimeApi): () => void {
       host.style.setProperty?.("bottom", atBottom ? `calc(${utilityBottom} + ${lastKeyboardHeight}px)` : "auto", "important");
     } else {
       host.style.setProperty?.("bottom", atBottom ? utilityBottom : "auto", "important");
-      nav.classList?.toggle("tucked", kbOpen && editingExternal && panel.hidden && !hasSensors);
+      nav.classList?.toggle("tucked", kbOpen && editingExternal && panel.hidden && activeModal === null && !hasSensors);
     }
   };
+
   const renderSensors = () => {
     const summary = sensorSummary(api.sensors.status());
-    active.hidden = stop.hidden = !summary.visible;
-    active.textContent = summary.message;
-    active.title = summary.message;
-    stop.disabled = !summary.canStop;
-    stop.setAttribute("aria-label", "Stop " + summary.names.join(", "));
+    activeSensors.hidden = stopSensors.hidden = !summary.visible;
+    setData(nav, "sensors", String(summary.visible));
+    activeSensors.textContent = summary.message;
+    activeSensors.title = summary.message;
+    stopSensors.disabled = !summary.canStop;
+    stopSensors.setAttribute("aria-label", "Stop " + summary.names.join(", "));
     if (summary.visible) { suggestion.hidden = true; cancelSuggestion(); } else scheduleSuggestion();
     updateKeyboardLayout();
   };
+
   const interact = (event: Event) => {
-    if (!event.isTrusted || event.composedPath().includes(host)) return;
-    engaged = true; scheduleSuggestion();
+    if (!event.isTrusted || event.composedPath?.().includes(host)) return;
+    engaged = true;
+    scheduleSuggestion();
   };
   const keydown = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && !panel.hidden) { closePanel(); event.preventDefault(); }
-    else interact(event);
+    if (event.key === "Escape") {
+      if (activeModal !== null) { closeModal(true); event.preventDefault(); return; }
+      if (!panel.hidden) { closeMenu(true); event.preventDefault(); return; }
+    }
+    interact(event);
   };
   const hide = () => { suggestion.hidden = true; cancelSuggestion(); };
-  const show = () => { renderInstallation(); renderSensors(); };
+  const show = () => { renderInstallSuggestion(); renderSensors(); };
+
   document.addEventListener("pointerup", interact);
   document.addEventListener("keydown", keydown);
   document.addEventListener("focusin", updateKeyboardLayout);
   document.addEventListener("focusout", updateKeyboardLayout);
   window.addEventListener("pagehide", hide);
   window.addEventListener("pageshow", show);
+
+  root.append(style, broadcastCard, updateCard, suggestion, panel, nav, modalBackdrop);
+
   const attach = () => { const parent = document.body || document.documentElement; if (host.parentNode !== parent) parent.append(host); };
   const observer = new MutationObserver(attach);
-  const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
-  const offErrors = api.errors?.on?.(renderDiagnostics) ?? (() => {});
-  applyCorner(); renderInstallation(); renderSensors(); renderDiagnostics(); renderBroadcastCard(); attach(); observer.observe(document, { childList: true, subtree: true });
+  const offSensors = api.sensors.on(renderSensors);
+  const offInstallation = api.installation.on(() => { renderInstallSuggestion(); updateMenuMeta(); });
+  const offErrors = api.errors?.on?.(updateMenuMeta) ?? (() => {});
+  const offAgentsMeta = api.agents?.onChange?.(updateMenuMeta) ?? (() => {});
+  const offTransportMeta = api.transport?.onChange?.(() => updateMenuMeta()) ?? (() => {});
+  const offChatOpen = api.chat?.onOpenRequest?.(open => { if (open) openModal("chat", talkBtn); else if (activeModal === "chat") closeModal(false); }) ?? (() => {});
+
+  applyCorner();
+  renderInstallSuggestion();
+  renderSensors();
+  renderBroadcastCard();
+  updateMenuMeta();
+  applyTalkDockState(chatModal.getDockState());
+  attach();
+  observer.observe(document, { childList: true, subtree: true });
   const offGeometry = observeUtilityBar(nav);
   const offViewport = observeVisualViewport(({ keyboardHeight }) => {
     lastKeyboardHeight = keyboardHeight;
     updateKeyboardLayout();
   });
+
   return () => {
-    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offTransportNames(); nameTransportAgents(api.transport, null); offUpdate(); offAgents(); offBroadcasts(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
-    document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
-    document.removeEventListener("focusin", updateKeyboardLayout); document.removeEventListener("focusout", updateKeyboardLayout);
-    window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
+    disposed = true;
+    clearHoldTimer();
+    stopFollowing();
+    chatModal.dispose();
+    shareModal.dispose();
+    agentsModal.dispose();
+    voiceModal.dispose();
+    syncModal.dispose();
+    appModal.dispose();
+    diagModal.dispose();
+    offUpdate();
+    offBroadcasts();
+    offSensors();
+    offInstallation();
+    offErrors();
+    offAgentsMeta();
+    offTransportMeta();
+    offChatOpen();
+    cancelSuggestion();
+    observer.disconnect();
+    offGeometry();
+    offViewport();
+    document.removeEventListener("pointerup", interact);
+    document.removeEventListener("keydown", keydown);
+    document.removeEventListener("focusin", updateKeyboardLayout);
+    document.removeEventListener("focusout", updateKeyboardLayout);
+    window.removeEventListener("pagehide", hide);
+    window.removeEventListener("pageshow", show);
+    host.remove();
   };
 }

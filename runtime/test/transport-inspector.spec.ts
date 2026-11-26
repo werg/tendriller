@@ -15,10 +15,14 @@ async function fixture(page:Page,registered=true,roster:any[]=[],admission:any=n
   w.fetch=()=>{w.hostReads++;throw Error('MUST_NOT_FETCH');};w.WebSocket=class{constructor(){w.hostReads++;throw Error('MUST_NOT_OPEN_SOCKET');}};
  },[registered,roster,admission] as const);
 }
+async function openSync(page: Page) {
+  await page.getByRole('button',{name:'Page options',exact:true}).click();
+  await page.getByRole('button',{name:/Sync & connections/}).click();
+}
 test('Page options shows only authenticated local evidence and samples again only on explicit action',async({page})=>{
  await page.clock.install();await fixture(page);expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
  await page.clock.fastForward(3600_000);expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
- await page.getByRole('button',{name:'Page options',exact:true}).click();
+ await openSync(page);
  const inspector=page.getByRole('region',{name:'Application connections'});
  await expect(inspector).toContainText('Connected to 1 device.');await expect(inspector).toContainText('Device 1');
  await expect(inspector).toContainText('Via relay (a direct connection timed out)');await expect(inspector).toContainText('Received 143 KB · Sent 12 B');
@@ -37,7 +41,7 @@ test('Page options shows only authenticated local evidence and samples again onl
 test('a link to a page agent shows its public handle, follows roster changes and never the key',async({page})=>{
  await fixture(page,true,[{id:'ag',handle:'notekeeper',bio:'',public_key:'a'.repeat(64),kind:'workspace',is_primary:true,granted_at:0}]);
  await page.evaluate(()=>{(window as any).kind='direct';});
- await page.getByRole('button',{name:'Page options',exact:true}).click();
+ await openSync(page);
  const inspector=page.getByRole('region',{name:'Application connections'});
  await expect(inspector.getByRole('list',{name:'Connected devices'})).toContainText('@notekeeper');await expect(inspector).toContainText('Direct connection');
  await expect(inspector).not.toContainText('Via relay');await expect(inspector).not.toContainText('a'.repeat(64));
@@ -51,7 +55,7 @@ test('admission state names the viewer\'s other devices and other members by ver
   {publicKey:friend,via:'invited',subject:'device',label:'Browser device',accountId:'acct-friend',email:'friend@example.test'},
   {publicKey:guest,via:'invited',subject:'device',label:'Browser device',accountId:'acct-guest'}]});
  await page.evaluate(([own,friend,guest])=>{const w=window as any;w.peers=[own,friend,guest];w.source.status={phase:'connected',connectedPeers:w.peers,connectionRevision:0};for(const fn of w.listeners)fn(w.source.status);},[own,friend,guest]);
- await page.getByRole('button',{name:'Page options',exact:true}).click();
+ await openSync(page);
  const list=page.getByRole('region',{name:'Application connections'}).getByRole('list',{name:'Connected devices'});
  await expect(list.getByRole('listitem')).toHaveCount(3);
  await expect(list.getByRole('listitem').nth(0)).toContainText(/Your other device \(added .*2026\)/);
@@ -60,26 +64,26 @@ test('admission state names the viewer\'s other devices and other members by ver
  for(const key of[own,friend,guest])await expect(page.getByRole('region',{name:'Application connections'})).not.toContainText(key.slice(0,8));
 });
 test('the inspector stays readable at 320px without horizontal scrolling',async({page})=>{
- await page.setViewportSize({width:320,height:720});await fixture(page);await page.getByRole('button',{name:'Page options',exact:true}).click();
+ await page.setViewportSize({width:320,height:720});await fixture(page);await openSync(page);
  const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Device 1');
  await inspector.getByText('Technical details').click();
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  const box=await inspector.boundingBox();expect(box!.x).toBeGreaterThanOrEqual(0);expect(box!.x+box!.width).toBeLessThanOrEqual(320);
 });
 test('unregistered details stay unavailable without claiming a relay or inventing counters',async({page})=>{
- await fixture(page,false);await page.getByRole('button',{name:'Page options',exact:true}).click();
+ await fixture(page,false);await openSync(page);
  const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Connection details are not available on this page.');
  await expect(inspector.getByRole('button',{name:'Refresh connection details'})).toBeDisabled();await expect(inspector).not.toContainText('0 B');expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
 });
 test('disposed menu ignores an outstanding sample and removes its report observer',async({page})=>{
  await fixture(page);await page.evaluate(()=>{const w=window as any;w.source.diagnostics=()=>new Promise(resolve=>w.complete=resolve);});
- await page.getByRole('button',{name:'Page options',exact:true}).click();await expect.poll(()=>page.evaluate(()=>typeof(window as any).complete)).toBe('function');
+ await openSync(page);await expect.poll(()=>page.evaluate(()=>typeof(window as any).complete)).toBe('function');
  await page.evaluate(()=>{const w=window as any;w.dispose();w.complete([]);});await expect(page.locator('tendril-utility')).toHaveCount(0);
 });
 
 
 test('same-peer connection replacement updates the menu once and counters describe the replacement link',async({page})=>{
- await fixture(page);await page.getByRole('button',{name:'Page options',exact:true}).click();
+ await fixture(page);await openSync(page);
  const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Via relay');
  await page.evaluate(()=>{const w=window as any;w.kind='direct';w.total=0;w.source.status={...w.source.status,connectionRevision:1};for(const fn of w.listeners)fn(w.source.status);});
  await expect(inspector).toContainText('Direct connection');await expect(inspector).not.toContainText('Via relay');await expect(inspector).toContainText('Sent 2 B');

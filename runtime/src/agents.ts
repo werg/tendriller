@@ -1,4 +1,4 @@
-import type { AgentLiveStatus, HostedMcpConnectInput, PageAgentRoster, RuntimeAgents } from "../../contract/index.mjs";
+import type { AgentLiveStatus, HostedMcpConnectInput, PageAgentRoster, PagePersonEntry, PageViewerInfo, RuntimeAgents } from "../../contract/index.mjs";
 import type { AgentsRosterNotice, PageAgentEntry } from "../../contract/publication-watch.mjs";
 import type { TendrilConfig } from "./types";
 
@@ -40,6 +40,10 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
   let canManage: boolean | undefined;
   let dashboard: string | undefined;
   let connections: string | undefined;
+  let platforms: string | undefined;
+  let viewer: PageViewerInfo | undefined;
+  let people: PagePersonEntry[] = [];
+  let pendingGuests: number | undefined;
   let live: Record<string, AgentLiveStatus> = {};
   let mcpConnector: ((input: HostedMcpConnectInput) => Promise<unknown>) | null = null;
   const listeners = new Set<(roster: PageAgentRoster) => void>();
@@ -50,6 +54,10 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
     ...(canManage !== undefined ? { can_manage: canManage } : {}),
     ...(dashboard ? { dashboard } : {}),
     ...(connections ? { connections } : {}),
+    ...(platforms ? { platforms } : {}),
+    ...(viewer ? { viewer: Object.freeze({ ...viewer }) } : {}),
+    ...(people.length ? { people: Object.freeze(people.map(item => Object.freeze({ ...item }))) } : {}),
+    ...(pendingGuests !== undefined ? { pending_guests: pendingGuests } : {}),
     live: Object.freeze({ ...live }),
   });
 
@@ -66,6 +74,10 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
     can_manage?: boolean;
     dashboard?: string;
     connections?: string;
+    platforms?: string;
+    viewer?: PageViewerInfo;
+    people?: readonly PagePersonEntry[];
+    pending_guests?: number;
   }) => {
     primaryId = typeof data.primary_agent_id === "string" ? data.primary_agent_id : null;
     if (Array.isArray(data.agents)) {
@@ -82,6 +94,12 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
     if (typeof data.can_manage === "boolean") canManage = data.can_manage;
     if (typeof data.dashboard === "string") dashboard = data.dashboard;
     if (typeof data.connections === "string") connections = data.connections;
+    if (typeof data.platforms === "string") platforms = data.platforms;
+    if (data.viewer && typeof data.viewer.handle === "string") viewer = { ...data.viewer };
+    if (Array.isArray(data.people)) {
+      people = data.people.filter((p): p is PagePersonEntry => Boolean(p && typeof p.id === "string" && typeof p.handle === "string")).map(p => ({ ...p }));
+    }
+    if (typeof data.pending_guests === "number") pendingGuests = data.pending_guests;
     writeCached(cfg.id, primaryId, agents);
     emit();
     return snapshot();
@@ -103,6 +121,10 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
         can_manage?: boolean;
         dashboard?: string;
         connections?: string;
+        platforms?: string;
+        viewer?: PageViewerInfo;
+        people?: PagePersonEntry[];
+        pending_guests?: number;
       };
       return applyRoster(data);
     },

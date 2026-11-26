@@ -19,6 +19,7 @@ import { createWakeLockLease } from "./wake-lock";
 import { createShareTarget } from "./share-target";
 import { createNotifications } from "./notifications";
 import { createAgentsStore } from "./agents";
+import { createChatStore } from "./chat";
 import { createBroadcastsStore } from "./broadcasts";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<ServiceWorkerRegistration | null> {
@@ -54,6 +55,10 @@ export interface RuntimeOptions {
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
   const agents = createAgentsStore(cfg);
+  const chat = createChatStore(cfg);
+  agents.api.onChange(roster => {
+    if (roster.people) chat.api.setPeople(roster.people);
+  });
   const broadcasts = createBroadcastsStore(cfg, { autoFetch: options.watchPublication === true });
   const core = createCore(cfg, options.application);
   const pinned = explicitlyPinned(cfg);
@@ -134,7 +139,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     sensorChanged();
   });
   const shared: RuntimeServices = {
-    host: core.host, application: core.application, agents: agents.api, transport: transport.api, errors: errors.api,
+    host: core.host, application: core.application, agents: agents.api, chat: chat.api, transport: transport.api, errors: errors.api,
     signals: createSignalBinding(options.signals),
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),

@@ -1152,8 +1152,16 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     voice,
     element: host,
     setMessages(next) {
+      const prevIds = new Set(messages.map(m => m.id));
       messages = [...next];
       renderMessages();
+      if (!isOpen && !disposed) {
+        for (const m of messages) {
+          if (m.role === "agent" && !prevIds.has(m.id)) {
+            runtime.chat?.notifyIncoming?.({ id: m.id, senderHandle: m.senderHandle, text: m.text });
+          }
+        }
+      }
       if (autoSpeak && !disposed) {
         const newlyArrived = messages.filter(m => m.role === "agent" && !spokenIds.has(m.id));
         const multiAgent = rosterState.agents.length > 1;

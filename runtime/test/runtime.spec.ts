@@ -195,9 +195,9 @@ test('installation is explicit, consumes its browser event once, and distinguish
   expect(await offerInstallation(page)).toBe(true);
   expect(await page.evaluate(() => (window as any).installCalls)).toBe(0);
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await page.getByRole('button', { name: /App & offline/ }).click();
   await page.getByRole('button', { name: 'Add to Home Screen', exact: true }).click();
   await expect(page.getByText('Installation requested.', { exact: false })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Keep this page handy' })).toBeFocused();
   expect(await page.evaluate(() => ({ calls: (window as any).installCalls,
     activated: (window as any).installActivation, state: window.tendril.installation.status().state,
   }))).toEqual({ calls: 1, activated: true, state: 'manual' });
@@ -216,6 +216,7 @@ test('the page controls save the actual code graph on demand and report offline 
   await open(page, fixture);
   expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await page.getByRole('button', { name: /App & offline/ }).click();
   await page.getByRole('button', { name: 'Save for offline use', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Page files saved', exact: true })).toBeDisabled();
   await expect(page.getByText('This version’s page files are saved on this device.', { exact: false })).toBeVisible();
@@ -229,6 +230,7 @@ test('offline saving failures remain retryable without claiming success', async 
   await open(page, mock.create());
   await page.evaluate(() => { window.tendril.publication.saveOffline = async () => { throw Error('No space'); }; });
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await page.getByRole('button', { name: /App & offline/ }).click();
   await page.getByRole('button', { name: 'Save for offline use', exact: true }).click();
   await expect(page.getByText('Could not save the page files.', { exact: false })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Try saving again', exact: true })).toBeEnabled();
@@ -243,22 +245,23 @@ test.describe('mobile home-screen setup', () => {
     await page.setViewportSize({ width: 320, height: 640 });
     await open(page, mock.create());
     await page.getByRole('button', { name: 'Page options', exact: true }).click();
-    const panel = page.getByRole('region', { name: 'Save and manage page' });
-    await expect(panel.getByText('Choose Add to Home Screen.')).toBeVisible();
-    await expect(panel.getByText('Keep Open as Web App enabled if shown, then tap Add.')).toBeVisible();
-    await expect(panel.getByText('When you first open the Home Screen app,', { exact: false })).toBeVisible();
-    await expect(panel.getByRole('button', { name: 'Add to Home Screen', exact: true })).toBeHidden();
-    const bounds = await panel.boundingBox();
+    await page.getByRole('button', { name: /App & offline/ }).click();
+    const dialog = page.getByRole('dialog', { name: 'Keep this page handy' });
+    await expect(dialog.getByText('Choose Add to Home Screen.')).toBeVisible();
+    await expect(dialog.getByText('Keep Open as Web App enabled if shown, then tap Add.')).toBeVisible();
+    await expect(dialog.getByText('When you first open the Home Screen app,', { exact: false })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Add to Home Screen', exact: true })).toBeHidden();
+    const bounds = await dialog.boundingBox();
     expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
     expect(bounds!.y).toBeGreaterThanOrEqual(0); expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(640);
     await page.evaluate(() => window.addEventListener('devicemotion', () => {}));
     await expect(page.getByRole('button', { name: 'Stop Motion', exact: true })).toBeVisible();
-    const withSensors = await panel.boundingBox();
+    const withSensors = await dialog.boundingBox();
     expect(withSensors!.y).toBeGreaterThanOrEqual(0);
     expect(withSensors!.y + withSensors!.height).toBeLessThanOrEqual(640);
     await page.screenshot({ path: test.info().outputPath('mobile-page-options.png') });
-    await page.getByRole('button', { name: 'Close page options' }).click();
-    await expect(panel).toBeHidden();
+    await page.getByRole('button', { name: 'Close app dialog' }).click();
+    await expect(dialog).toBeHidden();
     await expect(page.getByRole('button', { name: 'Page options', exact: true })).toBeFocused();
   });
 
@@ -275,6 +278,7 @@ test.describe('mobile home-screen setup', () => {
     await page.reload(); await page.locator('main').tap();
     await page.clock.fastForward(20_000); await expect(suggestion).toBeHidden();
     await page.getByRole('button', { name: 'Page options', exact: true }).click();
+    await page.getByRole('button', { name: /App & offline/ }).click();
     await expect(page.getByText('Choose Add to Home Screen.')).toBeVisible();
     // A different page on this fixture origin has an independent suggestion preference.
     await open(page, mock.create()); await page.locator('main').tap();
@@ -333,6 +337,7 @@ test.describe('mobile home-screen setup', () => {
     await page.locator('main').tap(); await page.clock.fastForward(20_000);
     await expect(page.getByRole('complementary', { name: 'Home screen suggestion' })).toBeHidden();
     await page.getByRole('button', { name: 'Page options', exact: true }).click();
+    await page.getByRole('button', { name: /App & offline/ }).click();
     await expect(page.getByText('This page is available as an app on this device.')).toBeVisible();
     await expect(page.getByText('Choose Add to Home Screen.')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Save for offline use', exact: true })).toBeVisible();
@@ -349,6 +354,7 @@ test.describe('mobile home-screen setup', () => {
     await page.locator('main').tap(); await page.clock.fastForward(20_000);
     await expect(suggestion).toBeHidden();
     await page.getByRole('button', { name: 'Page options', exact: true }).click();
+    await page.getByRole('button', { name: /App & offline/ }).click();
     await expect(page.getByText('Choose Add to Home Screen.')).toBeVisible();
   });
 });
@@ -366,6 +372,7 @@ test('hosted voice controls load only on a local choice and remain microphone-fr
   const voiceRequests = () => mock.requests.filter(path => path.startsWith(mock.base(fixture)) && /voice|cactus|whistle|resources\.json/.test(path));
   expect(voiceRequests()).toEqual([]);
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await page.getByRole('button', { name: /Voice & audio/ }).click();
   expect(voiceRequests()).toEqual([]);
   const setup = page.getByRole('button', { name: 'Set up voice input', exact: true });
   await setup.evaluate((button: HTMLButtonElement) => button.click());

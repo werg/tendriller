@@ -6,6 +6,7 @@ const RECEIVED = /Received (?!0 B)\d[\d.,]* (?:B|KB|MB|GB)/;
 export async function expectConnectionInspector(page, { expect, name, transport, screenshot, label, timeout = 60_000 }) {
   const options = page.getByRole('button', { name: 'Page options', exact: true });
   await options.click();
+  await page.getByRole('button', { name: /Sync & connections/ }).click();
   const region = page.getByRole('region', { name: 'Application connections' });
   const links = region.getByRole('list', { name: 'Connected devices' });
   const route = transport === 'relay' ? 'Via relay' : 'Direct connection';

@@ -158,9 +158,11 @@ test('the served bootstrap mounts working management and sensor controls without
   assert.equal(env.window.tendril, env.api);
   const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
   assert.ok(host, 'the complete default entry must mount its operational utility');
+  const findAll = (node, pred, out = []) => { if (pred(node)) out.push(node); for (const c of node.children ?? []) findAll(c, pred, out); return out; };
   const nav = host.shadowRoot.children.find(element => element.tagName === 'nav');
   const panel = host.shadowRoot.children.find(element => element.id === 'page-options');
-  const links = panel.children.find(element => element.className === 'links').children;
+  const linksContainer = findAll(panel, element => String(element.className ?? '').split(' ').includes('links'))[0];
+  const links = linksContainer.children;
   const [latest, link] = links;
   const indicator = nav.children.find(element => element.tagName === 'span');
   const stop = nav.children.find(element => element.tagName === 'button');
@@ -172,7 +174,7 @@ test('the served bootstrap mounts working management and sensor controls without
   assert.equal(link.rel, 'noopener');
   assert.equal(stop.hidden, true);
   assert.equal(panel.hidden, true);
-  const options = nav.children.find(element => element.textContent === 'Page options');
+  const options = nav.children.find(element => element.attributes.get('aria-label') === 'Page options');
   options.dispatchEvent(new Event('click'));
   assert.equal(panel.hidden, false);
   assert.equal(options.attributes.get('aria-expanded'), 'true');

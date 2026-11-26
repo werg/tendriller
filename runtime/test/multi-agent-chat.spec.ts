@@ -271,18 +271,21 @@ test('multi-agent chat supports @handle autocomplete, target chip, concurrent st
   expect(await page.evaluate(() => (window as any).bannerDismissed)).toBe(1);
 });
 
-test('Page options -> An agent supports primary selection and one-click Hosted MCP connect/disconnect', async ({ page }) => {
+test('Page options -> Agents & MCP supports primary selection and one-click Hosted MCP connect/disconnect', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', err => pageErrors.push(String(err)));
   await page.goto(origin);
   await page.waitForFunction(() => (window as any).ready || false, null, { timeout: 5000 }).catch(e => { throw Error(`Boot failed: ${pageErrors.join('; ') || e.message}`); });
 
   await page.getByRole('button', { name: 'Page options' }).click();
-  await page.getByRole('tab', { name: 'An agent' }).click();
+  await page.getByRole('button', { name: /Agents & MCP/ }).click();
 
-  // Roster and Hosted MCP grant appear
+  // Roster appears on default tab
   await expect(page.locator('.agent-roster').first()).toContainText('@atlas');
   await expect(page.locator('.agent-roster').first()).toContainText('@reviewer');
+
+  // Switch to Hosted MCP tab and connect
+  await page.getByRole('tab', { name: 'Hosted MCP' }).click();
   const mcpBox = page.locator('.agent-mcp-box');
   await expect(mcpBox).toBeVisible();
   await expect(mcpBox).toContainText('ChatGPT');
@@ -293,15 +296,18 @@ test('Page options -> An agent supports primary selection and one-click Hosted M
   expect(await page.evaluate(() => (window as any).mcpConnectCalls)).toEqual([
     expect.objectContaining({ grantId: 'og_1', handle: 'chatgpt' }),
   ]);
+
+  // Switch back to On this page tab: @chatgpt is in roster and can be promoted to primary
+  await page.getByRole('tab', { name: 'On this page' }).click();
   await expect(page.locator('.agent-roster').first()).toContainText('@chatgpt');
   await expect(page.locator('.agent-roster').first()).toContainText('Hosted MCP');
 
-  // Owner can promote @chatgpt to primary from Page options
   const primarySelect = page.getByLabel('Primary agent');
   await primarySelect.selectOption('mcp:og_1');
   expect(await page.evaluate(() => (window as any).primaryChanges.at(-1))).toBe('mcp:og_1');
 
-  // Owner can disconnect immediately
+  // Owner can disconnect immediately from Hosted MCP tab
+  await page.getByRole('tab', { name: 'Hosted MCP' }).click();
   await mcpBox.getByRole('button', { name: 'Disconnect' }).click();
   await expect(mcpBox).toContainText('Not connected');
   expect(await page.evaluate(() => (window as any).mcpDisconnected)).toEqual(['og_1']);

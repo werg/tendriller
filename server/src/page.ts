@@ -14,7 +14,7 @@ import { handleManagement } from "./management";
 import { currentIconRaster, iconRasterResponse, iconRasterTag, remoteIconSize, storeIconRaster } from "./icon-raster";
 import { addActivity } from "./activity";
 import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from "./agent-grants";
-import { listAccountAgents } from "./agents";
+import { createJoinCode, listAccountAgents } from "./agents";
 import { handlePageMcp } from "./mcp-participant";
 import { publicBase } from "./urls";
 import { brandMark } from "./brand";
@@ -157,7 +157,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return new Response("Report received. Thank you.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
   }
 
-  // Unified page agent roster (non-display authenticated users can read; owner can toggle grants and choose primary).
+  // Unified page agent roster (non-display authenticated users can read; owner can toggle grants, create join codes, and choose primary).
   if (sub === "agents" && m === "GET") {
     if (principal.role === "display") throw new HttpError(403, "forbidden");
     const roster = pageAgents(t);
@@ -168,13 +168,91 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
           id: agent.id, handle: agent.handle, bio: agent.bio, public_key: agent.public_key, granted: granted.has(agent.id),
         }))
       : undefined;
+    const sanitizeHandle = (email: string | null | undefined, fallback: string) => {
+      const raw = (email ?? "").split("@")[0] ?? "";
+      const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^[^a-z]+/, "").replace(/^[_-]+|[_-]+$/g, "").slice(0, 32);
+      return cleaned.length >= 2 ? cleaned : fallback;
+    };
+    const ownerAccountId = t.db.get<string | null>("owner_account", null);
+    const approvedGuests = t.db.all<{ account_id: string; link_id: string }>(
+      "SELECT DISTINCT account_id, link_id FROM guest_accounts WHERE approved = 1 ORDER BY created_at",
+    );
+    const accountIds = [...new Set([ownerAccountId, principal.accountId, ...approvedGuests.map(g => g.account_id)].filter((v): v is string => Boolean(v)))];
+    const emailByAccount = new Map<string, string | null>();
+    if (t.env.ACCOUNTS && accountIds.length > 0) {
+      await Promise.all(accountIds.map(async id => {
+        try {
+          const row = await t.env.ACCOUNTS.prepare("SELECT email FROM accounts WHERE id = ?").bind(id).first<{ email: string | null }>();
+          emailByAccount.set(id, row?.email ?? null);
+        } catch { emailByAccount.set(id, null); }
+      }));
+    }
+    const usedHandles = new Set<string>(roster.agents.map(a => a.handle.toLowerCase()));
+    const allocHandle = (email: string | null | undefined, fallback: string) => {
+      const base = sanitizeHandle(email, fallback);
+      if (!usedHandles.has(base)) { usedHandles.add(base); return base; }
+      for (let i = 2; i < 99; i++) {
+        const candidate = `${base.slice(0, 29)}_${i}`;
+        if (!usedHandles.has(candidate)) { usedHandles.add(candidate); return candidate; }
+      }
+      return base;
+    };
+    const people: Array<{ id: string; handle: string; role: "owner" | "guest"; is_self: boolean }> = [];
+    const seenAccounts = new Set<string>();
+    if (ownerAccountId) {
+      seenAccounts.add(ownerAccountId);
+      people.push({
+        id: ownerAccountId,
+        handle: allocHandle(emailByAccount.get(ownerAccountId), "owner"),
+        role: "owner",
+        is_self: ownerAccountId === principal.accountId,
+      });
+    }
+    for (const guest of approvedGuests) {
+      if (seenAccounts.has(guest.account_id)) continue;
+      seenAccounts.add(guest.account_id);
+      people.push({
+        id: guest.account_id,
+        handle: allocHandle(emailByAccount.get(guest.account_id), "guest"),
+        role: "guest",
+        is_self: guest.account_id === principal.accountId,
+      });
+    }
+    const selfPerson = people.find(p => p.is_self);
+    const viewerEmail = principal.accountId ? (emailByAccount.get(principal.accountId) ?? null) : null;
+    const viewer = {
+      role: principal.role,
+      handle: selfPerson?.handle ?? sanitizeHandle(viewerEmail, principal.role === "owner" ? "owner" : "guest"),
+      ...(isOwner && viewerEmail ? { email: viewerEmail } : {}),
+    };
+    const pending_guests = isOwner
+      ? (t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0)
+      : undefined;
     return json({
       ...roster,
       can_manage: isOwner,
       dashboard: `${publicBase(t.env)}/dashboard#agents`,
       connections: `${publicBase(t.env)}/connections`,
+      platforms: `${publicBase(t.env)}/agents`,
+      viewer,
+      people,
+      ...(pending_guests !== undefined ? { pending_guests } : {}),
       ...(account_agents ? { account_agents } : {}),
     }, 200, { "Cache-Control": "no-store" });
+  }
+  if (sub === "agents/join" && m === "POST") {
+    if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
+    await requireWritesOpen(t.env);
+    if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
+    const created = await createJoinCode(t.env, principal.accountId);
+    addActivity(t, { kind: "agent_join_code", summary: "Created a one-time agent join code", by: `owner:${principal.accountId}` });
+    return json({
+      ...created,
+      command: `tendril workspace join --code ${created.code} --handle <handle>`,
+      page_id: t.tid,
+      page_name: t.db.get("name", "Tendril"),
+      origin: publicBase(t.env),
+    }, 201, { "Cache-Control": "no-store" });
   }
   if (sub === "agents/primary" && m === "PUT") {
     if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");

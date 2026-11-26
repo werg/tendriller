@@ -22,7 +22,8 @@ export const readHostedGrants = page => page.evaluate(async () => {
 export async function connectHostedReview({ page, grantId, handle, step = () => {}, timeoutMs = 60000 }) {
   step('open-agent-options');
   await page.getByRole('button', { name: 'Page options' }).click();
-  await page.getByRole('tab', { name: 'An agent' }).click();
+  await page.getByRole('button', { name: /Agents & MCP/ }).click();
+  await page.getByRole('tab', { name: 'Hosted MCP' }).click();
   const box = page.locator('.agent-mcp-box');
   await box.waitFor({ timeout: timeoutMs });
   const listed = await readHostedGrants(page);

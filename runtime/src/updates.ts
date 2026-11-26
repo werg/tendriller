@@ -67,7 +67,8 @@ function unsavedInput(root: Document | ShadowRoot = document): boolean {
 
 /** Read the authored policy. Read lazily: the runtime runs before the author's <head> metadata is parsed. */
 export function authoredUpdatePolicy(): UpdatePolicy {
-  const meta = typeof document !== "undefined" ? document.querySelector('meta[name="tendriller-updates" i]') : null;
+  const meta = typeof document !== "undefined" && typeof document.querySelector === "function"
+    ? document.querySelector('meta[name="tendriller-updates" i]') : null;
   return meta?.getAttribute("content")?.trim().toLowerCase() === "careful" ? "careful" : "live";
 }
 

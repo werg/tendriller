@@ -42,11 +42,11 @@ export function mountTransportInspector(transport: RuntimeTransport): { element:
   const make = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) => {
     const node = document.createElement(tag); if (className) node.className = className; if (text) node.textContent = text; return node;
   };
-  const section = make('section', 'section'); section.setAttribute('aria-label', 'Application connections');
-  const heading = make('h3', undefined, 'Application connections');
-  const summary = make('p'); summary.setAttribute('aria-live', 'polite'); summary.setAttribute('aria-atomic', 'true');
+  const section = make('section', 'stack'); section.setAttribute('aria-label', 'Application connections');
+  const heading = make('strong', undefined, 'Application connections');
+  const summary = make('p', 'muted'); summary.setAttribute('aria-live', 'polite'); summary.setAttribute('aria-atomic', 'true');
   const list = make('ul', 'conn-list'); list.setAttribute('aria-label', 'Connected devices');
-  const refresh = make('button', 'secondary', 'Refresh'); refresh.type = 'button'; refresh.setAttribute('aria-label', 'Refresh connection details');
+  const refresh = make('button', 'btn full', 'Refresh'); refresh.type = 'button'; refresh.setAttribute('aria-label', 'Refresh connection details');
   const technical = make('details', 'conn-tech'); const technicalSummary = make('summary', undefined, 'Technical details');
   const lanes = make('ul'); const sampling = make('p');
   const scope = make('p', undefined, 'Data counts are framed sync payload on the current link, before encryption and network overhead, and restart when a link is replaced. They are not billing figures and do not show that a change was stored or finalized.');
@@ -65,7 +65,7 @@ export function mountTransportInspector(transport: RuntimeTransport): { element:
         : `Received ${size(link.receivedBytes)} · Sent ${size(link.sentBytes)}`;
       const title = make('strong', 'conn-name', name);
       // Same signed fact and wording as the Devices view's Admin badge.
-      if (link.peer.administrator) { const badge = make('span', 'agent-pill', 'Admin'); badge.title = 'Administrator: can approve and remove devices and change access settings'; title.append(' ', badge); }
+      if (link.peer.administrator) { const badge = make('span', 'pill accent', 'Admin'); badge.title = 'Administrator: can approve and remove devices and change access settings'; title.append(' ', badge); }
       item.append(title, make('p', 'conn-route', route(link)), make('p', undefined, data));
       list.append(item);
       const detail = [`${name} (link ${link.link}, ${link.kind}${link.reason ? `, ${link.reason.replace('_', ' ')}` : ''})`,

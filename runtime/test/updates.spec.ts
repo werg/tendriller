@@ -46,7 +46,7 @@ async function mountUtility(page: Page) {
     });
   });
 }
-/** Opens Page options → Add people & devices → An agent, whose grant checkboxes are utility inputs. */
+/** Opens Page options → Agents & MCP → Add agent, whose grant toggles are utility inputs. */
 async function openAgentGrants(page: Page) {
   await page.route('**/t/example/_tendril/links', route => route.fulfill({ json: { name: 'Example', links: [] } }));
   await page.route('**/t/example/_tendril/agents', route => route.request().method() === 'POST'
@@ -62,15 +62,16 @@ async function openAgentGrants(page: Page) {
         { id: 'ag_' + 'b'.repeat(26), handle: 'reviewer', bio: '', granted: false },
       ],
     } }));
-  await page.getByRole('button', { name: 'Add people & devices', exact: true }).click();
-  await page.getByRole('tab', { name: 'An agent', exact: true }).click();
-  await expect(page.locator('tendril-utility input[type=checkbox]')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await page.getByRole('button', { name: /Agents & MCP/ }).click();
+  await page.getByRole('tab', { name: 'Add agent', exact: true }).click();
+  await expect(page.locator('tendril-utility [role="group"][aria-label="Account agents granted access"] input[type=checkbox]')).toHaveCount(2);
 }
 
 test('saved agent grants in the utility do not block an idle publication switch', async ({ page }) => {
   const notice = await policy(page);
   await mountUtility(page); await openAgentGrants(page);
-  expect(await page.locator('tendril-utility input[type=checkbox]').evaluateAll(inputs => inputs.map(input => {
+  expect(await page.locator('tendril-utility [role="group"][aria-label="Account agents granted access"] input[type=checkbox]').evaluateAll(inputs => inputs.map(input => {
     const box = input as HTMLInputElement; return [box.checked, box.defaultChecked];
   }))).toEqual([[true, true], [false, false]]);
   await notice(2);
@@ -81,14 +82,14 @@ test('an unsaved utility checkbox change still protects a blurred draft until re
   const notice = await policy(page);
   await mountUtility(page); await openAgentGrants(page);
   await page.evaluate(() => {
-    const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('input[type=checkbox]') as HTMLInputElement;
+    const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('[aria-label="Account agents granted access"] input[type=checkbox]') as HTMLInputElement;
     box.checked = false;
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
   });
   await notice(2); await page.clock.runFor(60_000);
   expect(await reloads(page)).toBe(0);
   await page.evaluate(() => {
-    const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('input[type=checkbox]') as HTMLInputElement;
+    const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('[aria-label="Account agents granted access"] input[type=checkbox]') as HTMLInputElement;
     box.checked = box.defaultChecked;
     box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
   });
