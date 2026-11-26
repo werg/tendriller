@@ -180,6 +180,21 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
   const stopEvents = hub.events(event => void onHubEvent(event).catch(() => {}));
   const stopBroadcasts = hub.broadcasts?.(batch => void onHubBroadcasts(batch).catch(() => {})) ?? (() => {});
   hub.sendHello?.({ versions, lastBroadcastSeq: broadcastCache.lastSeq });
+  // Periodically check `/api/broadcasts` with ETag (`304 Not Modified` when unchanged)
+  // so long-lived sessions pick up manual operator advisories without waiting for a reconnect.
+  let broadcastEtag = null;
+  const pollBroadcasts = async () => {
+    if (stopping || signal?.aborted || typeof client.broadcasts !== 'function') return;
+    try {
+      const feed = await client.broadcasts({ audience: 'agents', since: broadcastCache.lastSeq, etag: broadcastEtag, signal });
+      if (feed.etag) broadcastEtag = feed.etag;
+      if (!feed.notModified && (feed.broadcasts?.length || feed.latest_seq > broadcastCache.lastSeq)) {
+        await onHubBroadcasts(feed);
+      }
+    } catch { /* non-fatal: hub hello remains the primary delivery channel */ }
+  };
+  const broadcastPollTimer = setInterval(() => { void pollBroadcasts(); }, 15 * 60_000);
+  broadcastPollTimer.unref?.();
   const stopStatus = hub.onStatus(status => {
     report({ hub: status.state, ...(status.retryInMs === undefined ? {} : { retryInMs: status.retryInMs }) });
     if (status.state === 'connected') {
@@ -321,7 +336,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     await rescan({ remote: true });
     if (!signal?.aborted) await new Promise(resolve => signal?.addEventListener('abort', resolve, { once: true }));
   } finally {
-    stopping = true; clearTimeout(rescanTimer); watcher?.close();
+    stopping = true; clearTimeout(rescanTimer); clearInterval(broadcastPollTimer); watcher?.close();
     stopEvents(); stopBroadcasts(); stopStatus();
     await Promise.allSettled([...pages.keys()].map(id => closePage(id, 'stopping')));
     changes.close(); await changeReport;

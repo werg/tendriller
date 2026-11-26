@@ -192,7 +192,7 @@ if (watching) {
   let timer, building = false, again = false;
   const rebuild = async () => { if (building) { again = true; return; } building = true; do { again = false; try { await buildAll(); } catch (error) { console.error(error); } } while (again); building = false; };
   const watchers = ["runtime/src", "runtime/resources.mjs", "runtime/types", "server/src", "contract", "session", "collaboration", "docs", "deploy", "legal", "agent.md", "AGENTS.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
-    if (name === "runtime-release.json") return;
+    if (name === "runtime-release.json" || name === "release-changelog.json") return;
     clearTimeout(timer); timer = setTimeout(rebuild, 120);
   }));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { clearTimeout(timer); watchers.forEach(watcher => watcher.close()); process.exit(0); });

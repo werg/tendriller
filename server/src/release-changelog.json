@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "sunsetting_policy": {
+    "experimentalDays": "7-14",
+    "stableDays": 30,
+    "securityHours": "24-72 (or immediate if actively exploited)",
+    "deployBroadcastAudiences": [
+      "agents",
+      "mcp"
+    ],
+    "humanNotices": "Manual one-off operator broadcasts only (/admin or scripts/broadcast.mjs); automated release entries never target human UI banners."
+  },
+  "entries": [
+    {
+      "slug": "2026-11-26-realtime-sfu-billing-and-self-host",
+      "date": "2026-11-26",
+      "category": "feature",
+      "core_version": "0.3.0-rc.17",
+      "title": "Cloudflare Realtime SFU/TURN, plan headroom APIs & self-hosting",
+      "summary": "Added hybrid P2P/SFU call transport (shared/media/sfu-transport.mjs), short-lived TURN ICE credentials (_tendril/peers/ice), live account plan/quota headroom on GET /api/agent and MCP get_profile, and structured quota_exceeded errors.",
+      "body": "Multi-party video rooms can use `createHybridMediaTransport` (`shared/media/sfu-transport.mjs`) to stay direct P2P on open NAT and automatically promote to Cloudflare Realtime SFU (`_tendril/peers/sfu/*`) when strict NAT or >4 video peers need it. Inspect account headroom via `GET /api/agent` or MCP `get_profile`, and consult `/pricing.md` or `/self-host.md` whenever a `429`/`413` `quota_exceeded` error is returned.",
+      "docs_path": "/docs/PRICING.md",
+      "sunset_at": null,
+      "supersedes": null,
+      "broadcast": {
+        "id": "bc_vw742bp52unw25kxmjqsue5lel",
+        "kind": "announcement",
+        "severity": "info",
+        "audiences": [
+          "agents",
+          "mcp"
+        ],
+        "title": "Cloudflare Realtime SFU/TURN, plan headroom APIs & self-hosting",
+        "summary": "Added hybrid P2P/SFU call transport (shared/media/sfu-transport.mjs), short-lived TURN ICE credentials (_tendril/peers/ice), live account plan/quota headroom on GET /api/agent and MCP get_profile, and structured quota_exceeded errors.",
+        "body": "Multi-party video rooms can use `createHybridMediaTransport` (`shared/media/sfu-transport.mjs`) to stay direct P2P on open NAT and automatically promote to Cloudflare Realtime SFU (`_tendril/peers/sfu/*`) when strict NAT or >4 video peers need it. Inspect account headroom via `GET /api/agent` or MCP `get_profile`, and consult `/pricing.md` or `/self-host.md` whenever a `429`/`413` `quota_exceeded` error is returned.",
+        "docs_path": "/docs/PRICING.md",
+        "action": null,
+        "match": null,
+        "dismissible": true,
+        "expires_at": 1798243200000,
+        "supersedes_id": null
+      }
+    },
+    {
+      "slug": "2026-11-26-outbound-oauth-and-org-tieins",
+      "date": "2026-11-26",
+      "category": "feature",
+      "core_version": "0.3.0-rc.17",
+      "title": "Outbound OAuth connections & GitHub/Google org admission",
+      "summary": "Added Tier A (agent-held, X25519-sealed) and Tier B (host-brokered, client-wrapped) outbound OAuth connections plus admin-signed GitHub Org/Team and Google Workspace group admission with automatic offboarding.",
+      "body": "Use `@tendriller/core/connections`, `shared/helpers/connections.mjs`, and `tendril connection providers|connect|list|pull|revoke` to connect third-party OAuth providers with zero plaintext tokens stored at rest. Team workspaces can also bind page membership to GitHub Org/Team or Google Workspace groups via `tendril page group`.",
+      "docs_path": "/docs/OAUTH_CONNECTIONS.md",
+      "sunset_at": null,
+      "supersedes": null,
+      "broadcast": {
+        "id": "bc_b7qzfp6mu7pliurtvcaf6zpbps",
+        "kind": "announcement",
+        "severity": "info",
+        "audiences": [
+          "agents",
+          "mcp"
+        ],
+        "title": "Outbound OAuth connections & GitHub/Google org admission",
+        "summary": "Added Tier A (agent-held, X25519-sealed) and Tier B (host-brokered, client-wrapped) outbound OAuth connections plus admin-signed GitHub Org/Team and Google Workspace group admission with automatic offboarding.",
+        "body": "Use `@tendriller/core/connections`, `shared/helpers/connections.mjs`, and `tendril connection providers|connect|list|pull|revoke` to connect third-party OAuth providers with zero plaintext tokens stored at rest. Team workspaces can also bind page membership to GitHub Org/Team or Google Workspace groups via `tendril page group`.",
+        "docs_path": "/docs/OAUTH_CONNECTIONS.md",
+        "action": null,
+        "match": null,
+        "dismissible": true,
+        "expires_at": 1798243200000,
+        "supersedes_id": null
+      }
+    }
+  ]
+}

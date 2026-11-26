@@ -249,6 +249,8 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
         if (acknowledgeId) return acknowledgeWorkspaceBroadcast(workspace, acknowledgeId);
         return syncWorkspaceBroadcasts(workspace, { signal: requestSignal ?? signal });
       },
+      changelog: async ({ since, sinceCore, category, limit, signal: requestSignal } = {}) =>
+        fetchChangelog(workspace.config.service, { since, sinceCore, category, limit, signal: requestSignal ?? signal }),
       list: async () => {
         const local = await workspace.pages();
         const remoteById = new Map();

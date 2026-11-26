@@ -72,6 +72,7 @@ test('every page tool requires a page and global tools need none', async () => {
   for (const tool of TOOLS) {
     if (tool.name === 'pages_list') assert.deepEqual(tool.inputSchema.properties, {});
     else if (tool.name === 'system_broadcasts') assert.deepEqual(Object.keys(tool.inputSchema.properties), ['acknowledgeId']);
+    else if (tool.name === 'platform_changelog') assert.deepEqual(Object.keys(tool.inputSchema.properties), ['since', 'sinceCore', 'category', 'limit']);
     else assert(tool.inputSchema.required.includes('page'), tool.name);
   }
   const listed = await handleStdioMcpMessage(pagesOf({}), { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pages_list', arguments: {} } });

@@ -13,11 +13,25 @@ const TOOL_SPECS = [
   },
   {
     name: 'system_broadcasts',
-    description: 'Fetch and verify Ed25519-signed system broadcasts (dependency upgrades, security advisories, maintenance notices) matched against this workspace, or acknowledge a broadcast by id.',
+    description: 'Fetch and verify Ed25519-signed system broadcasts (new capabilities, deprecations, dependency upgrades, security advisories, maintenance notices) matched against this workspace, or acknowledge a broadcast by id.',
     inputSchema: {
       type: 'object',
       properties: {
         acknowledgeId: { type: 'string', pattern: '^bc_[a-z2-7]{26}$', description: 'Optional broadcast id to mark acknowledged locally.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'platform_changelog',
+    description: 'Fetch notable Tendriller platform changelog entries (new features, deprecations/sunsets, breaking upgrades, security advisories). Use when returning to a fallow workspace.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Optional YYYY-MM-DD start date filter.' },
+        sinceCore: { type: 'string', minLength: 1, maxLength: 64, description: 'Optional installed @tendriller/core version filter.' },
+        category: { type: 'string', enum: ['feature', 'deprecation', 'breaking', 'security'], description: 'Optional category filter.' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum entries to return.' },
       },
       additionalProperties: false,
     },
@@ -167,7 +181,7 @@ const TOOL_SPECS = [
   },
 ];
 // Every page-scoped tool takes `page`; the agent program attaches to that page only.
-const GLOBAL_TOOLS = new Set(['pages_list', 'system_broadcasts']);
+const GLOBAL_TOOLS = new Set(['pages_list', 'system_broadcasts', 'platform_changelog']);
 export const TOOLS = TOOL_SPECS.map(tool => GLOBAL_TOOLS.has(tool.name) ? tool : { ...tool, inputSchema: { ...tool.inputSchema,
   properties: { page: PAGE, ...tool.inputSchema.properties }, required: ['page', ...(tool.inputSchema.required ?? [])] } });
 
@@ -196,6 +210,12 @@ function validateArguments(name, args) {
   if (!GLOBAL_TOOLS.has(name) && (typeof args.page !== 'string' || !args.page.trim() || args.page.length > 64)) throw invalid('Supply the page slug or id');
   if (name === 'system_broadcasts' && args.acknowledgeId !== undefined && (typeof args.acknowledgeId !== 'string' || !/^bc_[a-z2-7]{26}$/.test(args.acknowledgeId))) {
     throw invalid('acknowledgeId must be a valid broadcast id (bc_...)');
+  }
+  if (name === 'platform_changelog') {
+    if (args.since !== undefined && (typeof args.since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(args.since))) throw invalid('since must be YYYY-MM-DD');
+    if (args.sinceCore !== undefined && (typeof args.sinceCore !== 'string' || !args.sinceCore.trim() || args.sinceCore.length > 64)) throw invalid('sinceCore must be a version string');
+    if (args.category !== undefined && !['feature', 'deprecation', 'breaking', 'security'].includes(args.category)) throw invalid('category must be feature, deprecation, breaking, or security');
+    if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 200)) throw invalid('limit must be 1..200');
   }
   if (name === 'command_submit') command({ ...args, page: undefined });
   if (name === 'command_submit_batch') {
@@ -257,10 +277,21 @@ export async function handleStdioMcpMessage(pages, message, { signal } = {}) {
 
   try {
     if (message.method === 'initialize') {
+      let instructions;
+      if (typeof pages.broadcasts === 'function') {
+        try {
+          const feed = await pages.broadcasts({ signal });
+          const active = Array.isArray(feed?.active) ? feed.active : [];
+          if (active.length) {
+            instructions = `Active signed Tendriller broadcasts (${active.length}): ${active.slice(0, 3).map(b => `[${b.kind}/${b.severity}] ${b.title}`).join('; ')}. Call system_broadcasts (or platform_changelog when returning to a fallow workspace) for full details.`;
+          }
+        } catch { /* non-fatal when offline */ }
+      }
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: { name: 'tendriller-local-stdio', version: '1.0.0' },
+        ...(instructions ? { instructions } : {}),
       });
     }
     if (message.method === 'ping') return ok({});
@@ -278,6 +309,16 @@ export async function handleStdioMcpMessage(pages, message, { signal } = {}) {
       if (name === 'system_broadcasts') {
         if (typeof pages.broadcasts !== 'function') return toolErr('broadcasts_unavailable', 'System broadcasts are not available in this context');
         return toolOk(await pages.broadcasts({ ...(args.acknowledgeId ? { acknowledgeId: args.acknowledgeId } : {}), signal }));
+      }
+      if (name === 'platform_changelog') {
+        if (typeof pages.changelog !== 'function') return toolErr('changelog_unavailable', 'Platform changelog is not available in this context');
+        return toolOk(await pages.changelog({
+          ...(args.since ? { since: args.since } : {}),
+          ...(args.sinceCore ? { sinceCore: args.sinceCore } : {}),
+          ...(args.category ? { category: args.category } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          signal,
+        }));
       }
       const owned = await pages.open(args.page, { signal });
       const { session } = owned;

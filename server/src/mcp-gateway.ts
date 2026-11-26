@@ -348,9 +348,15 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
     if (method === 'initialize') {
       const mcpFeed = await listActiveBroadcasts(env, { audiences: ['mcp', 'agents'] }).catch(() => null);
       const urgent = mcpFeed?.broadcasts.filter(b => b.payload.severity === 'urgent' || b.payload.severity === 'critical') ?? [];
-      const advisoryNote = urgent.length
-        ? ` Active service advisories (${urgent.length}): ${urgent.map(b => `[${b.payload.severity}] ${b.payload.title}`).join('; ')}. Call get_broadcasts for full signed details.`
-        : '';
+      const notices = mcpFeed?.broadcasts.filter(b => b.payload.severity !== 'urgent' && b.payload.severity !== 'critical') ?? [];
+      const parts: string[] = [];
+      if (urgent.length) {
+        parts.push(`Active service advisories (${urgent.length}): ${urgent.map(b => `[${b.payload.severity}] ${b.payload.title}`).join('; ')}. Call get_broadcasts for full signed details.`);
+      }
+      if (notices.length) {
+        parts.push(`Active platform notices (${notices.length}): ${notices.slice(0, 3).map(b => `[${b.payload.kind}] ${b.payload.title}`).join('; ')}. Call get_broadcasts or tendril_guide(topic: "changelog") for details.`);
+      }
+      const advisoryNote = parts.length ? ' ' + parts.join(' ') : '';
       return result(id, {
         protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: {}, resources: {} },

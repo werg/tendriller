@@ -26,6 +26,8 @@ test('repository releases/entries/*.json validate cleanly and match generated do
   }
   const actualMd = readFileSync(join(root, 'docs/CHANGELOG.md'), 'utf8');
   assert.equal(actualMd, renderChangelogMarkdown(entries), 'docs/CHANGELOG.md is stale; run npm run build or node scripts/release-changelog.mjs');
+  const compiledJson = JSON.parse(readFileSync(join(root, 'server/src/release-changelog.json'), 'utf8'));
+  assert.deepEqual(compiledJson.entries, entries, 'server/src/release-changelog.json is stale; run npm run build or node scripts/release-changelog.mjs');
 });
 
 test('release changelog validator rejects human UI audiences and deprecations without sunset_at', () => {
