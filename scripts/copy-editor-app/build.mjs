@@ -14,12 +14,10 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
   const output = new URL('./dist/', root);
   await rm(output, { recursive: true, force: true });
   try {
-    const config = await context.readPrivate('host-configuration.json');
     const prepared = await context.readPrivate('prepared.json');
     if (
       prepared.applicationId !== context.page.applicationId ||
-      prepared.publisherKey !== context.signer.publicKey ||
-      prepared.executionManifestDigest !== config.executionManifestDigest
+      prepared.publisherKey !== context.signer.publicKey
     ) {
       throw Error('Resume preparation for this exact workspace page; no native initialization is required');
     }

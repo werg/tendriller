@@ -4,7 +4,7 @@ Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendrille
 
 ## Fresh storage baseline
 
-Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 14** (consolidated page, member-signed authority, host admission attestations, invite redemptions, key wraps, publication, agent handle/wrap key and hosted MCP participant tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
+Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 15** (consolidated page, Chronolog v2 public control ops/CAS/checkpoints, host admission attestations, invite redemptions, publication, agent handle/wrap key and hosted MCP participant tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
 1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the ordered `server/migrations/0001_accounts.sql` (accounts, OAuth, assistant connections), `0002_agents.sql` (agents, page grants, join codes), `0003_broadcasts.sql` (Ed25519-signed system broadcasts, signing keys, and fleet version inventory), `0004_account_limits.sql` (configurable per-account caps in `service_state`), `0005_billing_and_tiers.sql` (per-account plan caps, Polar.sh subscriptions, idempotent billing events, coalesced monthly usage periods, and relay leases), and `0006_oauth_connections_and_groups.sql` (outbound OAuth connections, custom BYO providers, and verified GitHub/Google org groups) migrations (exported as `@tendriller/engine/{accounts,agents,broadcasts,limits,billing,oauth-groups}-schema`). Verify `d1_migrations` records all six; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
@@ -12,31 +12,30 @@ This pre-release target uses fresh matching storage only — there are no legacy
    - Optional managed billing secrets (Polar.sh MoR): `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_SERVER` (`production` or `sandbox`), `POLAR_PRODUCTS_JSON`, `POLAR_METERS_JSON`.
    - Optional Cloudflare Realtime SFU & TURN secrets: `CF_REALTIME_APP_ID`, `CF_REALTIME_API_TOKEN`, `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN`. Leave both unset on private/self-hosted hosts if unused; see [Self-hosting](SELF_HOSTING.md).
    - Optional Worker secrets for outbound OAuth & instant org offboarding: `OUTBOUND_OAUTH_CLIENTS_JSON` (JSON map of provider client credentials), `OAUTH_CONFIG_KEY` (envelope-encrypts BYO client secrets and HMAC webhook secrets at rest in D1; falls back to `HOST_ATTESTATION_KEY`), and `GITHUB_ORG_WEBHOOK_SECRET` (HMAC-SHA256 secret for `/api/webhooks/github-org`). Use `node scripts/setup-oauth.mjs` to validate and upload these secrets cleanly. See [outbound OAuth & org tie-ins](OAUTH_CONNECTIONS.md).
-2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` and `Admission` matching revision 14; `AgentHub` is one object per agent, holding its single control-traffic connection).
+2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` and `Admission` matching revision 15; `AgentHub` is one object per agent, holding its single control-traffic connection).
 3. Missing or mismatched storage fails closed without mutating existing records.
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
 
-## Storage revision 14 in the existing s11 Workers
+## Storage revision 15 in the existing s11 Workers
 
-Revision 14 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
+Revision 15 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
 secrets, public routes and `FILES` buckets (content-addressed runtime files). It
-binds fresh storage instead: a fresh D1 database `tendriller-{staging,production}-s14-accounts`
-(the `agents` table now carries each agent's `wrap_key`) and the Durable Object classes
-`TendrilS14`, `AdmissionS14` and `AgentHubS14` (migration tag `storage-14`). The engine
-exports the same implementations under every earlier name; those namespaces are no
-longer bound, so their data stays inert and is never read, migrated or deleted. Pages
-and agents registered before revision 14 do not open; owners create them again.
+binds fresh storage instead: a fresh D1 database `tendriller-{staging,production}-s15-accounts`
+and the Durable Object classes `TendrilS15`, `AdmissionS15` and `AgentHubS15` (migration tag
+`storage-15`, replacing v1 `key_wraps` with Chronolog v2 `v2_public_ops`, `v2_public_cas`, and
+`v2_checkpoints`). The engine exports the same implementations under every earlier name; those
+namespaces are no longer bound, so their data stays inert and is never read, migrated or
+deleted. Pages and agents registered before revision 15 do not open; owners create them again.
 
 For each environment:
 
-1. `npx wrangler d1 create tendriller-<env>-s14-accounts`, then put the returned
+1. `npx wrangler d1 create tendriller-<env>-s15-accounts`, then put the returned
    `database_name`/`database_id` in the `ACCOUNTS` binding of
-   `server/wrangler.<env>.jsonc` (the committed config still names the revision-13
-   database, which lacks `agents.wrap_key`; do not deploy against it).
+   `server/wrangler.<env>.jsonc`.
 2. Apply the D1 migrations to the fresh database and set its `*_STORAGE_SCHEMA`
-   variable to `14`.
-3. Set the host attestation key (see the `HOST_ATTESTATION_KEY` section below).
+   variable to `15`.
+3. Verify the host attestation key is configured (see the `HOST_ATTESTATION_KEY` section below).
 4. Deploy through the normal workflow, verify readiness (including
    `attestation.available`) and the deployment checks, and only then reopen creation
    with the conditional update below.

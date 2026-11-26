@@ -1,10 +1,11 @@
 import { expect, type Page } from '@playwright/test';
 import { build } from 'esbuild';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checklist, intake } from './specimens/sql-domains.mjs';
+import { publishAssetGraph, type PublishedAssets } from './publication-helpers';
 import type { PageClient } from '../../dist/sdk/client.mjs';
 
 type Peers = PageClient['peers'];
@@ -14,22 +15,29 @@ type CapabilityReport = {
   dedicatedWorker: boolean;
   events: { supported: boolean; reason?: string };
   opfs: { syncAccessHandle: boolean };
-  sql: { apiEligible: boolean; qualified: boolean; reason: string };
 };
 
 export async function openBrowserSqlSpecimen(options: {
-  consumer: string; engineDirectory: string; peers: Peers; pageUrl: string; applicationId: string;
+  consumer?: string; engineDirectory?: string; peers: Peers; pageUrl: string; applicationId: string;
   pages: [Page, Page]; isPrivate: boolean; guestAccount: string;
 }) {
-  const { consumer, engineDirectory, peers, pageUrl, applicationId, pages, isPrivate } = options;
-  const packageRoot = resolve(consumer, 'node_modules/@chronolog/peer-session');
+  const { consumer, peers, pageUrl, applicationId, pages, isPrivate } = options;
+  const packageRoot = consumer
+    ? resolve(consumer, 'node_modules/@chronolog/peer-session')
+    : resolve('node_modules/@chronolog/peer-session');
   const load = (path: string) => import(pathToFileURL(resolve(packageRoot, path)).href);
-  const [log, sqlBrowser] = await Promise.all([load('index.mjs'), load('sql-browser.mjs')]);
+  const log = await load('index.mjs');
   const source = 'test/e2e/specimens';
-  const common = { bundle: true, platform: 'browser' as const, format: 'esm' as const, write: false,
+  const outdir = resolve('.tmp-browser-sql-specimen');
+  const common = {
+    bundle: true,
+    platform: 'browser' as const,
+    format: 'esm' as const,
+    write: false,
     minify: true,
-    // The workspace carries an events-only package for the host. Pin both
-    // browser bundles to the same SQL package used by the native fixture.
+    outdir,
+    loader: { '.wasm': 'file' as const },
+    assetNames: 'assets/[name]-[hash]',
     alias: {
       '@tendriller/core/peers': resolve('dist/sdk/peers.mjs'),
       '@tendriller/core/authority': resolve('dist/sdk/authority.mjs'),
@@ -38,20 +46,18 @@ export async function openBrowserSqlSpecimen(options: {
       '@chronolog/peer-session': resolve(packageRoot, 'index.mjs'),
       '@chronolog/peer-session/browser': resolve(packageRoot, 'browser.mjs'),
       '@chronolog/peer-session/worker': resolve(packageRoot, 'worker.mjs'),
-      '@chronolog/peer-session/sql': resolve(packageRoot, 'sql.mjs'),
-      '@chronolog/peer-session/sql-browser': resolve(packageRoot, 'sql-browser.mjs'),
       '@chronolog/peer-session/websocket': resolve(packageRoot, 'websocket.mjs'),
       '@chronolog/peer-session/webrtc': resolve(packageRoot, 'webrtc.mjs'),
-    } };
+      '@chronolog/peer-session/sqlite-cas.wasm': resolve(packageRoot, 'wasm/sqlite-cas.wasm'),
+    },
+  };
   const [worker, ui] = await Promise.all([
-    build({ ...common, entryPoints: [`${source}/browser-sql-worker.mjs`] }),
-    build({ ...common, entryPoints: [`${source}/browser-sql.mjs`] }),
+    build({ ...common, entryPoints: { 'browser-sql-worker': `${source}/browser-sql-worker.mjs` } }),
+    build({ ...common, entryPoints: { 'browser-sql': `${source}/browser-sql.mjs` } }),
   ]);
-  const workerCode = worker.outputFiles[0].text;
+  const workerEntry = worker.outputFiles.find(file => file.path.endsWith('browser-sql-worker.js'))!;
+  const workerCode = workerEntry.text;
   const fixtures: Fixture[] = [];
-  // Allocate identities in the real page origins before signing their initial
-  // grants. Fulfill only this bootstrap URL. Application Workers and SQL
-  // assets subsequently load from the authenticated signed publication.
   for (const page of pages) {
     const name = randomUUID(), bootstrap = new URL('acceptance-identity.mjs', pageUrl).href;
     await page.route(bootstrap, route => route.fulfill({ contentType: 'text/javascript', body: workerCode }));
@@ -67,12 +73,12 @@ export async function openBrowserSqlSpecimen(options: {
         worker.onmessage = ({ data }) => {
           if (data.type === 'capabilities') {
             report = data.report;
-            if (report?.events.supported && report.sql.apiEligible) {
+            if (report?.events.supported) {
               worker.postMessage({ type: 'identity', name });
               return;
             }
             finish();
-            reject(new Error('Browser prerequisites unavailable: ' + (report?.events.reason ?? report?.sql.reason)));
+            reject(new Error('Browser prerequisites unavailable: ' + (report?.events.reason ?? 'unsupported')));
             return;
           }
           finish();
@@ -84,71 +90,44 @@ export async function openBrowserSqlSpecimen(options: {
       expect(report.secureContext).toBe(true);
       expect(report.dedicatedWorker).toBe(true);
       expect(report.opfs.syncAccessHandle).toBe(true);
-      expect(report.sql.qualified).toBe(false, 'API eligibility is not SQL application qualification');
       fixtures.push({ page, name, id });
     } finally {
       await page.unroute(bootstrap);
     }
   }
   const [first, second] = fixtures;
-  // The harness only prepares publication: the independent publisher, the exact execution graph and the
-  // declared tools. The first browser creates the page itself: its own key signs the descriptor and genesis
-  // membership (it becomes the root and administrator and names the second device's key), presented from the
-  // owner's signed-in page; the host never signs authority. Both use the same explicitly test-provisioned data key.
   const signer = await log.createSigningIdentity();
   const definition = isPrivate ? intake(log, first.id) : checklist(log);
   const key = new Uint8Array(randomBytes(32));
-  const engineManifest = JSON.parse(await readFile(resolve(engineDirectory, 'manifest.json'), 'utf8'));
-  const execution = sqlBrowser.createDoltLiteExecutionManifest({ engineDigest: sqlBrowser.digestEngineManifest(engineManifest.nativeManifest) });
-  const executionManifestDigest = log.bytesToHex((await log.executionManifestArtifacts(execution)).executionManifestDigest);
-  const prepared = await peers.prepare({ executionManifestDigest, executionProfile: 'sql', publisherKeys: [signer.publicKey],
-    tools: log.describeApplication(definition) });
+  const prepared = await peers.prepare({
+    executionProfile: 'chronolog-v2-sqlite',
+    publisherKeys: [signer.publicKey],
+    tools: log.describeApplication(definition),
+  });
   expect(prepared.selection.id).toBe(applicationId);
-  expect(prepared.publicationAuthority.publisherKeys).toEqual([signer.publicKey]);
-  expect(prepared.authority, 'No browser has created the page data yet').toBeNull();
-  const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+  expect(prepared.configuration?.publisherKeys).toEqual([signer.publicKey]);
+  expect(prepared.genesis, 'No browser has created the page data yet').toBeNull();
 
-  const assetTypes = { 'manifest.json': 'application/json', 'sqlite3.mjs': 'text/javascript',
-    'sqlite3.wasm': 'application/wasm', 'sqlite3-opfs-async-proxy.js': 'text/javascript' };
-  const input: Record<string, { type: string; bytes: Uint8Array }> = {
-    'index.html': { type: 'text/html', bytes: await readFile(`${source}/browser-sql.html`) },
-    'browser-sql.mjs': { type: 'text/javascript', bytes: ui.outputFiles[0].contents },
-    'browser-sql-worker.mjs': { type: 'text/javascript', bytes: worker.outputFiles[0].contents },
+  const assets: PublishedAssets = {
+    'index.html': { type: 'text/html', body: await readFile(`${source}/browser-sql.html`) },
   };
-  for (const [name, type] of Object.entries(assetTypes)) {
-    input[`engine/${name}`] = { type, bytes: await readFile(resolve(engineDirectory, name)) };
+  for (const output of [...ui.outputFiles, ...worker.outputFiles]) {
+    let rel = relative(outdir, output.path).replaceAll('\\', '/');
+    if (rel === 'browser-sql.js') rel = 'browser-sql.mjs';
+    else if (rel === 'browser-sql-worker.js') rel = 'browser-sql-worker.mjs';
+    const type = rel.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
+    assets[rel] = { type, body: output.contents };
   }
-  const files = [], assets = [];
-  for (const path of Object.keys(input).sort()) {
-    const { type, bytes } = input[path];
-    const hash = sha256(bytes);
-    files.push({ path, type, hash, size: bytes.length });
-    assets.push({ hash, bytes: Buffer.from(bytes).toString('base64') });
-  }
-  const publication = await log.signPublicationManifest({ applicationId, membershipId: prepared.publicationAuthority.grantId,
-    author: signer.publicKey, operationId: randomUUID(), revision: 0, previous: null, executionManifestDigest,
-    entry: 'index.html', files }, signer);
-  await peers.publish(publication, assets);
+  await publishAssetGraph(peers, signer, assets, 'index.html');
   await Promise.all(pages.map(page => expect(page.getByRole('heading', { name: 'Shared work' })).toBeVisible({ timeout: 25_000 })));
-  // Metadata/device startup can differ across origins. Finish it on both sides
-  // before starting either bounded physical connection; a peer's network-read
-  // latency must not consume the other peer's relay opening deadline.
-  // This SQL specimen deliberately wires a one-shot relay, without participate().
-  // Canonical session participation owns discovery, bounded attempts and failure
-  // backoff for asymmetric startup; this barrier is not a product readiness rule
-  // or a substitute for qualification of that controller.
-  // The first fixture must open first: it creates the page as the root device. Each device keeps its own bounded
-  // metadata budget, so preparing them one after another cannot consume a peer's opening deadline.
+
   for (const fixture of fixtures) {
     await fixture.page.waitForFunction(() => typeof (window as any).prepareAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).prepareAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
       { name: fixture.name, key: Array.from(key), respondent: isPrivate ? first.id : undefined,
         members: fixture === first ? fixtures.map(item => item.id) : undefined });
   }
-  // Tables are created by an ordinary authorized DDL transaction on the root device before any live view
-  // exists; opening then synchronizes it to the other device before that device's single initial read.
   await first.page.evaluate(() => (window as any).initializeAcceptanceApplication());
-  if (!isPrivate) await first.page.evaluate(key => (window as any).grantAcceptanceMember(key), second.id);
   const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
@@ -161,11 +140,7 @@ export async function openBrowserSqlSpecimen(options: {
   };
   await pair();
   const created = await peers.application();
-  const bundle = log.decodeRecord(Uint8Array.from(Buffer.from(created.authority.record, 'hex')));
-  expect(bundle.descriptor.payload.rootPrincipal).toBe(first.id);
-  expect(bundle.descriptor.payload.authorityPublicKey, 'The creating browser, never the host, signs page authority').toBe(first.id);
-  expect(bundle.memberships.at(-1).payload.members.filter((member: { reader: boolean }) => member.reader).map((member: { publicKey: string }) => member.publicKey).sort())
-    .toEqual([first.id, second.id].sort());
+  expect(created.genesis).not.toBeNull();
   return {
     async reopenFirst() {
       const context = first.page.context();

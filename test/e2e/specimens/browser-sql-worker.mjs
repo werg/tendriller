@@ -1,3 +1,5 @@
+import quickJsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
+import sqliteCasWasmUrl from '@chronolog/peer-session/sqlite-cas.wasm';
 import * as log from '@chronolog/peer-session';
 import { openBrowserDevice, probeBrowserCapabilities } from '@chronolog/peer-session/worker';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
@@ -12,7 +14,14 @@ const fixture = (() => {
 })();
 const startup = fixture ? new BroadcastChannel('sql-fixture-startup:' + fixture.name) : null;
 const control = fixture ? new BroadcastChannel('sql-fixture-control:' + fixture.name) : null;
-let session, peers, link;
+let session, peers, link, wasmModulesPromise;
+
+const loadWasm = async url => {
+  const res = await fetch(new URL(url, self.location.href));
+  if (!res.ok) throw Error(`Failed to load WASM (${res.status})`);
+  return WebAssembly.compile(await res.arrayBuffer());
+};
+const loadWasmModules = () => (wasmModulesPromise ??= Promise.all([loadWasm(quickJsWasmUrl), loadWasm(sqliteCasWasmUrl)]));
 
 async function connect(channel, remote) {
   await link?.close();
@@ -100,21 +109,29 @@ if (fixture) serveBrowserOwner({
         try {
           device = await openBrowserDevice({ name: fixture.name });
           const isIntake = Boolean(fixture.respondent);
-          const definition = isIntake ? intake(log) : checklist(log);
+          const definition = isIntake ? intake(log, fixture.respondent) : checklist(log);
           const imports = {};
           const topics = isIntake ? INTAKE_TOPICS : CHECKLIST_TOPICS;
           peers = fixturePeers(fixture, true);
           const key = new Uint8Array(fixture.key);
           const opened = await pageGenesis(device, peers, key, fixture.members, imports, topics);
+          progress('metadata-ready');
+          progress('engine-load-start');
+          const [wasmModule, sqliteWasmModule] = await loadWasmModules();
+          progress('engine-load-ready');
           session = await log.createApplicationSession({
             device,
+            applicationId: fixture.applicationId,
             definition,
             genesis: opened.genesisBytes,
             casNodes: opened.casNodes,
-            publicOps: opened.publicOps,
+            wasmModule,
+            sqliteWasmModule,
             epochKeys: new Map([[0, key]]),
           });
-          progress('metadata-ready');
+          if (opened.publicOps.length > 0) {
+            await session.mergeFacts({ publicOps: opened.publicOps, encryptedEnvelopes: [], casNodes: opened.casNodes, retentions: [], checkpoints: [] });
+          }
           await session.query('ready', null);
           progress('sql-read-ready');
           if (fixture.remote) await connect(fixture.channel, fixture.remote);

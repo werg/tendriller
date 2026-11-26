@@ -1,12 +1,12 @@
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { bytesToHex, createSigningIdentity, hexToBytes, type SigningIdentity } from '@chronolog/authority';
-import { encodeSignedOperation, signOperationCore, verifySignedOperation } from '@chronolog/peer-session/kernel';
-import { authorityRecord } from '../../contract/authority.mjs';
+import { encodeSignedOperation, genesisChainId, signOperationCore, verifySignedOperation } from '@chronolog/peer-session/kernel';
+import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
 import type { PeersClient } from '../../dist/sdk/peers.mjs';
 
 /** The agent's one shared signing key. It signs publications for every page the agent created. */
 export type AgentSigner = SigningIdentity;
-export type PublicationReceipt = { op?: { record: string }; id: string; revision: number; version: number };
+export type PublicationReceipt = { opId: string; revision: number; version: number; release?: unknown; finalized?: boolean };
 export type PublishedAssets = Record<string, { body: string | Uint8Array; type: string }>;
 
 export const newAgentSigner = (): Promise<AgentSigner> => createSigningIdentity();
@@ -20,14 +20,17 @@ const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest(
 /** Prepare the independent publication grant for this agent's key. Idempotent for the same signer. */
 async function publicationScope(peers: PeersClient, signer: AgentSigner) {
   let metadata = await peers.application();
-  if (metadata.publicationAuthority === null) {
+  if (!metadata.configuration?.publisherKeys?.length) {
     metadata = await peers.prepare({ publisherKeys: [signer.publicKey] });
   }
-  const scope = metadata.publicationAuthority;
-  if (!scope || !scope.publisherKeys.includes(signer.publicKey)) {
-    throw new Error('The host publication grant does not name this agent signer');
+  const publisherKeys = metadata.configuration?.publisherKeys ?? [];
+  if (!publisherKeys.includes(signer.publicKey)) {
+    throw new Error('The host publication configuration does not name this agent signer');
   }
-  return scope;
+  const chainId = metadata.genesis
+    ? bytesToHex(genesisChainId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
+    : metadata.selection.id;
+  return { chainId, publisherKeys };
 }
 
 /**
@@ -53,7 +56,7 @@ export async function publishAssetGraph(
   }
   const signed = await signOperationCore({
     version: 1,
-    chainId: hexToBytes(scope.applicationId),
+    chainId: hexToBytes(scope.chainId),
     author: hexToBytes(signer.publicKey),
     authorTimestampMs: BigInt(Date.now()),
     operationId: crypto.randomUUID(),
@@ -62,16 +65,16 @@ export async function publishAssetGraph(
     updates: [{
       topic: '$publications',
       input: {
-        revision: previous ? previous.revision + 1 : 0,
-        previous: previous?.id ?? null,
+        action: 'publish',
         entry,
         files,
+        ...(previous ? { expectedRevision: previous.revision } : {}),
       },
     }],
   }, signer.privateKey);
   const { opId } = await verifySignedOperation(signed);
   const id = bytesToHex(opId);
   const receipt = await peers.publish(authorityRecord(encodeSignedOperation(signed)), [...chunks.values()]) as PublicationReceipt;
-  if (receipt.id !== id) throw new Error('Publication response changed the signed release');
+  if (receipt.opId !== id) throw new Error('Publication response changed the signed release');
   return receipt;
 }

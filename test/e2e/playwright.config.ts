@@ -22,7 +22,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: "node scripts/e2e-server.mjs",
+    command: "node scripts/e2e-server.mjs --entry dist/engine/worker.mjs --no-bundle",
     cwd: "../..",
     url: `${LOCAL_WORKER_SERVICE}/health`,
     ignoreHTTPSErrors: true,

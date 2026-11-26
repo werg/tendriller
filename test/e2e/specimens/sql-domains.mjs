@@ -136,7 +136,9 @@ export function checklist(log) {
   });
 }
 
-export function intake(log) {
+export function intake(log, respondent) {
+  const safeRespondent = typeof respondent === 'string' && /^[0-9a-f]{64}$/i.test(respondent) ? respondent : null;
+  const ownerCheck = safeRespondent ? `actor() = '${safeRespondent}'` : '1 = 1';
   return log.defineApplication({
     id: 'staging-private-intake',
     version: '3',
@@ -151,6 +153,13 @@ export function intake(log) {
             statements: [
               'CREATE TABLE IF NOT EXISTS answer (id INTEGER PRIMARY KEY CHECK (id = 1), body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0)',
             ],
+            policies: {
+              answer: {
+                insert: ownerCheck,
+                update: ownerCheck,
+                delete: ownerCheck,
+              },
+            },
             events: [{ topic: 'intake.initialized', payload: {} }],
           },
         }],
@@ -176,10 +185,23 @@ export function intake(log) {
       }),
     },
     queries: {
+      ready: log.defineQuery({
+        description: 'Read catalog size',
+        input: { type: 'null' },
+        read: async view => (await view.query('intake', { sql: 'SELECT count(*) AS c FROM sqlite_master' }))?.rows ?? [[0]],
+      }),
       answer: log.defineQuery({
         description: 'Read answer',
         input: { type: 'null' },
         read: async view => (await view.query('intake', { sql: 'SELECT body, revision FROM answer WHERE id = 1' }))?.rows ?? [],
+      }),
+      summary: log.defineQuery({
+        description: 'Read intake aggregate summary',
+        input: { type: 'null' },
+        read: async view => {
+          const rows = (await view.query('intake', { sql: 'SELECT count(*), coalesce(max(revision), 0) FROM answer' }))?.rows ?? [[0, 0]];
+          return rows[0] ?? [0, 0];
+        },
       }),
     },
   });

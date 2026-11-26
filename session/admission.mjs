@@ -6,8 +6,8 @@
 // HPKE lockboxes into `$keys` in one public-control operation).
 import {
   bytesToHex, createChainGenesis, createWrapKeyPair, decodeGenesisBlock, decodeRecord,
-  encodeRecord, genesisChainId, hexToBytes, importWrapPrivateKey, signRecord,
-  verifyHostAttestationV2, verifyRecord,
+  decodeSignedOperation, encodeRecord, genesisChainId, hexToBytes, importWrapPrivateKey, signRecord,
+  verifyHostAttestationV2, verifyRecord, verifySignedOperation,
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
 
@@ -205,19 +205,27 @@ export async function openPageGenesis({
     metadata = await peers.application({ signal });
   } catch (error) {
     const cached = await readCachedIntent(applicationId, 'pending');
-    if (cached && (!applicationId || cached.chainId === applicationId)) {
+    if (cached) {
       return {
         chainId: cached.chainId,
         genesis: decodeGenesisBlock(cached.genesisBytes),
         genesisBytes: cached.genesisBytes,
         casNodes: cached.casNodes ?? [],
-        publicOps: [],
+        publicOps: cached.publicOps ?? [],
         epoch0Key: cached.epoch0Key,
         created: false,
       };
     }
     throw error;
   }
+
+  const persistCached = async (chainId, record) => {
+    const encoded = encodeRecord(record);
+    await store?.put(GENESIS(chainId), encoded);
+    if (applicationId && applicationId !== chainId) {
+      await store?.put(GENESIS(applicationId), encoded);
+    }
+  };
 
   if (metadata.genesis !== null) {
     const genesisBytes = authorityRecordBytes(metadata.genesis, 1024 * 1024);
@@ -228,12 +236,13 @@ export async function openPageGenesis({
     const publicOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
     const intent = await readCachedIntent(chainId, applicationId, 'pending');
     const epoch0Key = intent?.chainId === chainId ? intent.epoch0Key : undefined;
-    await store?.put(GENESIS(chainId), encodeRecord({
+    await persistCached(chainId, {
       chainId,
       genesisBytes,
       casNodes,
+      publicOps,
       ...(epoch0Key ? { epoch0Key } : {}),
-    }));
+    });
     return { chainId, genesis, genesisBytes, casNodes, publicOps, epoch0Key, created: false };
   }
 
@@ -268,23 +277,28 @@ export async function openPageGenesis({
   const genesis = decodeGenesisBlock(genesisBytes);
   const chainId = bytesToHex(genesisChainId(genesisBytes));
   const created = chainId === intent.chainId;
-  if (!created) await store?.delete?.(intentKey);
-  else {
-    await store?.put(GENESIS(chainId), encodeRecord({
-      chainId,
-      genesisBytes,
-      casNodes: intent.casNodes,
-      ...(intent.epoch0Key ? { epoch0Key: intent.epoch0Key } : {}),
-    }));
+  if (!created) {
+    const synced = await peers.syncControl({}, { signal }).catch(() => ({ casNodes: [], publicOps: [] }));
+    const casNodes = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
+    const publicOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
+    await persistCached(chainId, { chainId, genesisBytes, casNodes, publicOps });
+    return { chainId, genesis, genesisBytes, casNodes, publicOps, epoch0Key: undefined, created: false };
   }
+  await persistCached(chainId, {
+    chainId,
+    genesisBytes,
+    casNodes: intent.casNodes,
+    publicOps: [],
+    ...(intent.epoch0Key ? { epoch0Key: intent.epoch0Key } : {}),
+  });
   return {
     chainId,
     genesis,
     genesisBytes,
     casNodes: intent.casNodes,
     publicOps: [],
-    epoch0Key: created ? intent.epoch0Key : undefined,
-    created,
+    epoch0Key: intent.epoch0Key,
+    created: true,
   };
 }
 
@@ -333,19 +347,62 @@ export function createAdmission(session, {
   let known = new Set((session.permissions().members ?? []).map(m => m.publicKey));
   let seenPending = new Set();
   let seenRejected = new Set();
+  const creatorKey = session.genesis?.initialTopics?.$permissions?.members?.[0]?.publicKey ?? null;
+  const admittedMeta = new Map();
+  const seenMetaOps = new Set();
   let notices = [], pending = [], lastError = null, lastReportedError = null;
   let state = snapshot();
+
+  async function indexPublicOpsMeta(rawOps) {
+    if (!Array.isArray(rawOps) || !rawOps.length) return false;
+    const hostKey = session.permissions().admission?.hostKey;
+    let updated = false;
+    for (const raw of rawOps) {
+      if (!(raw instanceof Uint8Array)) continue;
+      let verified;
+      try { verified = await verifySignedOperation(decodeSignedOperation(raw)); } catch { continue; }
+      const opId = bytesToHex(verified.opId);
+      if (seenMetaOps.has(opId)) continue;
+      seenMetaOps.add(opId);
+      const activation = Number(verified.core.authorTimestampMs);
+      for (const upd of verified.core.updates ?? []) {
+        if (upd?.topic !== '$permissions' || upd?.input?.action !== 'setMember') continue;
+        const att = upd.input.attestation;
+        const payload = att?.payload;
+        if (!payload || typeof payload.publicKey !== 'string') continue;
+        if (hostKey) {
+          try { if (!await verifyHostAttestationV2(att, hostKey)) continue; } catch { continue; }
+        }
+        admittedMeta.set(payload.publicKey, {
+          ...(typeof payload.accountId === 'string' ? { accountId: payload.accountId } : {}),
+          ...(typeof payload.email === 'string' ? { email: payload.email } : {}),
+          via: payload.inviteId ? 'invite' : 'attested',
+          ...(Number.isFinite(activation) && activation > 0 ? { activation } : {}),
+        });
+        updated = true;
+      }
+    }
+    return updated;
+  }
 
   function snapshot() {
     const perms = session.permissions();
     const keys = session.keysState();
     const admission = perms.admission ?? {};
-    const members = (perms.members ?? []).map(m => Object.freeze({
-      ...m,
-      label: m.label ?? (m.administrator ? 'Administrator' : 'Member'),
-      subject: m.subject ?? 'device',
-      self: m.publicKey === identity.publicKey,
-    }));
+    const members = (perms.members ?? []).map(m => {
+      const meta = admittedMeta.get(m.publicKey);
+      const isCreator = m.publicKey === creatorKey;
+      return Object.freeze({
+        ...m,
+        ...(meta?.accountId ? { accountId: meta.accountId } : {}),
+        ...(meta?.email ? { email: meta.email } : {}),
+        ...(meta?.activation ? { activation: meta.activation } : {}),
+        via: isCreator ? 'creator' : (meta?.via ?? 'attested'),
+        label: m.label ?? (isCreator ? 'Page creator' : m.subject === 'agent' ? 'Agent' : 'Browser device'),
+        subject: m.subject ?? 'device',
+        self: m.publicKey === identity.publicKey,
+      });
+    });
     const me = members.find(m => m.publicKey === identity.publicKey) ?? null;
     const hasKey = !session.genesis.privateChain || keys.currentEpoch < 0 || session.hasEpochKey(keys.currentEpoch);
     const phase = closed ? 'closed'
@@ -392,6 +449,7 @@ export function createAdmission(session, {
 
   async function syncWithHost() {
     const facts = await session.exportFacts();
+    await indexPublicOpsMeta(facts.publicOps);
     const synced = await peers.syncControl({
       publicOps: facts.publicOps.map(authorityRecord),
       casNodes: facts.casNodes.filter(n => n.partition === 'public').map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
@@ -408,6 +466,7 @@ export function createAdmission(session, {
         retentions: [],
         checkpoints: incomingCps,
       });
+      await indexPublicOpsMeta(incomingOps);
     }
     if (wrapKey?.privateKey && session.isReader(identity.publicKey)) {
       await session.unlockEpochsFromKeysTopic(wrapKey.privateKey, wrapKey.publicKey).catch(() => {});
@@ -437,6 +496,14 @@ export function createAdmission(session, {
     const hostKey = session.permissions().admission?.hostKey;
     if (hostKey && !await verifyHostAttestationV2(attestation, hostKey)) {
       throw failure('ATTESTATION_SIGNATURE_INVALID');
+    }
+    if (typeof attestation?.payload?.accountId === 'string') {
+      admittedMeta.set(identity.publicKey, {
+        accountId: attestation.payload.accountId,
+        ...(typeof attestation.payload.email === 'string' ? { email: attestation.payload.email } : {}),
+        via: invite ? 'invite' : 'attested',
+        ...(Number.isFinite(attestation.payload.issuedAt) ? { activation: attestation.payload.issuedAt } : {}),
+      });
     }
   }
 
@@ -539,6 +606,12 @@ export function createAdmission(session, {
         subject: entry.payload.subject,
         ...roleGrant,
         attestation: entry.attestation,
+      });
+      admittedMeta.set(entry.payload.publicKey, {
+        ...(typeof entry.payload.accountId === 'string' ? { accountId: entry.payload.accountId } : {}),
+        ...(typeof entry.payload.email === 'string' ? { email: entry.payload.email } : {}),
+        via: entry.via,
+        activation: now(),
       });
       if (entry.invite && session.isAdministrator(identity.publicKey)) {
         const cur = session.permissions().admission ?? {};

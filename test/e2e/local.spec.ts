@@ -1,7 +1,7 @@
 import { test, expect, request, chromium } from '@playwright/test';
 import { join } from 'node:path';
 import { build } from 'esbuild';
-import { encodeRecord, signParticipantRequest } from '@chronolog/authority';
+import { encodeRecord, signRecord } from '@chronolog/authority';
 import { authorityRecord } from '../../dist/sdk/authority.mjs';
 import { LOCAL_WORKER_HOST_RULES } from '../../scripts/e2e-network.mjs';
 import { shortScratch } from './short-scratch';
@@ -31,7 +31,7 @@ test('verified owner claims a page and executes its signed authored module', asy
     await expect(page.locator('#welcome')).toHaveText('Hello, owner', { timeout: 25_000 });
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);
-    expect((await selectedPublication(handle))?.publication.id).toBe(release.publication.id);
+    expect((await selectedPublication(handle))?.opId).toBe(release.opId);
     expect(page.url(), 'The address stays canonical, so a reload opens the latest release.').not.toContain('/_publications/');
     expect(page.url()).not.toContain('/auth/page');
   } finally { await deletePage(handle); }
@@ -85,7 +85,7 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
     await publish(handle, '<h1 id="release">four</h1><input id="draft">');
     await page.waitForTimeout(3000);
     await expect(page.locator('#release')).toHaveText('one');
-    expect((await selectedPublication(handle, first.publication.id))?.publication).toEqual(first.publication);
+    expect((await selectedPublication(handle, first.opId))?.opId).toEqual(first.opId);
   } finally { await deletePage(handle); }
 });
 
@@ -316,15 +316,18 @@ test('host transport requires a token and rejects ordinary data actions in genui
   const handle = await createPage();
   try {
     // The current wire body is one canonical signed record (hex), signed by the agent's shared key.
-    // Only authority.read, publication.read/publish and finality.read/publish are control actions.
-    const signed = async (action: string) => authorityRecord(encodeRecord(await signParticipantRequest(
-      { applicationId: handle.application.id, requestId: `filtered-${action}`, action: action as any }, handle.signer)));
-    const denied = await (await requester()).post(`${handle.api}/peers/participant`, { data: await signed('authority.read') });
+    // Only control.sync is accepted by the blind host participant endpoint.
+    const signed = async (action: string) => authorityRecord(encodeRecord(await signRecord(
+      'chronolog/participant-sync/v2',
+      { applicationId: handle.application.id, requestId: `filtered-${action}`, action },
+      handle.signer,
+    )));
+    const denied = await (await requester()).post(`${handle.api}/peers/participant`, { data: await signed('control.sync') });
     expect(denied.status()).toBe(401);
     for (const action of ['database.submit', 'content.chunk', 'ephemeral.signal']) {
       const result = await agent(handle, '/peers/participant', 'POST', await signed(action));
-      expect(result.status, action).toBe(403);
-      expect(result.data.error.code, action).toBe('participant_action_forbidden');
+      expect(result.status, action).toBe(400);
+      expect(result.data.error.code, action).toBe('participant_fields_invalid');
     }
   } finally { await deletePage(handle); }
 });
@@ -342,10 +345,9 @@ test('signed publication HTTP delivery preserves authored bytes and exact retry 
     const selected = await publishFiles(handle, files);
     const code = await authenticated.get(`${localPageUrl(handle)}page.mjs`);
     expect(code.status()).toBe(200); expect(await code.text()).toBe(files['page.mjs'].body);
-    const assets = selected.publication.payload.files.map(file => ({ hash: file.hash,
-      bytes: Buffer.from(files[file.path as keyof typeof files].body).toString('base64') }));
-    expect(await client(handle).peers.publish(selected.publication, assets)).toEqual(selected);
+    expect(selected.opId).toMatch(/^[a-f0-9]{64}$/);
     expect(await client(handle).peers.publication()).toEqual(selected);
+    expect(await client(handle).peers.publication(selected.opId)).toEqual(selected);
   } finally { await authenticated.dispose(); await deletePage(handle); }
 });
 
@@ -407,7 +409,8 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       import { bootstrapBrowser } from './docs/tutorial/shared/helpers/browser-bootstrap.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
       import { createSigningIdentity, exportSigningIdentity, importSigningIdentity, decodeRecord } from '@chronolog/authority';
-      const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base,executionManifestDigest:null};
+      import { decodeGenesisBlock } from '@chronolog/peer-session';
+      const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view', identityKey=profileId+':identity', storeKey=profileId+':store:';
       const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);
       const view=createViewStore({storage:localStorage,applicationId:configuration.applicationId,profileId,viewId});
@@ -423,16 +426,16 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       input.addEventListener('input',()=>view.writeDraft(input.value,'draft'));
       document.querySelector('button').onclick=async()=>{
         try{
-          // The prepared execution graph this publication runs, as the signed page's own configuration would carry it.
-          configuration.executionManifestDigest??=(await window.tendril.host.peers.application()).configuration.executionManifestDigest;
-          await bootstrapBrowser({configuration,device:{identity,store},signal:AbortSignal.timeout(20_000)});
+          await bootstrapBrowser({configuration,device:{identity,store},imports:{},topics:{},signal:AbortSignal.timeout(20_000)});
         }
         catch{document.querySelector('#enrollment').textContent='Initialization unavailable; original genesis retained';}
       };
       window.fixture={async snapshot(){
         const raw=await store.get('tendriller/admission/genesis/'+configuration.applicationId),intent=raw&&decodeRecord(raw);
+        const genesis=intent&&decodeGenesisBlock(intent.genesisBytes);
+        const rootMember=genesis?.initialTopics?.$permissions?.members?.[0]?.publicKey;
         return {profileId,viewId,device:identity.publicKey,draft:view.readDraft('draft'),
-          bootstrap:intent&&{publicKey:intent.bundle.descriptor.payload.rootPrincipal,epochKey:Array.from(intent.epochKey)}};
+          bootstrap:intent&&{publicKey:rootMember,epochKey:Array.from(intent.epoch0Key)}};
       }};
     ` }, alias: { '@tendriller/core/peers': join(process.cwd(), 'dist/sdk/peers.mjs'),
       '@tendriller/core/authority': join(process.cwd(), 'dist/sdk/authority.mjs'),

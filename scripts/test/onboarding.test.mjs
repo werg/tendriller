@@ -186,17 +186,13 @@ test('events and SQL starter qualification use the current pinned session source
   const workflow = readFileSync(join(root, '.github/workflows/agent-onboarding.yml'), 'utf8');
   assert(workflow.indexOf('path: core') < workflow.indexOf('node-version: 24'));
   assert(workflow.indexOf('node-version: 24') < workflow.indexOf('run: node scripts/session-pin.mjs'));
-  assert(workflow.indexOf('run: node scripts/session-pin.mjs') < workflow.indexOf('repository: werg/chronolog-db'));
   assert.match(workflow, /id: session\s+working-directory: core\s+run: node scripts\/session-pin\.mjs/);
-  assert(workflow.includes('ref: ${{ steps.session.outputs.source }}'));
   assert(!/ref: [a-f0-9]{40}/.test(workflow), 'No duplicated Chronolog source literal');
   assert(workflow.includes('name: public-packages'), 'SQL qualification must reuse the release graph');
   const service = readFileSync(join(root, '.github/workflows/service.yml'), 'utf8');
   assert(service.includes('npm run release:artifacts'), 'Events qualification prepares the pinned public session in the graph');
   assert(service.includes('test:first-app -- --first-app-archive'), 'Events qualification must use the exact kit');
-  assert(workflow.includes('SQL_ARCHIVE: ${{ steps.native-sql.outputs.artifact }}'));
-  assert(workflow.includes('node tools/test-peer-session-sql.mjs --artifact "$SQL_ARCHIVE"'));
-  assert(workflow.includes('JSON.parse(readFileSync(process.env.RUNNER_TEMP'));
+  assert(workflow.includes("a.role === 'session'"), 'Chronolog v2 session archive already bundles SQLite-CAS');
   assert(workflow.includes('tendriller-first-app-sql-'));
   assert(!workflow.includes('--sql-native-only'));
   assert(!workflow.includes('steps.session.outputs.sql_archive'));

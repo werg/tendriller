@@ -61,6 +61,10 @@ export const definition = defineApplication({
         topic: 'inventory',
         input: {
           action: 'migrate',
+          preconditions: [{
+            sql: "SELECT NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inventory')",
+            code: 'already_initialized',
+          }],
           statements: [
             `CREATE TABLE IF NOT EXISTS inventory (
               id TEXT PRIMARY KEY,

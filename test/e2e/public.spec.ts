@@ -384,8 +384,8 @@ test('mobile inspection keeps drafts across connectivity loss and offers camera 
 
 for (const isPrivate of [false, true]) {
   test(`real Chromium SQL: ${isPrivate ? 'private intake correction' : 'shared checklist and reopen'}`, async ({ page, browser }) => {
-    const consumer = process.env.E2E_CHRONOLOG_CONSUMER, engineDirectory = process.env.E2E_CHRONOLOG_WASM;
-    test.skip(!consumer || !engineDirectory, 'Requires the combined SQL archive and a verified browser engine');
+    const consumer = process.env.E2E_CHRONOLOG_CONSUMER;
+    test.skip(!consumer, 'Requires the pinned Chronolog v2 session consumer');
     const { openBrowserSqlSpecimen } = await import('./staging-browser-sql');
     const handle = await createPage(isPrivate ? 'Browser intake' : 'Browser checklist');
     const secondContext = await browser.newContext();
@@ -401,7 +401,7 @@ for (const isPrivate of [false, true]) {
       const { url: guestUrl } = await invitation.json();
       await second.goto(guestUrl);
       await expect(second.getByRole('heading')).toHaveText(/is getting ready/, { timeout: 20_000 });
-      const fixture = await test.step('Publish and open browser SQL peers', () => openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
+      const fixture = await test.step('Publish and open browser SQL peers', () => openBrowserSqlSpecimen({ consumer: consumer!,
         peers: client(handle).peers, pageUrl: handle.page_url, applicationId: handle.application.id,
         pages: [page, second], isPrivate, guestAccount: guest.id }));
       async function expectReplication(source: Page, target: Page, text: string) {

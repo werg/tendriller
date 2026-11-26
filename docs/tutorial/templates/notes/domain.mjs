@@ -65,7 +65,12 @@ export default {
 
   query(state) {
     const notes = state && state.notes ? Object.values(state.notes) : [];
-    notes.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    notes.sort((a, b) => {
+      const ta = BigInt(a.authorTimestampMs ?? 0);
+      const tb = BigInt(b.authorTimestampMs ?? 0);
+      if (ta !== tb) return ta < tb ? -1 : 1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
     return notes;
   },
 

@@ -61,11 +61,11 @@ try {
   const publication = await readWithAdmissionRetry(() => host.peers.publication());
   assert(publication, 'Verify the committed publication on the actual host');
   const prepared = await readWithAdmissionRetry(() => host.peers.application());
-  assert.equal(prepared.authority, null, 'No browser root or data authority may exist before the signed page is published');
-  assert(prepared.publicationAuthority, 'The publication policy must exist');
-  assert(prepared.publicationAuthority.publisherKeys.includes(handle.signerPublicKey), 'Publication is signed by the workspace\'s one shared agent key; no separate page publisher exists');
+  assert.equal(prepared.genesis, null, 'No browser root or data genesis may exist before the signed page is published');
+  assert(prepared.configuration?.publisherKeys, 'The publication configuration must exist');
+  assert(prepared.configuration.publisherKeys.includes(handle.signerPublicKey), 'Publication is signed by the workspace\'s one shared agent key; no separate page publisher exists');
   assert.notEqual((await host.info()).owner_account_id, null, 'An account-linked agent creates a page already owned by that account');
-  assert(publication.publication.payload.files.some(file => file.path === 'domain.js'), 'Hosted MCP runs declared operations from the signed domain bundle');
+  assert(publication.release?.files?.some(file => file.path === 'index.html'), 'Signed Chronolog v2 publication retains index.html; reducers execute from in-chain $reducers');
   diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, apiUrl: host.base });
   diagnostics.attach(context, page);
   phase = 'initialize browser';
@@ -77,8 +77,8 @@ try {
     // The browser creates its own identity, root and data key locally; no native process exists yet.
     await page.getByText('Local signing and storage ready', { exact: false }).waitFor({ timeout: 60000 });
     diagnostics.step('verify-publication');
-    assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).publication.id, publication.publication.id);
-    assert.notEqual((await readWithAdmissionRetry(() => host.peers.application())).authority, null, 'The signed-in browser initialized application authority');
+    assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).opId, publication.opId);
+    assert.notEqual((await readWithAdmissionRetry(() => host.peers.application())).genesis, null, 'The signed-in browser initialized Chronolog v2 genesis');
     phase = 'start optional participant';
     diagnostics.step('start-participant');
     const state = openSync(join(project, 'participant-state-private.log'), 'w', 0o600), diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
