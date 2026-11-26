@@ -6,6 +6,7 @@ import { HttpError, isPlainObject, json, readJson } from './http';
 import { AGENT_ID_RE, AGENT_TOKEN_RE, newAgentId, newAgentToken, newTendrilId, randomB32, sha256Hex, TENDRIL_ID_RE } from './ids';
 import { AGENT_JOIN_CODE_TTL, AGENT_PAGE_LIST_LIMIT, DAY, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
 import { accountLimits, checkCreationIp, requireCreationOpen, reserveCreationIp } from './service-state';
+import { getAccountEntitlements, quotaError } from './billing/entitlements';
 import { broadcastSummary, getAgentVersions, recordAgentVersions } from './broadcasts';
 import { publicBase } from './urls';
 import { joinBlurb } from './sharing';
@@ -208,23 +209,56 @@ async function joinAgent(req: Request, env: Env): Promise<Response> {
   };
   if (!JOIN_CODE_RE.test(code)) throw await fail();
   const hash = await sha256Hex(code), token = newAgentToken(), now = Date.now(), id = newAgentId();
+  const joinRow = await env.ACCOUNTS.prepare(`SELECT account_id FROM agent_join_codes WHERE code_hash=? AND used_at IS NULL AND expires_at>?`)
+    .bind(hash, now).first<{ account_id: string }>();
+  if (!joinRow) throw await fail();
+  const ent = await getAccountEntitlements(env, joinRow.account_id, now);
+  const effectiveCap = ent.quotas.agents ?? 1_000_000;
   let results: D1Result[];
   try {
     results = await env.ACCOUNTS.batch([
       env.ACCOUNTS.prepare(`UPDATE agent_join_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL AND expires_at>?
-        AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=agent_join_codes.account_id AND a.suspended_at IS NULL AND a.deleting_at IS NULL)`).bind(now, hash, now),
+        AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=agent_join_codes.account_id AND a.suspended_at IS NULL AND a.deleting_at IS NULL)
+        AND (SELECT COUNT(*) FROM agents x WHERE x.account_id=agent_join_codes.account_id AND x.revoked_at IS NULL) < ?`).bind(now, hash, now, effectiveCap),
       env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,wrap_key,created_at,claimed_at)
         SELECT ?,account_id,NULL,?,?,?,?,?,?,? FROM agent_join_codes WHERE code_hash=? AND used_at=?
           AND (SELECT COUNT(*) FROM agents x WHERE x.account_id=agent_join_codes.account_id AND x.revoked_at IS NULL) < ?
-        RETURNING account_id`).bind(id, handle, bio, await sha256Hex(token), publicKey, wrapKey, now, now, hash, now, AGENT_CAPACITY),
+        RETURNING account_id`).bind(id, handle, bio, await sha256Hex(token), publicKey, wrapKey, now, now, hash, now, effectiveCap),
     ]);
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new HttpError(409, 'agent_handle_in_use', `Handle @${handle} is already in use in this account. Choose another handle.`);
     throw error;
   }
-  if (!results[0].meta.changes) throw await fail();
   const account = (results[1].results[0] as { account_id?: string } | undefined)?.account_id;
-  if (!account) throw new HttpError(429, 'agent_capacity', 'This account already has the maximum number of agents.');
+  if (!account) {
+    if (!results[0].meta.changes && ent.quotas.agents !== null) {
+      const count = (await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM agents WHERE account_id=? AND revoked_at IS NULL')
+        .bind(joinRow.account_id).first<{ n: number }>())?.n ?? ent.quotas.agents;
+      if (count >= ent.quotas.agents) {
+        throw quotaError({
+          env,
+          quota: 'agents',
+          plan: ent.plan,
+          used: count,
+          limit: ent.quotas.agents,
+          resetsAt: null,
+          message: `Your ${ent.plan} plan supports up to ${ent.quotas.agents} workspace agents. Revoke an unused agent, upgrade, or self-host.`,
+          localAlternative: 'One workspace agent can maintain many pages—reuse an existing agent or revoke an unused one from your dashboard.',
+        });
+      }
+    }
+    if (!results[0].meta.changes) throw await fail();
+    throw quotaError({
+      env,
+      quota: 'agents',
+      plan: ent.plan,
+      used: ent.quotas.agents ?? AGENT_CAPACITY,
+      limit: ent.quotas.agents ?? AGENT_CAPACITY,
+      resetsAt: null,
+      message: `Your ${ent.plan} plan supports up to ${ent.quotas.agents ?? AGENT_CAPACITY} workspace agents.`,
+      localAlternative: 'One workspace agent can maintain many pages—reuse an existing agent or revoke an unused one from your dashboard.',
+    });
+  }
   const row: AgentRow = { id, account_id: account, owner_email: null, handle, bio, public_key: publicKey, wrap_key: wrapKey, created_at: now, claimed_at: now };
   return json({
     agent: agentView(row), token, service: publicBase(env),
@@ -519,16 +553,30 @@ export async function registerAccountAgent(env: Env, accountId: string, rawHandl
       .then(r => r.body?.cancel()).catch(error => console.error('Agent key re-mirror failed', error))));
     return { agent: agentView({ ...existing, handle, bio, public_key: publicKey, wrap_key: wrapKey }), token, rotated: true, service: publicBase(env) };
   }
+  const ent = await getAccountEntitlements(env, accountId, now);
+  const effectiveCap = ent.quotas.agents ?? 1_000_000;
   const row: AgentRow = { id: newAgentId(), account_id: accountId, owner_email: null, handle, bio, public_key: publicKey, wrap_key: wrapKey, created_at: now, claimed_at: now };
   let inserted: unknown;
   try {
     inserted = await env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,wrap_key,created_at,claimed_at)
       SELECT ?,?,NULL,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM agents WHERE account_id=? AND revoked_at IS NULL) < ? RETURNING id`)
-      .bind(row.id, accountId, handle, bio, hash, publicKey, wrapKey, now, now, accountId, AGENT_CAPACITY).first();
+      .bind(row.id, accountId, handle, bio, hash, publicKey, wrapKey, now, now, accountId, effectiveCap).first();
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new HttpError(409, 'agent_handle_in_use', 'Retry register_agent; another registration used this handle concurrently.');
     throw error;
   }
-  if (!inserted) throw new HttpError(429, 'agent_capacity', 'This account already has the maximum number of agents.');
+  if (!inserted) {
+    const limit = ent.quotas.agents ?? AGENT_CAPACITY;
+    throw quotaError({
+      env,
+      quota: 'agents',
+      plan: ent.plan,
+      used: limit,
+      limit,
+      resetsAt: null,
+      message: `Your ${ent.plan} plan supports up to ${limit} workspace agents. Revoke an unused agent, upgrade, or self-host.`,
+      localAlternative: 'One workspace agent can maintain many pages—reuse an existing handle (which rotates its key) or revoke an unused agent from your dashboard.',
+    });
+  }
   return { agent: agentView(row), token, rotated: false, service: publicBase(env) };
 }

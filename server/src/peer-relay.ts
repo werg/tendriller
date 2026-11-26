@@ -1,5 +1,6 @@
 import { PEER_RELAY_LIMITS as LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/relay.mjs';
 import { accountActive, pageAccessAllowed, participantIdentity, freshPrincipal, type Principal } from './access';
+import { acquireRelayLease, getAccountEntitlements, quotaError, recordAccountUsage, releaseRelayLease } from './billing/entitlements';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
@@ -23,7 +24,53 @@ interface Refresh {
 const refreshMessages = 4 * (LIMITS.pendingPackets + LIMITS.livePendingPackets);
 const refreshBytes = 2 * (LIMITS.pendingBytes + LIMITS.livePendingPackets * LIMITS.packetBytes) + refreshMessages * 256;
 const refreshTimeoutMs = 5_000;
+const RELAY_FLUSH_BYTES = 5 * 1024 * 1024;
+const RELAY_FLUSH_INTERVAL_MS = 5 * 60_000;
+const RELAY_ACTIVE_WINDOW_MS = 30_000;
+interface RelayUsage {
+  accountId: string;
+  lastFlushAt: number;
+  lastPacketAt: number;
+  pendingBytes: number;
+  pendingMs: number;
+}
 const refreshing = new WeakMap<Tendril, Map<string, Refresh>>();
+const usageTrack = new WeakMap<Tendril, Map<string, RelayUsage>>();
+
+function flushRelayUsage(t: Tendril, session: string, closing: boolean): void {
+  const map = usageTrack.get(t);
+  const entry = map?.get(session);
+  if (closing) {
+    map?.delete(session);
+    if (map && !map.size) usageTrack.delete(t);
+  }
+  if (!entry) {
+    if (closing) t.ctx.waitUntil(releaseRelayLease(t.env, session));
+    return;
+  }
+  const now = t.now();
+  const bytes = entry.pendingBytes;
+  const ms = entry.pendingMs;
+  entry.pendingBytes = 0;
+  entry.pendingMs = 0;
+  entry.lastFlushAt = now;
+  const work: Promise<void>[] = [];
+  if (bytes > 0 || ms > 0) work.push(recordAccountUsage(t.env, entry.accountId, { relayBytes: bytes, relayMs: ms }, now));
+  if (closing) work.push(releaseRelayLease(t.env, session));
+  if (work.length) t.ctx.waitUntil(Promise.all(work).then(() => undefined));
+}
+
+function recordRelayPacketInMemory(t: Tendril, session: string, bytes: number, now: number): void {
+  const entry = usageTrack.get(t)?.get(session);
+  if (!entry) return;
+  entry.pendingBytes += bytes;
+  const elapsed = Math.max(0, now - entry.lastPacketAt);
+  entry.pendingMs += Math.min(RELAY_ACTIVE_WINDOW_MS, elapsed || 1);
+  entry.lastPacketAt = now;
+  if (entry.pendingBytes >= RELAY_FLUSH_BYTES || now - entry.lastFlushAt >= RELAY_FLUSH_INTERVAL_MS) {
+    flushRelayUsage(t, session, false);
+  }
+}
 const attachment = (ws: WebSocket): Attachment | null => {
   const value = ws.deserializeAttachment() as (Omit<Attachment, 'pending'> & { pending: ArrayBuffer }) | null;
   if (value?.kind !== 'peer-relay') return null;
@@ -66,6 +113,7 @@ function members(t: Tendril, session: string): WebSocket[] {
 }
 function closeSession(t: Tendril, session: string, code: number, reason: string): void {
   finishRefresh(t, session);
+  flushRelayUsage(t, session, true);
   for (const ws of members(t, session)) ws.close(code, reason);
   t.scheduleAlarm();
 }
@@ -197,16 +245,54 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   const first = existing.length ? attachment(existing[0])! : null;
   if (!first && sessionIds.size >= LIMITS.sessions || (!first || !ownedSessions.has(first.session)) && ownedSessions.size >= LIMITS.sessionsPerPrincipal)
     throw new HttpError(429, 'peer_quota', 'The bounded relay directory is full');
-  const [client, server] = Object.values(new WebSocketPair()), now = t.now();
-  const value: Attachment = { kind: 'peer-relay', channel, session: first?.session ?? crypto.randomUUID(), peerId, remotePeerId, lane: lane as Lane,
+  const now = t.now();
+  const sessionId = first?.session ?? crypto.randomUUID();
+  let sessionLifetimeMs = LIMITS.lifetimeMs;
+  const pageOwner = t.db.get<string | null>('owner_account', null);
+  if (existing.length === 3 && pageOwner) {
+    const ent = await getAccountEntitlements(t.env, pageOwner, now);
+    sessionLifetimeMs = ent.quotas.relayLifetimeMs;
+    if (ent.quotas.relayMsPerMonth !== null && ent.usage.relayMs >= ent.quotas.relayMsPerMonth) {
+      throw quotaError({
+        env: t.env,
+        quota: 'relay_duration',
+        plan: ent.plan,
+        used: Math.round(ent.usage.relayMs / 60_000),
+        limit: Math.round(ent.quotas.relayMsPerMonth / 60_000),
+        resetsAt: ent.usage.resetsAt,
+        message: `Monthly host relay allowance reached (${Math.round(ent.quotas.relayMsPerMonth / 3_600_000)} active hrs on ${ent.plan}). Direct peer-to-peer sync stays unlimited.`,
+        localAlternative: 'Check docs/TRANSPORT_DIAGNOSTICS.md to enable direct UDP WebRTC, upgrade for priority relay + TURN, or self-host on Cloudflare.',
+      });
+    }
+    const lease = await acquireRelayLease(t.env, pageOwner, t.tid, sessionId, now + sessionLifetimeMs, ent.quotas.relayConcurrentSessions, now);
+    if (!lease.allowed && ent.quotas.relayConcurrentSessions !== null) {
+      throw quotaError({
+        env: t.env,
+        quota: 'relay_concurrent',
+        plan: ent.plan,
+        used: lease.active,
+        limit: ent.quotas.relayConcurrentSessions,
+        resetsAt: null,
+        message: `Your ${ent.plan} plan allows up to ${ent.quotas.relayConcurrentSessions} concurrent host relay sessions across your account.`,
+        localAlternative: 'Direct WebRTC connections have no relay session limit. Close an idle relayed tab, upgrade for more relay slots, or self-host.',
+      });
+    }
+  }
+  const [client, server] = Object.values(new WebSocketPair());
+  const value: Attachment = { kind: 'peer-relay', channel, session: sessionId, peerId, remotePeerId, lane: lane as Lane,
     owner: owned, principal, ready: false, expiresAt: first?.expiresAt ?? now + LIMITS.pairingMs,
     authorizedUntil, received: 0, pending: [], progressAt: now, window: now, packets: 0, liveWindow };
   t.ctx.acceptWebSocket(server, ['peer-relay']); write(server, value);
   const group = [...existing, server];
   if (group.length === 4) {
+    if (pageOwner) {
+      let map = usageTrack.get(t);
+      if (!map) usageTrack.set(t, map = new Map());
+      map.set(sessionId, { accountId: pageOwner, lastFlushAt: now, lastPacketAt: now, pendingBytes: 0, pendingMs: 0 });
+    }
     for (const socket of group) {
       const current = attachment(socket)!;
-      write(socket, { ...current, ready: true, expiresAt: now + LIMITS.lifetimeMs });
+      write(socket, { ...current, ready: true, expiresAt: now + sessionLifetimeMs });
     }
     for (const socket of group) {
       const current = attachment(socket)!;
@@ -288,6 +374,7 @@ function forward(t: Tendril, ws: WebSocket, message: string | ArrayBuffer, check
     packet.set(token, 4); packet.set(new Uint8Array(message, 4), 20);
     write(ws, { ...next, pending: [...value.pending, [sequence, receipt, bytes]], progressAt: value.pending.length ? value.progressAt : now });
     other.send(packet.buffer);
+    recordRelayPacketInMemory(t, value.session, bytes, now);
     if (!value.pending.length) t.scheduleAlarm();
   } catch { closeSession(t, value.session, 1008, 'Invalid or unauthorized peer relay'); }
 }

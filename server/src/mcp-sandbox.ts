@@ -282,8 +282,9 @@ export async function runDomainCommand(
   bundleSource: string,
   commandName: string,
   input: unknown,
+  options?: { timeoutMs?: number },
 ): Promise<SandboxProgramStep[]> {
-  return withDomainSandbox(bundleSource, {}, ({ evalJson }) => evalJson(`
+  return withDomainSandbox(bundleSource, { timeoutMs: options?.timeoutMs }, ({ evalJson }) => evalJson(`
     (() => {
       const def = globalThis.__tendrilDefinition;
       const cmd = def.commands?.[${JSON.stringify(commandName)}];
@@ -307,8 +308,9 @@ export async function runDomainQuery(
   queryName: string,
   input: unknown,
   bridge: SandboxReadBridge,
+  options?: { timeoutMs?: number },
 ): Promise<unknown> {
-  return withDomainSandbox(bundleSource, { bridge }, ({ evalJson }) => evalJson(`
+  return withDomainSandbox(bundleSource, { bridge, timeoutMs: options?.timeoutMs }, ({ evalJson }) => evalJson(`
     (async () => {
       const def = globalThis.__tendrilDefinition;
       const q = def.queries?.[${JSON.stringify(queryName)}];

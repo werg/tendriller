@@ -95,6 +95,8 @@ export async function mountCallRoom({
   if (!container) throw Error('mountCallRoom requires a container element');
   injectStyles();
 
+  let dismissedConnectivityTip = false;
+  let dismissedMeshTip = false;
   const waitingGuests = new Map();
   const audioConsentPrompts = new Map();
   let releaseReloadHold = null;
@@ -354,6 +356,12 @@ export async function mountCallRoom({
       savePill.textContent = 'Saving transcript';
       pills.append(savePill);
     }
+    if (snap.transportKind === 'cloudflare-sfu') {
+      const sfuPill = document.createElement('span');
+      sfuPill.className = 'tr-pill live';
+      sfuPill.textContent = 'SFU HD · Cloudflare Realtime';
+      pills.append(sfuPill);
+    }
     const relayCount = snap.humans.filter(p => !p.mediaAvailable).length;
     if (relayCount > 0) {
       const relayPill = document.createElement('span');
@@ -377,6 +385,66 @@ export async function mountCallRoom({
     }
     bar.append(h, pills);
     frag.append(bar);
+
+    // Friendly connectivity / SFU guidance banner (never blocks local notes, chat, or captions).
+    const quotaInfo = snap.transportState?.mediaQuota;
+    const upgradeHref = quotaInfo?.upgradeUrl || 'https://tendriller.dev/dashboard/billing';
+    const selfHostHref = quotaInfo?.selfHostUrl || 'https://tendriller.dev/self-host';
+    if (relayCount > 0 && snap.transportKind !== 'cloudflare-sfu' && !dismissedConnectivityTip) {
+      const notice = document.createElement('div');
+      notice.className = 'tr-toast';
+      notice.setAttribute('role', 'status');
+      const copy = document.createElement('span');
+      copy.textContent = quotaInfo?.exhausted
+        ? 'Monthly SFU/TURN media allowance reached. Notes, chat, and live captions are still syncing via encrypted relay. Enable pay-as-you-go, upgrade, or self-host with your own Cloudflare Realtime keys.'
+        : 'A peer’s network blocks direct video/audio (strict NAT/firewall). Notes, chat, and live captions keep syncing via encrypted relay. Enable Pro TURN + SFU for video across strict networks, or self-host with your own Cloudflare Realtime keys.';
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+      const upLink = document.createElement('a');
+      upLink.className = 'tr-btn primary';
+      upLink.style.textDecoration = 'none';
+      upLink.href = upgradeHref;
+      upLink.target = '_blank';
+      upLink.rel = 'noopener';
+      upLink.textContent = quotaInfo?.exhausted ? 'Manage billing' : 'Enable Pro TURN + SFU';
+      const shLink = document.createElement('a');
+      shLink.className = 'tr-btn';
+      shLink.style.textDecoration = 'none';
+      shLink.href = selfHostHref;
+      shLink.target = '_blank';
+      shLink.rel = 'noopener';
+      shLink.textContent = 'Self-host guide';
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button'; dismiss.className = 'tr-btn'; dismiss.textContent = 'Dismiss';
+      dismiss.addEventListener('click', () => { dismissedConnectivityTip = true; render(room.snapshot()); });
+      actions.append(upLink, shLink, dismiss);
+      notice.append(copy, actions);
+      frag.append(notice);
+    } else if (snap.humans.length >= 4 && snap.videoEnabled && snap.transportKind !== 'cloudflare-sfu' && !dismissedMeshTip) {
+      const meshTip = document.createElement('div');
+      meshTip.className = 'tr-toast';
+      meshTip.setAttribute('role', 'status');
+      const copy = document.createElement('span');
+      copy.textContent = `${snap.humans.length + 1} people are in this peer-to-peer mesh video call. Switch to audio-only to save upload bandwidth, upgrade to Pro SFU, or self-host with Cloudflare Realtime.`;
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+      const audioBtn = document.createElement('button');
+      audioBtn.type = 'button'; audioBtn.className = 'tr-btn'; audioBtn.textContent = 'Audio-only';
+      audioBtn.addEventListener('click', () => { void room.setVideoEnabled(false); });
+      const upLink = document.createElement('a');
+      upLink.className = 'tr-btn primary';
+      upLink.style.textDecoration = 'none';
+      upLink.href = upgradeHref;
+      upLink.target = '_blank';
+      upLink.rel = 'noopener';
+      upLink.textContent = 'Upgrade to SFU';
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button'; dismiss.className = 'tr-btn'; dismiss.textContent = 'Dismiss';
+      dismiss.addEventListener('click', () => { dismissedMeshTip = true; render(room.snapshot()); });
+      actions.append(audioBtn, upLink, dismiss);
+      meshTip.append(copy, actions);
+      frag.append(meshTip);
+    }
 
     // 1-click Waiting Room Admit toasts.
     for (const knock of waitingGuests.values()) {

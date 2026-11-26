@@ -5,6 +5,7 @@ import { generateWrapKeyPair } from '../src/mcp-crypto';
 import { generateConnectionKey } from '../src/oauth-outbound/crypto';
 import { unsealAgentTokens, consumeConnectionCallbackFragment } from '../../contract/connections.mjs';
 import { sha256Hex } from '../src/ids';
+import { applyPlanToAccount } from '../src/billing/entitlements';
 
 async function importX25519Priv(raw32: Uint8Array): Promise<CryptoKey> {
   const prefix = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20]);
@@ -180,6 +181,20 @@ it('Tier B (host-brokered wrapped proxy): enforces K_conn wrapping, auto-refresh
       allowed_hosts: ['api.tracker.example.org'],
     }),
   })).status).toBe(201);
+
+  // Verify real Free -> Pro -> Team billing gates via unified `billing/entitlements.ts`
+  expect((await req('/api/account/connections', {
+    method: 'POST', anonymous: true, headers: acctHeaders,
+    body: JSON.stringify({ provider: 'custom:tracker', tier: 'host-brokered', custody: 'personal', actions: ['http:request'] }),
+  })).status).toBe(402);
+
+  await applyPlanToAccount(env, h.account!, 'pro');
+  expect((await req('/api/account/connections', {
+    method: 'POST', anonymous: true, headers: acctHeaders,
+    body: JSON.stringify({ provider: 'custom:tracker', tier: 'host-brokered', custody: 'page', page_id: h.id, actions: ['http:request'] }),
+  })).status).toBe(402);
+
+  await applyPlanToAccount(env, h.account!, 'team');
 
   // Create a shared team (`custody: "page"`) Tier B connection
   const startTeam = await (await req('/api/account/connections', {

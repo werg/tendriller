@@ -41,7 +41,24 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
   const h = await createPage();
   try {
     await page.addInitScript(() => {
-      (window as any).__speechE2E = { decoderCalls: 0, transcribes: 0, recordedBytes: 0 };
+      (window as any).__speechE2E = { decoderCalls: 0, pcmChunks: 0, transcribes: 0, recordedBytes: 0 };
+      const NativeWorklet = window.AudioWorkletNode;
+      if (typeof NativeWorklet === "function") {
+        (window as any).AudioWorkletNode = class extends NativeWorklet {
+          constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+            super(context, name, options);
+            if (name === "tendriller-voice-pcm") {
+              this.port.addEventListener("message", event => {
+                const msg = event.data;
+                if (msg?.type === "pcm" && msg.samples && typeof msg.samples.byteLength === "number") {
+                  (window as any).__speechE2E.pcmChunks++;
+                  (window as any).__speechE2E.recordedBytes += msg.samples.byteLength;
+                }
+              });
+            }
+          }
+        };
+      }
       const NativeRecorder = window.MediaRecorder;
       (window as any).MediaRecorder = class extends NativeRecorder {
         constructor(stream: MediaStream, options?: MediaRecorderOptions) {
@@ -85,7 +102,8 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
     await mic.click();
     await expect.poll(async () => (await page.evaluate(() => (window as any).__speechE2E)).transcribes).toBe(1);
     await expect(page.locator("#draft")).toHaveValue("recognized voice");
-    expect(await page.evaluate(() => (window as any).__speechE2E.decoderCalls)).toBe(1);
+    const stats = await page.evaluate(() => (window as any).__speechE2E);
+    expect(stats.pcmChunks > 0 || stats.decoderCalls === 1).toBe(true);
     expect(warnings.join(" ")).not.toMatch(/AudioContext was prevented|autoplay/i);
   } finally { await deletePage(h); }
 });

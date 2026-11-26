@@ -622,7 +622,10 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
           <p${c("home.access.openSourceNote", h.access.openSourceNote)}>${txt(h.access.openSourceNote)}</p>
         </div>
       </div>
-      <a class="oss-link" href="https://github.com/werg/tendriller"><span>werg/tendriller</span> ${icon("arrow")}</a>
+      <div style="display:flex;align-items:center;gap:.55rem;flex-wrap:wrap">
+        <a class="oss-link" href="${base}/self-host"><span>Self-host &amp; migrate</span> ${icon("arrow")}</a>
+        <a class="oss-link" href="https://github.com/werg/tendriller"><span>werg/tendriller</span> ${icon("arrow")}</a>
+      </div>
     </div>
   </section>
 

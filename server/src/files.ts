@@ -14,6 +14,7 @@ import { assetResponse, etagMatches, immutableObject } from "./immutable-cache";
 import { brandMark } from "./brand";
 import { icon, renderShell } from "./accounts/ui";
 import { broadcastSummary, publicBroadcastKeys, recordPageVersion } from "./broadcasts";
+import { getAccountEntitlements } from "./billing/entitlements";
 
 function scanContent(body: ArrayBuffer): number {
   const text = new TextDecoder().decode(body.slice(0, 1024 * 1024));
@@ -86,9 +87,13 @@ export async function deleteUnreferencedContent(t: Tendril, hash: string, olderT
 /** Stores the bytes content-addressed in R2 (skipped if already present). */
 export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
+  const owner = t.db.get<string | null>("owner_account", null);
+  const pageLimit = owner
+    ? (await getAccountEntitlements(t.env, owner, t.now()).catch(() => null))?.quotas.pageStorageBytes
+    : undefined;
   await contentOperation(t, hash, async () => {
     const riskScore = scanContent(body);
-    const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore);
+    const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, pageLimit);
     let globalReserved = false;
     let uploaded = false;
     const key = fileKey(t, hash);
@@ -152,7 +157,11 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   }
   if (riskScore >= 5) riskFlags.push("static_screening");
   const owner = t.db.get<string | null>("owner_account", null);
-  const account = owner ? await t.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(owner).first<{ created_at: number }>() : null;
+  const [account, ent] = await Promise.all([
+    owner ? t.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(owner).first<{ created_at: number }>() : Promise.resolve(null),
+    owner ? getAccountEntitlements(t.env, owner, t.now()).catch(() => null) : Promise.resolve(null),
+  ]);
+  const retentionCap = ent?.quotas.versionRetention ?? null;
   const shouldHold = riskScore >= 5 && !!account && account.created_at > t.now() - 7 * 24 * 60 * 60_000;
   if (shouldHold) {
     await t.hold("High static screening score on young account");
@@ -178,6 +187,18 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
       by,
       source: "server",
     });
+    if (retentionCap !== null && retentionCap >= 1) {
+      const stale = t.db.all<{ version: number }>(
+        "SELECT version FROM versions WHERE version != ? ORDER BY version DESC LIMIT -1 OFFSET ?",
+        next,
+        Math.max(0, retentionCap - 1),
+      );
+      for (const old of stale) {
+        t.db.run("DELETE FROM version_files WHERE version = ?", old.version);
+        t.db.run("DELETE FROM versions WHERE version = ?", old.version);
+        t.db.run("DELETE FROM trusted_versions WHERE version = ?", old.version);
+      }
+    }
     return next;
   });
   t.afterCommit(() => recordPageVersion(t.env, t.tid, n, runtimeRelease.id, runtimeRelease.version, publishedAt));

@@ -29,20 +29,20 @@ function html(body: string, status = 200, script = "", env?: Env): Response {
 }
 
 /** A browser claim must explain a capacity stop, rather than displaying an API error as a sign-in failure. */
-async function claimFailure(req: Request, env: Env, response: Response): Promise<Response> {
+async function claimFailure(req: Request, env: Env, response: Response, accountId?: string | null): Promise<Response> {
   if (!req.headers.get('Accept')?.includes('text/html') || ![413, 429].includes(response.status)) return response;
-  const body = await response.clone().json().catch(() => null) as { error?: { code?: string; limit?: number; message?: string } } | null;
-  if (body?.error?.code !== 'quota') return response;
+  const body = await response.clone().json().catch(() => null) as { error?: { code?: string; limit?: number; message?: string; quota?: string; plan?: string } } | null;
+  if (body?.error?.code !== 'quota' && body?.error?.code !== 'quota_exceeded') return response;
   const limit = body.error.limit;
-  const limits = await accountLimits(env);
+  const limits = await accountLimits(env, accountId);
   const residentCap = limits.residents ?? RESIDENT_LIMIT;
   const pageCap = limits.pages ?? PAGE_LIMIT;
-  const isResident = response.status === 429 && (body.error.message?.toLowerCase().includes('resident') || limit === residentCap);
+  const isResident = body.error.quota === 'residents' || (response.status === 429 && (body.error.message?.toLowerCase().includes('resident') || limit === residentCap));
   const explanation = isResident
-    ? `Your account can keep up to ${limit ?? residentCap} resident pages.`
-    : response.status === 429 ? `Your account can keep up to ${limit ?? pageCap} pages.`
-    : response.status === 413 ? 'Your account has reached its page storage allowance.' : 'Your account has reached its page allowance.';
-  return html(`<h1>Your account is at its page limit</h1><p>${explanation}</p><p>Open your dashboard to remove a page you no longer need, then return to this page link. Your prepared app has not been claimed.</p><p><a class="button" href="/dashboard">Open dashboard</a></p>`, response.status);
+    ? `Your account can keep up to ${limit ?? residentCap} resident pages on its current plan.`
+    : response.status === 429 ? `Your account can keep up to ${limit ?? pageCap} active pages on its current plan.`
+    : response.status === 413 ? 'Your account has reached its published asset storage allowance.' : 'Your account has reached its page allowance.';
+  return html(`<section class="card stack-sm"><span class="eyebrow">Account quota</span><h1>Your account is at its page limit</h1><p>${explanation} <strong>Your local app and device data stay safe and untouched</strong> — this prepared page simply hasn't been claimed yet.</p><p class="muted">Choose whichever path fits best: free up a slot in your dashboard, upgrade for higher limits, or run your own unlimited Tendriller host on Cloudflare.</p><div class="actions"><a class="button" href="/dashboard">Manage pages</a><a class="button secondary" href="/dashboard/billing">Upgrade plan</a><a class="button ghost" href="/self-host">Self-host on Cloudflare</a></div></section>`, response.status);
 }
 
 async function issuePageCode(env: Env, id: string, key: string, accountId: string, role: "owner" | "guest" = "owner"): Promise<Response> {
@@ -110,7 +110,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ account_id: session.accountId, identities }),
     }));
-    if (!claim.ok) return claimFailure(req, env, claim);
+    if (!claim.ok) return claimFailure(req, env, claim, session.accountId);
     return issuePageCode(env, id, key, session.accountId);
   }
   const identities = await verifiedIdentities(env, session.accountId);

@@ -15,7 +15,7 @@
         "Multi-User",
         "Talk-to-Page",
         "Camera & sensors",
-        "Open source"
+        "Zero lock-in"
       ]
     },
     "start": {
@@ -244,8 +244,8 @@
           "body": "Camera, microphone, location, screen, and hardware access are always requested explicitly on the device where you open the page."
         }
       ],
-      "openSourceTitle": "Open source & self-hostable",
-      "openSourceNote": "Inspect it, run it locally, or in your own Cloudflare (or compatible)."
+      "openSourceTitle": "Zero lock-in — open source & cleanly migratable",
+      "openSourceNote": "Your data lives locally on your devices and your apps are plain signed bundles. Inspect the code, run it locally, or self-host on your own Cloudflare account and migrate cleanly anytime."
     },
     "agentsBand": {
       "eyebrow": "For agents & builders",

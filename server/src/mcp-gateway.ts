@@ -6,6 +6,7 @@
  * or WebSocket adapter proxy.
  */
 import { registerAccountAgent } from './agents';
+import { getAccountEntitlements } from './billing/entitlements';
 import { listActiveBroadcasts } from './broadcasts';
 import type { Env } from './env';
 import { assistantDiscovery, assistantGuide, assistantGuides } from './mcp-guide';
@@ -57,7 +58,7 @@ const tools = [
       type: 'object',
       properties: {
         id: { type: 'string' }, serviceOrigin: { type: 'string' }, environment: { type: 'object' }, build: { type: 'object' },
-        readiness: { type: 'object' }, setup: { type: 'object' }, broadcasts: { type: 'object' },
+        readiness: { type: 'object' }, setup: { type: 'object' }, broadcasts: { type: 'object' }, account: { type: 'object' },
       },
       required: ['id'],
     },
@@ -142,18 +143,27 @@ const toolResult = (value: unknown, modern = false) => ({
   content: [{ type: 'text', text: JSON.stringify(value) }],
 });
 
+const QUOTA_ERROR_KEYS = ['quota', 'plan', 'used', 'limit', 'resetsAt', 'localAlternative', 'upgradeUrl', 'pricingUrl', 'selfHostUrl'] as const;
+
+function extractQuotaFields(error: unknown): Record<string, unknown> {
+  if (!(error instanceof HttpError) || !error.extra) return {};
+  if (error.code !== 'quota_exceeded' && error.code !== 'quota') return {};
+  return Object.fromEntries(QUOTA_ERROR_KEYS.filter(k => error.extra![k] !== undefined).map(k => [k, error.extra![k]]));
+}
+
 function failure(id: Rpc['id'], error: unknown, toolCall: boolean, modern: boolean) {
   const expected = error instanceof HttpError;
   const message = expected ? error.message : 'Application connection unavailable';
   const reason = expected ? error.code : 'mcp_unavailable';
+  const quotaFields = extractQuotaFields(error);
   if (!expected) console.error('MCP routing failed', error);
-  if (toolCall) return result(id, { ...(modern ? { resultType: 'complete' } : {}), ...toolResult({ code: reason, message }), isError: true });
+  if (toolCall) return result(id, { ...(modern ? { resultType: 'complete' } : {}), ...toolResult({ code: reason, message, ...quotaFields }), isError: true });
   return json({
     jsonrpc: '2.0', id,
     error: {
       code: expected ? error.extra?.rpcCode ?? -32000 : -32603,
       message,
-      data: { code: reason, ...(expected && error.extra?.reason ? { reason: error.extra.reason } : {}) },
+      data: { code: reason, ...(expected && error.extra?.reason ? { reason: error.extra.reason } : {}), ...quotaFields },
     },
   }, modern && expected && (error.extra?.rpcCode === -32601 || error.extra?.rpcCode === -32602) ? error.status : 200);
 }
@@ -175,10 +185,11 @@ async function pageMcpRequest(env: Env, pageId: string, req: Request, principal:
     signal: req.signal,
     headers: { 'Content-Type': 'application/json' },
   }));
-  const body = await response.json<{ error?: { code: string; message: string; rpcCode?: number; reason?: string }; value?: unknown }>();
+  const body = await response.json<{ error?: Record<string, unknown> & { code: string; message: string; rpcCode?: number; reason?: string }; value?: unknown }>();
   if (!response.ok || body.error) {
     const err = body.error;
-    throw new HttpError(response.status, err?.code ?? 'mcp_unavailable', err?.message, { rpcCode: err?.rpcCode, reason: err?.reason });
+    const { code: _c, message: _m, ...restExtra } = err ?? {};
+    throw new HttpError(response.status, err?.code ?? 'mcp_unavailable', err?.message, restExtra);
   }
   return body;
 }
@@ -216,7 +227,11 @@ async function submitCommandBatch(env: Env, pageId: string, req: Request, applic
         const expected = error instanceof HttpError;
         results.push({
           ok: false, operationId: item.operationId, command: item.command,
-          error: { code: expected ? error.code : 'mcp_unavailable', message: expected ? error.message : 'Command failed' },
+          error: {
+            code: expected ? error.code : 'mcp_unavailable',
+            message: expected ? error.message : 'Command failed',
+            ...extractQuotaFields(error),
+          },
         });
         if (stopOnError) break;
       }
@@ -228,9 +243,38 @@ async function submitCommandBatch(env: Env, pageId: string, req: Request, applic
 }
 
 export async function routeMcp(req: Request, env: Env, url: URL): Promise<Response> {
-  const config = await mcpOAuth(env);
-  if (!config || config.issuer !== url.origin) throw new HttpError(404, 'not_found');
   const path = url.pathname;
+  const config = await mcpOAuth(env);
+
+  if (path === '/connections' || path.startsWith('/connections/')) {
+    if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
+    const owner = await browserIdentity(req, env);
+    if (!owner) return redirect('/auth?return_to=' + encodeURIComponent(path));
+    let mcpSection = '';
+    if (config && config.issuer === url.origin) {
+      const rows = await env.ACCOUNTS.prepare(`SELECT c.page_id,c.grant_id,c.handle,c.label,g.client_id
+        FROM mcp_connections c
+        JOIN integration_oauth_grants g ON g.id=c.grant_id
+        JOIN tendrils t ON t.id=c.page_id
+        WHERE c.account_id=? AND t.owner_account=c.account_id AND t.state='active' AND g.revoked_at IS NULL AND g.expires_at>?
+        ORDER BY c.page_id LIMIT 50`).bind(owner.id, Date.now()).all<{ page_id: string; grant_id: string; handle: string; label: string; client_id: string }>();
+      const listHtml = rows.results.length
+        ? '<ul class="list">' + rows.results.map(row => {
+            const clientName = config.clients.find(c => c.id === row.client_id)?.name ?? row.client_id;
+            return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(row.label)} <span class="badge ok">@${escapeHtml(row.handle)}</span></div><p class="list-item-sub">Hosted MCP via ${escapeHtml(clientName)} · keys wrapped to OAuth token</p></div><a class="button sm secondary" href="/dashboard">Open from dashboard</a></li>`;
+          }).join('') + '</ul>'
+        : '<p class="empty">No pages are opted into hosted MCP yet. Open any page and use <strong>Page options → Agents</strong> to opt it in.</p>';
+      mcpSection = `<section class="card"><span class="eyebrow">Hosted MCP</span><h2>Assistant page connections</h2><p class="lead">Opt-in pages whose keys are wrapped to your OAuth clients’ Bearer tokens (zero plaintext keys stored on Tendriller).</p>${listHtml}<div class="actions" style="margin-top:1rem"><a class="button secondary sm" href="/oauth/connections">Manage OAuth clients</a></div></section>`;
+    }
+    const external = await renderAccountExternalConnectionsSection(env, owner.id);
+    return servicePage(
+      'Connections',
+      `<div class="page-head"><span class="eyebrow">Integrations</span><h1>Connections</h1><p class="lead">Opt-in hosted MCP pages, external OAuth integrations, and verified organization memberships.</p></div>${mcpSection}${external.html}<div class="actions" style="margin-top:1.5rem"><a class="button ghost" href="/dashboard">Back to dashboard</a></div>`,
+      external.script,
+    );
+  }
+
+  if (!config || config.issuer !== url.origin) throw new HttpError(404, 'not_found');
 
   if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') {
     if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
@@ -240,30 +284,6 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       scopes_supported: [...new Set(config.clients.flatMap(client => client.scopes))],
       bearer_methods_supported: ['header'],
     });
-  }
-
-  if (path === '/connections' || path.startsWith('/connections/')) {
-    if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
-    const owner = await browserIdentity(req, env);
-    if (!owner) return redirect('/auth?return_to=' + encodeURIComponent(path));
-    const rows = await env.ACCOUNTS.prepare(`SELECT c.page_id,c.grant_id,c.handle,c.label,g.client_id
-      FROM mcp_connections c
-      JOIN integration_oauth_grants g ON g.id=c.grant_id
-      JOIN tendrils t ON t.id=c.page_id
-      WHERE c.account_id=? AND t.owner_account=c.account_id AND t.state='active' AND g.revoked_at IS NULL AND g.expires_at>?
-      ORDER BY c.page_id LIMIT 50`).bind(owner.id, Date.now()).all<{ page_id: string; grant_id: string; handle: string; label: string; client_id: string }>();
-    const listHtml = rows.results.length
-      ? '<ul class="list">' + rows.results.map(row => {
-          const clientName = config.clients.find(c => c.id === row.client_id)?.name ?? row.client_id;
-          return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(row.label)} <span class="badge ok">@${escapeHtml(row.handle)}</span></div><p class="list-item-sub">Hosted MCP via ${escapeHtml(clientName)} · keys wrapped to OAuth token</p></div><a class="button sm secondary" href="/dashboard">Open from dashboard</a></li>`;
-        }).join('') + '</ul>'
-      : '<p class="empty">No pages are opted into hosted MCP yet. Open any page and use <strong>Page options → Agents</strong> to opt it in.</p>';
-    const external = await renderAccountExternalConnectionsSection(env, owner.id);
-    return servicePage(
-      'Connections',
-      `<div class="page-head"><span class="eyebrow">Integrations</span><h1>Connections</h1><p class="lead">Opt-in hosted MCP pages, external OAuth integrations, and verified organization memberships.</p></div><section class="card"><span class="eyebrow">Hosted MCP</span><h2>Assistant page connections</h2><p class="lead">Opt-in pages whose keys are wrapped to your OAuth clients’ Bearer tokens (zero plaintext keys stored on Tendriller).</p>${listHtml}<div class="actions" style="margin-top:1rem"><a class="button secondary sm" href="/oauth/connections">Manage OAuth clients</a></div></section>${external.html}<div class="actions" style="margin-top:1.5rem"><a class="button ghost" href="/dashboard">Back to dashboard</a></div>`,
-      external.script,
-    );
   }
 
   if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');
@@ -393,13 +413,43 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
         return complete(toolResult(await registerAccountAgent(env, principal.account, args.handle, args.publicKey, args.wrapKey, args.bio)));
       }
       if (selected.name === 'get_profile') {
-        const [discovery, feed] = await Promise.all([
+        const [discovery, feed, ent] = await Promise.all([
           assistantDiscovery(env, config.issuer),
           listActiveBroadcasts(env, { audiences: ['mcp', 'agents'] }),
+          getAccountEntitlements(env, principal.account).catch(() => null),
         ]);
         return complete(toolResult({
           id: 'profile_' + await sha256Hex(JSON.stringify([config.issuer, principal.account])),
           ...discovery,
+          ...(ent ? {
+            account: {
+              plan: ent.plan,
+              unlimitedHost: ent.unlimitedHost,
+              paygEnabled: ent.paygEnabled,
+              quotas: {
+                pages: ent.quotas.pages,
+                residents: ent.quotas.residents,
+                agents: ent.quotas.agents,
+                guestsPerPage: ent.quotas.guestsPerPage,
+                mcpPages: ent.quotas.mcpPages,
+                mcpCallsPerMonth: ent.quotas.mcpCallsPerMonth,
+                sfuEnabled: ent.quotas.sfuEnabled,
+                sfuMaxPeers: ent.quotas.sfuMaxPeers,
+                hostBrokeredOAuth: ent.quotas.hostBrokeredOAuth,
+                teamOrgOAuth: ent.quotas.teamOrgOAuth,
+              },
+              usage: {
+                period: ent.usage.period,
+                resetsAt: ent.usage.resetsAt,
+                mcpCalls: ent.usage.mcpCalls,
+                mediaBytes: ent.usage.mediaBytes,
+                relayMs: ent.usage.relayMs,
+              },
+              billingUrl: `${config.issuer}/dashboard/billing`,
+              pricingUrl: `${config.issuer}/pricing`,
+              selfHostUrl: `${config.issuer}/self-host`,
+            },
+          } : {}),
           broadcasts: {
             latestSeq: feed.latest_seq,
             issuer: feed.issuer,

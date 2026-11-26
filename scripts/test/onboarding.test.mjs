@@ -16,7 +16,8 @@ const links = content => [...content.matchAll(/\[[^\]\n]*\]\(([^\s)]+)\)/g)].map
 const digest = value => createHash('sha256').update(value).digest('hex');
 const dynamicPaths = new Set(['/', '/api/service', '/api/readiness', '/.well-known/tendriller.json',
   '/.well-known/tendriller-capabilities.json', '/contract/v3.json',
-  '/.well-known/oauth-protected-resource/mcp', '/auth', '/connections', '/oauth/connections', '/privacy', '/terms']);
+  '/.well-known/oauth-protected-resource/mcp', '/auth', '/connections', '/oauth/connections', '/privacy', '/terms',
+  '/pricing', '/self-host', '/dashboard', '/dashboard/billing', '/dashboard/export']);
 
 test('MCP, published onboarding and installable skill retain one current discovery route', () => {
   const guidePaths = Object.values(ASSISTANT_GUIDES);

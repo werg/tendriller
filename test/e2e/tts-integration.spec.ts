@@ -40,6 +40,22 @@ async function setUpVoice(context: BrowserContext, page: Page, withInput = false
     const start = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function (...args: any[]) { w.__ttsE2E.starts++; return start.apply(this, args as any); };
     if (mockInput) {
+      const NativeWorklet = window.AudioWorkletNode;
+      if (typeof NativeWorklet === "function") {
+        w.AudioWorkletNode = class extends NativeWorklet {
+          constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+            super(context, name, options);
+            if (name === "tendriller-voice-pcm") {
+              this.port.addEventListener("message", event => {
+                const msg = event.data;
+                if (msg?.type === "pcm" && msg.samples && typeof msg.samples.byteLength === "number") {
+                  w.__ttsE2E.recordedBytes += msg.samples.byteLength;
+                }
+              });
+            }
+          }
+        };
+      }
       const NativeRecorder = window.MediaRecorder;
       w.MediaRecorder = class extends NativeRecorder {
         constructor(stream: MediaStream, options?: MediaRecorderOptions) {

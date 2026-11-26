@@ -14,6 +14,7 @@ import { authorityRecord } from '../../contract/authority.mjs';
 import { create, inDO, req } from './helpers';
 import { sha256Hex } from '../src/ids';
 import { GROUP_POLICY_DOMAIN, recordGoogleWorkspaceDomain, syncGitHubOrgGroups } from '../src/groups/org-groups';
+import { applyPlanToAccount } from '../src/billing/entitlements';
 
 async function hmacHex(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -154,7 +155,7 @@ it('admin-signed group policy admits verified org members seamlessly on the page
     body: JSON.stringify({ policy: forged }),
   })).status).toBe(403);
 
-  // Owner administrator signs the real group policy
+  // Owner administrator signs the real group policy: Free tier is gated (402), Team tier succeeds (200)
   const signedPolicy = await signRecord(GROUP_POLICY_DOMAIN, {
     pageId: h.id,
     applicationId,
@@ -162,6 +163,13 @@ it('admin-signed group policy admits verified org members seamlessly on the page
     rules: [{ ruleId: 'r_eng', group: 'github-team:acme/eng', role: 'writer', label: 'Acme Engineering' }],
     updatedAt: Date.now(),
   }, ownerId);
+  expect((await req(`${h.page_url}_tendril/groups/policy`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ policy: signedPolicy }),
+  })).status).toBe(402);
+
+  await applyPlanToAccount(env, h.account!, 'team');
   const putRes = await req(`${h.page_url}_tendril/groups/policy`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

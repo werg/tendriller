@@ -177,9 +177,10 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     expect(manifest.scope).toBe(new URL(base).pathname);
     expect(manifest.display).toBe('standalone');
     // Real browser icon fetching/rendering catches auth, format and dimension errors
-    // that inspecting manifest JSON alone cannot establish.
-    expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
-    expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+    // that inspecting manifest JSON alone cannot establish. Poll briefly because the
+    // background icon rasterizer can refresh the manifest href with `?icons=...`.
+    await expect.poll(async () => (await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+    await expect.poll(async () => Boolean((await cdp.send('Page.getManifestIcons')).primaryIcon)).toBe(true);
 
     const emoji = '🧑🏽‍🚀';
     expect((await agent(handle, '', 'PATCH', { icon: emoji })).status).toBe(200);
@@ -268,8 +269,13 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       ]);
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
-      // iOS can use PNG; WebP keeps the Tendriller PNG.
-      await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', format === 'png' ? customIcon : '/_tendril/brand/icon-180.png');
+      // iOS can use PNG; non-PNG custom favicons omit the generic Tendriller apple-touch-icon
+      // so mobile browsers don't rank the generic brand PNG ahead of the page's own icon.
+      if (format === 'png') {
+        await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', customIcon);
+      } else {
+        await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveCount(0);
+      }
     }
     expect((await agent(handle, '', 'PATCH', { icon: null })).status).toBe(200);
     await page.reload();

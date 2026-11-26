@@ -9,8 +9,9 @@ import { handleInvitations, sendPeerInvitation } from './peer-invitations';
 import { handleRelay } from './peer-relay';
 import { handleEnrollment } from './authority';
 import { exchangePeerPublication } from './peer-publications';
+import { handleRealtimeIce, handleRealtimeSfu } from './realtime';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|enrollment|publication|invite|discovery|discovery\/watch)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|enrollment|publication|invite|discovery|discovery\/watch|ice|sfu\/(?:sessions|tracks|renegotiate|close|usage|room))$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -72,6 +73,8 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
   if (path === 'peers/participant') return handlePeerParticipant(t, req, principal);
   if (path === 'peers/invitations') return handleInvitations(t, req, url, principal);
   if (path === 'peers/relay') return handleRelay(t, req, url, principal);
+  if (path === 'peers/ice') return handleRealtimeIce(t, req, principal);
+  if (path.startsWith('peers/sfu/')) return handleRealtimeSfu(t, req, url, path.slice('peers/sfu/'.length), principal);
   if (path === 'peers/bootstrap') {
     if (req.method === 'GET') return json(peerBootstrap(t));
     if (req.method === 'PUT') {
