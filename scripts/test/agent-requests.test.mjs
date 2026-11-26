@@ -11,6 +11,7 @@ import {
   agentRequestQueries,
   evaluateFailover,
   messageDelivery,
+  normalizePublicKeyHex,
   parseAddressing,
   readAgentFeed,
   shouldAgentRespond,
@@ -493,4 +494,35 @@ test('an in-flight uncertain handler row survives a later revision and sends no 
   assert.equal(after.phase, 'uncertain');
   assert.equal((await f.message('later-request')).receipts.length, 0,
     'no later message is acknowledged while an uncertain row is retained');
+});
+
+test('host base64url Ed25519 roster keys normalize to canonical 64-char hex for primary routing and @handle addressing', () => {
+  const atlasHex = '11'.repeat(32);
+  const reviewerHex = '22'.repeat(32);
+  const userHex = '33'.repeat(32);
+  const atlasB64Url = Buffer.from(atlasHex, 'hex').toString('base64url');
+  const reviewerB64Url = Buffer.from(reviewerHex, 'hex').toString('base64url');
+  assert.equal(atlasB64Url.length, 43);
+  assert.equal(normalizePublicKeyHex(atlasB64Url), atlasHex);
+  assert.equal(normalizePublicKeyHex(atlasHex.toUpperCase()), atlasHex);
+  assert.equal(normalizePublicKeyHex('not-a-valid-key'), null);
+
+  const hostRoster = {
+    primary_agent_id: 'ag_atlas',
+    agents: [
+      { id: 'ag_atlas', handle: 'atlas', public_key: atlasB64Url, is_primary: true },
+      { id: 'ag_reviewer', handle: 'reviewer', public_key: reviewerB64Url, is_primary: false },
+    ],
+  };
+
+  // General unaddressed chat message matches primary agent even though roster uses base64url and session uses hex.
+  const general = { author: userHex, channel: 'chat', to: [], text: 'Good morning' };
+  assert.equal(shouldAgentRespond(general, { selfPublicKey: atlasHex, roster: hostRoster }), true);
+  assert.equal(shouldAgentRespond(general, { selfPublicKey: reviewerHex, roster: hostRoster }), false);
+
+  // @handle addressing emits canonical 64-char hex recipients accepted by agentMessage schema.
+  const addressed = parseAddressing('@reviewer please check this', hostRoster);
+  assert.deepEqual(addressed.to, [reviewerHex]);
+  assert.equal(shouldAgentRespond({ author: userHex, channel: 'chat', to: addressed.to, text: '@reviewer please check this' }, { selfPublicKey: reviewerHex, roster: hostRoster }), true);
+  assert.equal(shouldAgentRespond({ author: userHex, channel: 'chat', to: addressed.to, text: '@reviewer please check this' }, { selfPublicKey: atlasHex, roster: hostRoster }), false);
 });

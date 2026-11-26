@@ -3,6 +3,62 @@ import type { RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 import { mediaRequestSettled } from "../sensors";
 
 export type CaptureMode = "local" | null;
+export type CaptureStage = "model" | "microphone_permission" | "recorder" | "transcription";
+
+/** Produce an actionable, user-safe message distinguishing OS/browser permission denial, policy, device, and stage failures. */
+export function classifyCaptureError(error: unknown, stage: CaptureStage, permissionState?: string | null): string {
+  const name = (error && typeof error === "object" && "name" in error && typeof (error as { name?: unknown }).name === "string")
+    ? (error as { name: string }).name : "";
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+
+  if (stage === "microphone_permission") {
+    if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+      if (permissionState === "denied") {
+        return "Microphone access is blocked for this site or browser (NotAllowedError). Allow microphone permission in your browser site settings and device app permissions, then try again or type instead.";
+      }
+      return "Microphone permission was not granted (NotAllowedError). If no prompt appeared, check that your browser is allowed to use the microphone in your device/OS app permissions and site settings, or type instead.";
+    }
+    if (name === "SecurityError") {
+      return "Microphone capture requires a secure HTTPS context or is blocked by browser/device policy (SecurityError). You can type instead.";
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return "No microphone was found on this device (NotFoundError). Connect a microphone or type instead.";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "The microphone is busy or blocked by another app or device privacy switch (NotReadableError). Close other apps using the mic and try again, or type instead.";
+    }
+    if (name === "OverconstrainedError") {
+      return "This device's microphone could not match the requested audio settings (OverconstrainedError). You can type instead.";
+    }
+    if (name === "AbortError") {
+      return "Microphone request was interrupted before recording started (AbortError). Tap the microphone to try again, or type instead.";
+    }
+    if (raw) return `Microphone could not start${name ? ` (${name})` : ""}: ${raw}`;
+    return "Microphone unavailable. Check browser and device microphone permissions, or type instead.";
+  }
+
+  if (stage === "recorder") {
+    return `Recording could not start${name ? ` (${name})` : ""}. Check your microphone and try again, or type instead.`;
+  }
+
+  if (raw) return raw;
+  return "Microphone unavailable. You can type instead.";
+}
+
+async function probeMicrophonePermissionState(): Promise<string | null> {
+  try {
+    const query = navigator.permissions?.query;
+    if (typeof query !== "function") return null;
+    const result = await Promise.race([
+      query.call(navigator.permissions, { name: "microphone" as PermissionName }),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 250)),
+    ]);
+    return result && typeof result.state === "string" ? result.state : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface CaptureHandlers {
   onConsent(): Promise<boolean>;
   onInterim(text: string): void;
@@ -114,18 +170,38 @@ export class SpeechCapture {
 
   /** Warm transcription without opening the microphone. */
   async prepare(): Promise<void> {
-    if (!this.mode) throw new Error("Private speech is unavailable on this device. You can type instead.");
+    if (!this.mode) {
+      const missing: string[] = [];
+      if (!this.speech) missing.push("on-device speech model");
+      if (!navigator.mediaDevices?.getUserMedia) missing.push("microphone capture");
+      if (typeof MediaRecorder === "undefined") missing.push("MediaRecorder");
+      if (!window.OfflineAudioContext) missing.push("OfflineAudioContext");
+      if (!window.Worker) missing.push("Web Workers");
+      const detail = missing.length ? ` (missing ${missing.join(", ")})` : "";
+      throw new Error(`On-device speech capture is unavailable in this browser${detail}. You can type instead.`);
+    }
     await this.load();
   }
 
   async start(): Promise<void> {
-    if (this.disposed || this.recorder || this.starting || this.requesting || !this.mode) return;
+    if (this.disposed || this.recorder || this.starting || this.requesting) return;
+    if (!this.mode) {
+      const missing: string[] = [];
+      if (!this.speech) missing.push("on-device speech model");
+      if (!navigator.mediaDevices?.getUserMedia) missing.push("microphone capture");
+      if (typeof MediaRecorder === "undefined") missing.push("MediaRecorder");
+      if (!window.OfflineAudioContext) missing.push("OfflineAudioContext");
+      if (!window.Worker) missing.push("Web Workers");
+      this.h.onError(`On-device speech capture is unavailable in this browser${missing.length ? ` (missing ${missing.join(", ")})` : ""}. You can type instead.`);
+      return;
+    }
     if (this.processing) { this.h.onError("Transcription is still in progress. Wait or cancel it before recording again."); return; }
     this.starting = true;
     const session = ++this.session;
     this.cancelled = false;
     const cancelled = new Promise<void>(resolve => { this.cancelStart = resolve; });
     let permissionTimer: ReturnType<typeof setTimeout> | null = null;
+    let stage: CaptureStage = "model";
     try {
       const language = this.lang().split("-")[0].toLowerCase();
       if (!["en", "de", "fr", "es", "it", "nl", "pl"].includes(language)) throw new Error("Speech currently supports English, German, French, Spanish, Italian, Dutch and Polish. Choose one in page settings or type instead.");
@@ -133,10 +209,12 @@ export class SpeechCapture {
       if (this.cancelled || session !== this.session) return;
       this.h.onInterim("Waiting for microphone permission…");
       if (this.cancelled || session !== this.session) return;
+      stage = "microphone_permission";
       const media = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       this.requesting = true;
       const opening = media.then(stream => {
         if (this.cancelled || session !== this.session || this.disposed) { stream.getTracks().forEach(track => track.stop()); return; }
+        stage = "recorder";
         this.stream = stream;
         try {
           const tracks = stream.getAudioTracks?.() || stream.getTracks();
@@ -192,7 +270,12 @@ export class SpeechCapture {
       await Promise.race([opening, cancelled, permissionDeadline]);
     } catch (error) {
       this.releaseStream(); this.recorder = null;
-      if (!this.cancelled && session === this.session) this.h.onError(error instanceof Error ? error.message : "Microphone unavailable. You can type instead.");
+      if (!this.cancelled && session === this.session) {
+        const perm = stage === "microphone_permission" ? await probeMicrophonePermissionState() : null;
+        if (!this.cancelled && session === this.session) {
+          this.h.onError(classifyCaptureError(error, stage, perm));
+        }
+      }
     } finally {
       if (permissionTimer !== null) clearTimeout(permissionTimer);
       this.starting = false;

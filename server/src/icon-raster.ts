@@ -13,11 +13,16 @@ const SIZE_LOOKUP_MS = 2500;
 
 interface StoredRaster { key: string; any: string; maskable: string }
 
-/** Identity of the SVG pair the rasters were drawn from. */
+/** Identity of the SVG pair the rasters were drawn from (emoji or default page initial+theme). */
 export function iconRasterKey(t: Tendril): string | null {
   const icon = t.db.get<string | null>("icon", null);
-  if (!icon || !isEmojiIcon(icon)) return null;
-  return JSON.stringify([1, icon, t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR]);
+  const themeColor = t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR;
+  if (icon) {
+    if (!isEmojiIcon(icon)) return null;
+    return JSON.stringify([1, icon, themeColor]);
+  }
+  const letter = (t.db.get("name", "Tendril").trim()[0] ?? "T").toUpperCase();
+  return JSON.stringify([2, letter, themeColor]);
 }
 
 /** A short cache-busting tag for the icon URLs. */
@@ -70,8 +75,7 @@ export function iconRasterResponse(t: Tendril, which: "any" | "maskable", head: 
  */
 export async function appleTouchIcon(t: Tendril, base: string, requestBase: string): Promise<{ href: string; sizes?: string } | null> {
   const icon = t.db.get<string | null>("icon", null);
-  if (!icon) return null;
-  if (isEmojiIcon(icon)) {
+  if (!icon || isEmojiIcon(icon)) {
     const raster = currentIconRaster(t);
     return raster ? { href: `${base}_tendril/icon-maskable-512.png?v=${iconRasterTag(raster.key)}`, sizes: "512x512" } : null;
   }
@@ -79,6 +83,12 @@ export async function appleTouchIcon(t: Tendril, base: string, requestBase: stri
   if (/\.png(?:$|[?#])/i.test(icon)) return { href: icon };
   const size = await remoteIconSize(t, icon, requestBase);
   return size && (size.type === "image/png" || size.type === "image/jpeg") ? { href: icon, sizes: `${size.width}x${size.height}` } : null;
+}
+
+/** Rasterized 512px PNG favicon when the owner's browser has drawn one for this page's icon. */
+export function rasterFavicon(t: Tendril, base: string): { href: string; sizes: string } | null {
+  const raster = currentIconRaster(t);
+  return raster ? { href: `${base}_tendril/icon-512.png?v=${iconRasterTag(raster.key)}`, sizes: "512x512" } : null;
 }
 
 /** Pixel size of a PNG, GIF, WebP or JPEG from its leading bytes. */

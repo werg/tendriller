@@ -103,6 +103,12 @@ const facets = await window.tendril.publication.mountFacets(document.querySelect
 // Build a shareable URL that opens directly into a specific facet over the same Chronolog state:
 const boardLink = facets.url('notes'); // e.g. https://.../s/<page>/?view=notes
 
+// Navigating between views/tabs on a live page:
+// Published pages inject `<base href=".../_publications/<id>/">` so relative assets stay immutable.
+// Always resolve links and `history.pushState`/`replaceState` targets with `window.tendril.documentUrl(...)`
+// (e.g., `history.pushState(null, '', window.tendril.documentUrl('#journal'))`) so tab changes keep
+// the canonical live URL instead of accidentally pinning the address to an old `/_publications/<id>/` version.
+
 // Or mount a single standalone hot-swappable slot without URL routing:
 const slot = await window.tendril.publication.mountSlot('stage', document.querySelector('#stage-host'), {
   module: 'slots/stage.mjs',

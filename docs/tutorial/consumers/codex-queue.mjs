@@ -22,10 +22,11 @@ const ID = /^[A-Za-z0-9_.:-]{1,200}$/u;
 const CHANNELS = new Set(['chat', 'agents']);
 
 function optionsFor({ threadId, cwd, requestTopics, remote = 'unix://', remoteAuthTokenEnv,
-  timeoutMs = 30_000, execute = executeFile, connect = openCodexRpc }) {
+  timeoutMs = 30_000, unsupportedPages = 'skip', execute = executeFile, connect = openCodexRpc }) {
   if (!UUID.test(threadId ?? '') || !isAbsolute(cwd ?? '') || !Array.isArray(requestTopics)
     || !requestTopics.length || requestTopics.length > 2
     || requestTopics.some(topic => !CHANNELS.has(topic)) || typeof execute !== 'function' || typeof connect !== 'function'
+    || !['skip', 'fail'].includes(unsupportedPages)
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw fail('CODEX_QUEUE_OPTIONS_INVALID', 'Supply an exact thread UUID, absolute workspace and handled message channels (chat, agents).');
   }
@@ -49,7 +50,46 @@ function optionsFor({ threadId, cwd, requestTopics, remote = 'unix://', remoteAu
     throw fail('CODEX_QUEUE_AUTH_ENV_INVALID', 'Name the environment variable; never pass its token value.');
   }
   return { threadId, cwd: resolve(cwd), requestTopics: [...new Set(requestTopics)].sort(),
-    remote, remoteAuthTokenEnv, timeoutMs, execute, connect };
+    remote, remoteAuthTokenEnv, timeoutMs, unsupportedPages, execute, connect };
+}
+
+const REQUEST_DOCS = 'docs/AGENT_REQUESTS.md';
+const isUnknownQueryError = error => error?.code === 'APPLICATION_QUERY_UNKNOWN'
+  || /\bAPPLICATION_QUERY_UNKNOWN\b/u.test(error?.message ?? '');
+
+function missingFeedDiagnostic(page, missing = ['query:agentFeed']) {
+  const list = missing.join(', ');
+  const next = `Page "${page.slug}" (${page.id}) does not declare the optional request-feed interface (${list}). `
+    + `Export agentRequestCommands and agentRequestQueries from shared/helpers/agent-requests.mjs in pages/${page.slug}/domain.mjs (see ${REQUEST_DOCS}), `
+    + `or omit "${page.slug}" from --pages.`;
+  return { page: page.slug, pageId: page.id, supported: false, missing, docs: REQUEST_DOCS, next };
+}
+
+/** Read-only preflight of a page's optional agent request-protocol capabilities. */
+export async function inspectPageRequestSupport(page, session) {
+  const described = typeof session.describe === 'function' ? await Promise.resolve(session.describe()) : null;
+  if (described && typeof described === 'object') {
+    const queries = Array.isArray(described.queries) ? described.queries.map(q => (typeof q === 'string' ? q : q?.name)) : Object.keys(described.queries ?? {});
+    const commands = Array.isArray(described.commands) ? described.commands.map(c => (typeof c === 'string' ? c : c?.name)) : Object.keys(described.commands ?? {});
+    const missing = [];
+    if (!queries.includes('agentFeed')) missing.push('query:agentFeed');
+    if (commands.length > 0 && !commands.includes('agentMessage')) missing.push('command:agentMessage');
+    if (commands.length > 0 && !commands.includes('agentReceipt')) missing.push('command:agentReceipt');
+    if (missing.length) return missingFeedDiagnostic(page, missing);
+    return { page: page.slug, pageId: page.id, supported: true, missing: [] };
+  }
+  try {
+    const value = (await session.query('agentFeed', null))?.value;
+    if (!Array.isArray(value?.messages) || !Array.isArray(value?.activity)) {
+      return missingFeedDiagnostic(page, ['query:agentFeed']);
+    }
+    return { page: page.slug, pageId: page.id, supported: true, missing: [] };
+  } catch (error) {
+    if (isUnknownQueryError(error)) {
+      return missingFeedDiagnostic(page, ['query:agentFeed', 'command:agentMessage', 'command:agentReceipt']);
+    }
+    throw error;
+  }
 }
 
 /** Capability check only: --help never sends a message or starts a turn. */
@@ -246,8 +286,19 @@ export async function consumeCodexRequests({ page, session, checkpoint, roster, 
   const save = async () => { await checkpoint.save(state); };
   const readFeed = async () => {
     if (feed) return feed;
-    const value = (await session.query('agentFeed', null)).value;
-    if (!Array.isArray(value?.messages) || !Array.isArray(value?.activity)) throw fail('CODEX_QUEUE_FEED_INVALID', 'This page must expose the declared agentFeed query.');
+    let value;
+    try { value = (await session.query('agentFeed', null)).value; }
+    catch (error) {
+      if (isUnknownQueryError(error)) {
+        const diag = missingFeedDiagnostic(page, ['query:agentFeed', 'command:agentMessage', 'command:agentReceipt']);
+        throw Object.assign(fail('CODEX_QUEUE_REQUEST_FEED_MISSING', diag.next), { page: page.slug, pageId: page.id, missing: diag.missing, docs: diag.docs });
+      }
+      throw error;
+    }
+    if (!Array.isArray(value?.messages) || !Array.isArray(value?.activity)) {
+      const diag = missingFeedDiagnostic(page, ['query:agentFeed']);
+      throw Object.assign(fail('CODEX_QUEUE_FEED_INVALID', diag.next), { page: page.slug, pageId: page.id, missing: diag.missing, docs: diag.docs });
+    }
     return feed = value;
   };
   await consumeNativeEvents(session, {
@@ -352,12 +403,51 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
     previousAdmission = work.catch(() => {});
     return work;
   };
-  const jobs = pages.map(async page => {
-    let attached, checkpoint;
+  // Preflight every selected page's request-protocol capabilities before opening checkpoints or consumers.
+  const attachments = [];
+  const supported = [];
+  const unsupported = [];
+  try {
+    for (const page of pages) {
+      lifetime.throwIfAborted();
+      const attached = await page.attach({ signal: lifetime });
+      attachments.push({ page, attached });
+      opened.add(page.id);
+      if (!DEVICE.test(attached.session.identity.publicKey ?? '')) {
+        throw fail('CODEX_QUEUE_SIGNER_INVALID', `Page "${page.slug}" attachment must identify its actual signer.`);
+      }
+      const check = await inspectPageRequestSupport(page, attached.session);
+      if (check.supported) {
+        onState({ page: page.slug, pageId: page.id, state: 'request_protocol_ready' });
+        supported.push({ page, attached });
+      } else {
+        unsupported.push(check);
+        onState({ page: page.slug, pageId: page.id, state: 'request_protocol_missing', missing: check.missing, next: check.next, docs: check.docs });
+        await attached.detach();
+        opened.delete(page.id);
+      }
+    }
+    if (unsupported.length && (selected.unsupportedPages === 'fail' || supported.length === 0)) {
+      const summary = unsupported.map(item => item.next).join(' ');
+      throw Object.assign(fail('CODEX_QUEUE_REQUEST_FEED_MISSING', summary), { unsupported, docs: REQUEST_DOCS });
+    }
+    for (const item of unsupported) {
+      onState({ page: item.page, pageId: item.pageId, state: 'skipped_unsupported', missing: item.missing, next: item.next, docs: item.docs });
+    }
+    onOpened();
+  } catch (error) {
+    for (const { page, attached } of attachments) {
+      if (opened.has(page.id)) {
+        try { await attached.detach(); } finally { opened.delete(page.id); }
+      }
+    }
+    onClosed();
+    throw error;
+  }
+
+  const jobs = supported.map(async ({ page, attached }) => {
+    let checkpoint;
     try {
-      attached = await page.attach({ signal: lifetime });
-      opened.add(page.id); onOpened();
-      if (!DEVICE.test(attached.session.identity.publicKey ?? '')) throw fail('CODEX_QUEUE_SIGNER_INVALID', 'The page attachment must identify its actual signer.');
       checkpoint = await openConsumerCheckpoint(join(stateDirectory, `${digest(page.id)}.json`), {
         scope: { kind: 'codex-queue-v2', pageId: page.id, recipient: attached.session.identity.publicKey,
           threadId: selected.threadId, cwd: selected.cwd, remote: selected.remote,
@@ -367,7 +457,7 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
     } catch (error) { stop.abort(error); throw error; }
     finally {
       try { await checkpoint?.close(); }
-      finally { if (attached) { await attached.detach(); opened.delete(page.id); } }
+      finally { if (opened.has(page.id)) { await attached.detach(); opened.delete(page.id); } }
     }
   });
   const results = await Promise.allSettled(jobs);
@@ -376,7 +466,7 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
   if (failed) throw failed.reason;
 }
 
-const usage = 'node consumers/codex-queue.mjs --workspace /absolute/workspace --pages notes,other --thread UUID --topics chat[,agents] [--remote unix://] [--state-dir /private/path] [--remote-auth-token-env NAME]';
+const usage = 'node consumers/codex-queue.mjs --workspace /absolute/workspace --pages notes,other --thread UUID --topics chat[,agents] [--remote unix://] [--state-dir /private/path] [--remote-auth-token-env NAME] [--on-unsupported skip|fail]';
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.includes('--help')) console.log(usage);
   else {
@@ -384,14 +474,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     try {
       const args = process.argv.slice(2), values = new Map();
       for (let index = 0; index < args.length; index += 2) {
-        if (!['--workspace', '--pages', '--thread', '--topics', '--remote', '--state-dir', '--remote-auth-token-env'].includes(args[index])
+        if (!['--workspace', '--pages', '--thread', '--topics', '--remote', '--state-dir', '--remote-auth-token-env', '--on-unsupported'].includes(args[index])
           || !args[index + 1] || values.has(args[index])) throw Error(usage);
         values.set(args[index], args[index + 1]);
       }
       for (const required of ['--workspace', '--pages', '--thread', '--topics']) if (!values.has(required)) throw Error(usage);
       const cwd = values.get('--workspace'), threadId = values.get('--thread');
       const selectedOptions = optionsFor({ cwd, threadId, requestTopics: values.get('--topics').split(','),
-        remote: values.get('--remote') ?? 'unix://', remoteAuthTokenEnv: values.get('--remote-auth-token-env') });
+        remote: values.get('--remote') ?? 'unix://', remoteAuthTokenEnv: values.get('--remote-auth-token-env'),
+        unsupportedPages: values.get('--on-unsupported') ?? 'skip' });
       const { openWorkspace, attachPage } = await import('@tendriller/tools/workspace');
       const workspace = await openWorkspace({ root: selectedOptions.cwd }), client = await workspace.client();
       const pages = await Promise.all(values.get('--pages').split(',').map(async slug => {

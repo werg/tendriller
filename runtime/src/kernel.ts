@@ -1,4 +1,4 @@
-import { validateDocumentContext, resolveDocumentUrl } from "./document";
+import { validateDocumentContext, resolveDocumentUrl, guardLiveHistoryNavigation } from "./document";
 import { explicitlyPinned, watchPublicationUpdates } from "./updates";
 import { createSlotManager } from "./slots";
 import { buildFacetUrl, mountFacets } from "./facets";
@@ -62,6 +62,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   const broadcasts = createBroadcastsStore(cfg, { autoFetch: options.watchPublication === true });
   const core = createCore(cfg, options.application);
   const pinned = explicitlyPinned(cfg);
+  guardLiveHistoryNavigation(cfg, pinned);
   const fetchLatestPublication = async () => {
     const info = await core.host.request<{ version: number; publication?: import("../../contract/index.mjs").PublicationManifest | null }>("info");
     return {

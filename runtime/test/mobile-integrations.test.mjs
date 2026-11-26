@@ -16,6 +16,10 @@ const shareBundle = await build({
   entryPoints: [new URL('../src/share-target.ts', import.meta.url).pathname],
   bundle: true, format: 'iife', globalName: 'ShareTarget', platform: 'browser', write: false,
 });
+const captureBundle = await build({
+  entryPoints: [new URL('../src/voice/capture.ts', import.meta.url).pathname],
+  bundle: true, format: 'iife', globalName: 'VoiceCapture', platform: 'browser', write: false,
+});
 
 test('observeVisualViewport publishes and restores viewport and keyboard CSS properties', () => {
   const props = new Map();
@@ -189,4 +193,24 @@ test('shareOrDownloadFile uses native file share when available and falls back t
     if (origDoc === undefined) delete globalThis.document;
     else Object.defineProperty(globalThis, 'document', { configurable: true, value: origDoc });
   }
+});
+
+test('classifyCaptureError turns opaque platform microphone errors into actionable stage-specific diagnostics', () => {
+  const ctx = {};
+  runInNewContext(captureBundle.outputFiles[0].text, ctx);
+  const { classifyCaptureError } = ctx.VoiceCapture;
+  const firefoxAndroidErr = Object.assign(new Error('The request is not allowed by the user agent or the platform in the current context.'), { name: 'NotAllowedError' });
+  const deniedMsg = classifyCaptureError(firefoxAndroidErr, 'microphone_permission', 'denied');
+  assert.match(deniedMsg, /NotAllowedError/);
+  assert.match(deniedMsg, /site settings/i);
+  assert.match(deniedMsg, /device app permissions/i);
+
+  const promptBlockedMsg = classifyCaptureError(firefoxAndroidErr, 'microphone_permission', 'prompt');
+  assert.match(promptBlockedMsg, /NotAllowedError/);
+  assert.match(promptBlockedMsg, /If no prompt appeared/i);
+
+  assert.match(classifyCaptureError(Object.assign(new Error('insecure'), { name: 'SecurityError' }), 'microphone_permission'), /HTTPS|policy/i);
+  assert.match(classifyCaptureError(Object.assign(new Error('missing'), { name: 'NotFoundError' }), 'microphone_permission'), /No microphone/i);
+  assert.match(classifyCaptureError(Object.assign(new Error('busy'), { name: 'NotReadableError' }), 'microphone_permission'), /busy|another app/i);
+  assert.match(classifyCaptureError(Object.assign(new Error('interrupted'), { name: 'AbortError' }), 'microphone_permission'), /interrupted/i);
 });

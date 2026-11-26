@@ -655,14 +655,25 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
           const channel = params.channel === 'agents' ? 'agents' : 'chat';
           const textVal = string(params.text, 8000);
           const toInput = Array.isArray(params.to) ? params.to : [];
+          const toHex = (raw: string): string => {
+            if (/^[a-f0-9]{64}$/iu.test(raw)) return raw.toLowerCase();
+            const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+            const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+            const bin = atob(padded);
+            if (bin.length !== 32) throw new HttpError(400, 'invalid_agent_key', 'Agent public key is not a valid 32-byte Ed25519 key.');
+            let out = '';
+            for (let i = 0; i < 32; i++) out += bin.charCodeAt(i).toString(16).padStart(2, '0');
+            return out;
+          };
           const resolvedTo = toInput.map((target: unknown) => {
             if (target === '*') return '*';
             const raw = string(target, 128);
-            if (/^[a-f0-9]{64}$/u.test(raw)) return raw;
+            if (/^[a-f0-9]{64}$/iu.test(raw)) return raw.toLowerCase();
+            if (/^[A-Za-z0-9+/_-]{43,44}={0,2}$/u.test(raw)) return toHex(raw);
             const handle = raw.replace(/^@+/, '').toLowerCase();
             const hit = roster.agents.find(a => a.handle === handle);
             if (!hit) throw new HttpError(404, 'unknown_agent_handle', `No agent @${handle} on this page.`);
-            return hit.public_key;
+            return toHex(hit.public_key);
           });
           steps = [{
             kind: 'emit',

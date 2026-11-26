@@ -99,3 +99,30 @@ for (const [status, code] of [[404, 'invalid_response'], [404, 'route_not_found'
     await watch.close();
   });
 }
+
+test('current host mcp setup snapshots keep the watch open without terminal close while invalid mcp payloads fail closed', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+  const mcpEmpty = { type: 'setup', version: 1, mcp: { connected: false, grants: [], updatedAt: 0 } };
+  const mcpConnected = { type: 'setup', version: 1, mcp: { connected: true, grants: ['grant-1'], updatedAt: 1700000000 } };
+  const ws = socket(), notices = [], states = [];
+  let opens = 0;
+  const watch = watchApplicationSetup({
+    page: fakePage(),
+    onChange: value => notices.push(value),
+    onStatus: value => states.push(value),
+    openSocket: () => { opens++; return ws; },
+  });
+  ws.open();
+  ws.message(mcpEmpty);
+  ws.message(mcpConnected);
+  t.mock.timers.tick(48 * 3600000);
+  await flush();
+  assert.equal(opens, 1);
+  assert.deepEqual(notices, [mcpEmpty, mcpConnected]);
+  assert.equal(states.some(s => s.state === 'closed'), false);
+  await watch.close();
+
+  // Invalid mcp shape (connected true with empty grants, or unknown extra field) still fails closed.
+  assert.throws(() => validateSetupNotice({ type: 'setup', version: 1, mcp: { connected: true, grants: [], updatedAt: 0 } }));
+  assert.throws(() => validateSetupNotice({ ...mcpEmpty, extra: 'nope' }));
+});

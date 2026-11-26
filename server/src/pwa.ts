@@ -6,6 +6,8 @@ export interface PageBranding {
   icon?: string | null;
   /** Resolved iOS home-screen icon (PNG/JPEG), when one is known. */
   appleIcon?: { href: string; sizes?: string } | null;
+  /** Rasterized page-specific PNG favicon (for Android Firefox / mobile browsers that prefer raster over SVG). */
+  rasterIcon?: { href: string; sizes?: string } | null;
 }
 
 export const DEFAULT_THEME_COLOR = "#2d6a4f";
@@ -109,6 +111,14 @@ export function pageIcons(base: string, icon: string | null, extra: { rasterTag?
     const size = extra.customSize;
     const custom = { src: icon, sizes: size ? `${size.width}x${size.height}` : "any", type, purpose: "any" };
     return size && Math.min(size.width, size.height) >= 144 ? [custom] : [custom, brand];
+  }
+  if (!icon && extra.rasterTag) {
+    return [
+      { src: `${base}_tendril/icon-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: `${base}_tendril/icon-maskable-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
+      maskable,
+    ];
   }
   return [
     brand,

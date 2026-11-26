@@ -703,6 +703,94 @@ test('mobile full-screen chat tracks visualViewport when soft keyboard opens wit
   }
 });
 
+test('failed voice send on ENDPOINT_CLOSED preserves transcript without overwriting draft and reuses operationId on retry', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  await page.route('https://layout.test/voice-endpoint-closed.mjs', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export function createVoice(runtime, handlers) {
+      return {
+        get speaking() { return false; },
+        get listening() { return false; },
+        get muted() { return true; },
+        language() {},
+        async startCapture() { handlers.status({ kind: 'capture', state: 'recording' }); },
+        finishCapture() {
+          handlers.status({ kind: 'capture', state: 'idle' });
+          handlers.transcript('Dictated check-in note');
+        },
+        cancelCapture() { handlers.status({ kind: 'capture', state: 'idle' }); },
+        stop() {},
+        mute() {},
+        dispose() {},
+      };
+    }`,
+  }));
+  await page.evaluate(() => {
+    const w = window as any;
+    w.api.assetUrl = () => 'https://layout.test/voice-endpoint-closed.mjs';
+    w.submitted = [];
+    w.storedEvents = [];
+    w.failNextSubmit = true;
+    w.api.application = {
+      available: true,
+      backend: {
+        status: { canAuthor: true, phase: 'ready', connectedPeers: 0 },
+        onStatus() { return () => {}; },
+        async readView() {
+          return {
+            async readEvents() { return { events: w.storedEvents, hasMore: false, cursor: 'c1' }; },
+            async release() {},
+          };
+        },
+        async *changes() { /* idle */ },
+        async submit(req: any) {
+          w.submitted.push(req);
+          if (w.failNextSubmit) {
+            w.failNextSubmit = false;
+            throw Object.assign(new Error('ENDPOINT_CLOSED'), { code: 'ENDPOINT_CLOSED' });
+          }
+          w.storedEvents.push({
+            id: 'ev1',
+            operationId: req.operationId,
+            author: '00'.repeat(32),
+            authorTimestampMs: String(Date.now()),
+            topic: 'agent/message',
+            payload: req.program.steps[0].payload,
+          });
+        },
+      },
+    };
+    // Re-mount so chatModal attaches to the installed application backend
+    w.disposeUtility();
+    w.mount();
+  });
+
+  // Trigger voice dictation from the dock while chat modal is closed -> fails with ENDPOINT_CLOSED
+  const talkBtn = page.getByRole('button', { name: 'Talk to assistant', exact: true });
+  await talkBtn.hover();
+  const voiceBtn = page.getByRole('button', { name: 'Voice input', exact: true });
+  await expect.poll(async () => (await voiceBtn.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
+  await voiceBtn.click();
+  const stopVoiceBtn = page.getByRole('button', { name: 'Finish voice input', exact: true });
+  await expect(stopVoiceBtn).toHaveAttribute('data-recording', 'true');
+  await stopVoiceBtn.click();
+
+  // Chat modal opens automatically with the preserved dictated transcript and clear ENDPOINT_CLOSED message
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  await expect(dialog).toBeVisible();
+  const input = dialog.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(input).toHaveValue('Dictated check-in note');
+  await expect(dialog).toContainText('endpoint closed');
+
+  // Retrying without editing reuses the EXACT same operationId (no duplicate external effect)
+  await dialog.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).submitted.length)).toBe(2);
+  const [firstOpId, secondOpId] = await page.evaluate(() => (window as any).submitted.map((r: any) => r.operationId));
+  expect(secondOpId).toBe(firstOpId);
+  await expect(dialog).toContainText('Saved locally');
+});
+
 test('the page options bar drags to any corner, snaps there, remembers it and still opens on a tap', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 800 }); await fixture(page);
   const options = page.getByRole('button', { name: 'Page options', exact: true });

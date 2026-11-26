@@ -476,3 +476,92 @@ test('one bridge serializes all page admissions through connection close', async
   }), /serialized done/);
   assert.equal(queued, 2); assert.equal(maximum, 1); assert.equal(active, 0);
 });
+
+test('general chat message routes to primary agent when host roster uses base64url public keys and avoids duplicate delivery on revision rescan', async t => {
+  const state = await durable(t);
+  const deviceB64Url = Buffer.from(deviceId, 'hex').toString('base64url');
+  const hostRoster = async () => ({
+    primary_agent_id: 'ag_primary',
+    is_primary: true,
+    agents: [{ id: 'ag_primary', handle: 'atlas', public_key: deviceB64Url, is_primary: true }],
+  });
+  const generalMsg = request('general-1', { payload: { channel: 'chat', to: [], text: 'Hello general chat' } });
+  const sent = [];
+  const execute = async (_binary, argv) => { sent.push(argv[argv.indexOf('--message') + 1]); return ack(`queue-${sent.length}`); };
+  await assert.rejects(consume(sessionFor([generalMsg]).session, state.checkpoint, { roster: hostRoster, execute }), /AGENT_CONSUMER_STREAM_ENDED/);
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].includes('general-1'));
+  // Revision rescan with stale cursor must not deliver a duplicate copy.
+  await state.reopen();
+  await assert.rejects(consume(sessionFor([generalMsg], { stale: true }).session, state.checkpoint, { roster: hostRoster, execute }), /AGENT_CONSUMER_STREAM_ENDED/);
+  assert.equal(sent.length, 1);
+});
+
+test('multi-page bridge preflights request-feed capabilities, names unsupported pages, and isolates supported pages under skip vs fail policy', async t => {
+  const state = await durable(t);
+  const supported = sessionFor([request('ok-msg')], { wait: true });
+  const unsupportedSession = {
+    ...sessionFor([], { wait: true }).session,
+    async query(name) {
+      throw Object.assign(Error(`APPLICATION_QUERY_UNKNOWN: ${name}`), { code: 'APPLICATION_QUERY_UNKNOWN' });
+    },
+  };
+  let unsupportedDetaches = 0;
+  const unsupportedPage = {
+    id: 'page-recovery',
+    slug: 'recovery',
+    roster,
+    attach: async () => ({ session: unsupportedSession, async detach() { unsupportedDetaches++; } }),
+  };
+
+  // 1) All selected pages unsupported -> fails cleanly up front with page-specific guidance + docs link.
+  const allBadStates = [];
+  await assert.rejects(runCodexQueueBridge({
+    ...options,
+    stateDirectory: join(state.directory, 'all-bad'),
+    pages: [unsupportedPage],
+    execute: async () => ({ stdout: '--thread --message --resume --remote', stderr: '' }),
+    onState: s => allBadStates.push(s),
+  }), err => {
+    assert.equal(err.code, 'CODEX_QUEUE_REQUEST_FEED_MISSING');
+    assert.match(err.message, /recovery/);
+    assert.match(err.message, /agentFeed/);
+    assert.match(err.message, /docs\/AGENT_REQUESTS\.md/);
+    return true;
+  });
+  assert.equal(unsupportedDetaches, 1);
+  assert.ok(allBadStates.some(s => s.page === 'recovery' && s.state === 'request_protocol_missing'));
+
+  // 2) Mixed pages with explicit fail policy -> fails up front before opening checkpoints.
+  await assert.rejects(runCodexQueueBridge({
+    ...options,
+    unsupportedPages: 'fail',
+    stateDirectory: join(state.directory, 'mixed-fail'),
+    pages: [{ ...page, attach: supported.attach }, unsupportedPage],
+    execute: async () => ({ stdout: '--thread --message --resume --remote', stderr: '' }),
+  }), { code: 'CODEX_QUEUE_REQUEST_FEED_MISSING' });
+
+  // 3) Mixed pages with default skip policy -> skips unsupported page with diagnostic and still delivers supported page's requests.
+  const cancellation = new AbortController();
+  const mixedStates = [];
+  const sent = [];
+  const supported2 = sessionFor([request('ok-msg')], { wait: true });
+  await assert.rejects(runCodexQueueBridge({
+    ...options,
+    signal: cancellation.signal,
+    stateDirectory: join(state.directory, 'mixed-skip'),
+    pages: [{ ...page, attach: supported2.attach }, unsupportedPage],
+    execute: async (_binary, argv) => {
+      if (argv.includes('--help')) return { stdout: '--thread --message --resume --remote', stderr: '' };
+      sent.push(argv);
+      return ack(`queue-${sent.length}`);
+    },
+    onState: s => {
+      mixedStates.push(s);
+      if (s.state === 'queued') cancellation.abort(Error('delivered supported'));
+    },
+  }), /delivered supported/);
+  assert.equal(sent.length, 1);
+  assert.ok(mixedStates.some(s => s.page === 'recovery' && s.state === 'skipped_unsupported' && s.docs === 'docs/AGENT_REQUESTS.md'));
+  assert.ok(mixedStates.some(s => s.page === 'notes' && s.state === 'queued'));
+});

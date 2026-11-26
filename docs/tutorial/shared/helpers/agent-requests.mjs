@@ -9,6 +9,32 @@ const targetItem = { type: 'string', minLength: 1, maxLength: 64 };
 export const agentRequestTopics = Object.freeze(['agent/message', 'agent/receipt']);
 export const agentBusTopics = agentRequestTopics;
 
+/** Normalize a 64-char hex or 32-byte base64url/base64 Ed25519 public key to lowercase 64-char hex. */
+export function normalizePublicKeyHex(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (/^[a-f0-9]{64}$/iu.test(trimmed)) return trimmed.toLowerCase();
+  if (/^[A-Za-z0-9+/_-]{43,44}={0,2}$/u.test(trimmed)) {
+    try {
+      const b64 = trimmed.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+      let bytes;
+      if (typeof Buffer === 'function') {
+        bytes = Buffer.from(padded, 'base64');
+      } else {
+        const bin = atob(padded);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      }
+      if (bytes.length !== 32) return null;
+      let hex = '';
+      for (let i = 0; i < 32; i++) hex += bytes[i].toString(16).padStart(2, '0');
+      return hex;
+    } catch { return null; }
+  }
+  return null;
+}
+
 const validRecipient = value => value === '*' || (typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value));
 
 export const agentRequestCommands = Object.freeze({
@@ -174,7 +200,7 @@ export function parseAddressing(text, roster) {
     }
     const agent = byHandle.get(h);
     if (!agent) return;
-    const key = agent.public_key ?? agent.publicKey;
+    const key = normalizePublicKeyHex(agent.public_key ?? agent.publicKey);
     if (key && !to.includes(key)) {
       to.push(key);
       handles.push(agent.handle);
@@ -203,24 +229,27 @@ export function parseAddressing(text, roster) {
  * - General `agents` backchannel message (`to.length === 0`) does not trigger automatic replies.
  */
 export function shouldAgentRespond(message, { selfPublicKey, selfHandle, roster, maxHops = 5 } = {}) {
-  if (!message || !selfPublicKey) return false;
-  if (message.author === selfPublicKey) return false;
+  const selfHex = normalizePublicKeyHex(selfPublicKey);
+  if (!message || !selfHex) return false;
+  const authorHex = normalizePublicKeyHex(message.author) ?? message.author;
+  if (authorHex === selfHex) return false;
   if (message.expectReply === false) return false;
   const hopCount = typeof message.hopCount === 'number' ? message.hopCount : 0;
   if (hopCount >= maxHops) return false;
 
   const to = Array.isArray(message.to) ? message.to : [];
   if (to.includes('*')) return true;
-  if (to.length > 0) return to.includes(selfPublicKey);
+  if (to.length > 0) return to.some(entry => normalizePublicKeyHex(entry) === selfHex);
 
   // Unaddressed message: only primary responds, and only on the user-facing chat channel.
   if (message.channel === 'agents') return false;
   const agents = Array.isArray(roster) ? roster : (roster?.agents ?? []);
   const primaryId = Array.isArray(roster) ? null : (roster?.primary_agent_id ?? roster?.primaryId ?? null);
-  const selfEntry = agents.find(a =>
-    (a.public_key ?? a.publicKey) === selfPublicKey ||
-    (selfHandle && String(a.handle ?? '').toLowerCase() === String(selfHandle).toLowerCase()),
-  );
+  const selfEntry = agents.find(a => {
+    const entryHex = normalizePublicKeyHex(a.public_key ?? a.publicKey);
+    return (entryHex !== null && entryHex === selfHex)
+      || (selfHandle && String(a.handle ?? '').toLowerCase() === String(selfHandle).toLowerCase());
+  });
   if (!selfEntry) return false;
   if (primaryId) return selfEntry.id === primaryId;
   return Boolean(selfEntry.is_primary ?? selfEntry.isPrimary);

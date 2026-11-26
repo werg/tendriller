@@ -1,5 +1,9 @@
 export const SETUP_WATCH_PROTOCOL: 'tendriller.setup.v1';
-export interface SetupNotice { type: 'setup'; version: 1; assistant: { proposalId: string | null; approved: boolean; revision: string | null } }
+export interface SetupAssistantNotice { proposalId: string | null; approved: boolean; revision: string | null }
+export interface SetupMcpNotice { connected: boolean; grants: string[]; updatedAt: number }
+export type SetupNotice =
+  | { type: 'setup'; version: 1; assistant: SetupAssistantNotice; mcp?: SetupMcpNotice }
+  | { type: 'setup'; version: 1; mcp: SetupMcpNotice; assistant?: SetupAssistantNotice };
 export interface SetupWatchStatus {
   state: 'connected' | 'handler_failed' | 'access_revoked' | 'application_not_found' | 'reconnecting' | 'closed';
   retryInMs?: number;

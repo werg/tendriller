@@ -87,3 +87,27 @@ test('documentUrl preserves explicit pins and rejects references escaping the se
     try { window.tendril.documentUrl(reference); return false; } catch { return true; }
   }))).toEqual([true, true, true, true]);
 });
+
+test('fragment-only and query-only history.pushState/replaceState on a live page do not silently pin to an old publication', async ({ page }) => {
+  const f = await fixture(page);
+  await page.goto(base);
+  expect(await page.evaluate(() => window.tendril.publication.pinned)).toBe(false);
+
+  // Common SPA tab navigation patterns using fragment-only / query-only URLs
+  await page.evaluate(() => {
+    history.pushState({ tab: 'journal' }, '', '#journal');
+  });
+  expect(page.url()).toBe(base + '#journal');
+
+  await page.evaluate(() => {
+    history.replaceState({ tab: 'review' }, '', '?tab=review#journal');
+  });
+  expect(page.url()).toBe(base + '?tab=review#journal');
+
+  // Reloading after a new publication is selected must stay on latest (v2), NOT pinned to v1!
+  f.select(2);
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => Boolean(window.tendril?.publication));
+  expect(page.url()).toBe(base + '?tab=review#journal');
+  expect(await page.evaluate(() => ({ version: window.tendril.version, pinned: window.tendril.publication.pinned }))).toEqual({ version: 2, pinned: false });
+});

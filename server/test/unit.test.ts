@@ -183,4 +183,28 @@ describe("helpers", () => {
     expect(html).not.toContain('sizes="180x180"');
   });
 
+  it("never injects the Tendriller brand apple-touch-icon over an authored or custom page favicon", () => {
+    const authoredHtml = injectRuntime('<head><link rel="icon" href="./page-icon.svg" type="image/svg+xml"></head>', {
+      id: "x", base: "/b/", version: 0, documentPath: null,
+      application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+      branding: { name: "Daily Anchor" },
+    });
+    expect(authoredHtml).not.toContain('/_tendril/brand/icon-180.png');
+    expect(authoredHtml).not.toContain('apple-touch-icon');
+
+    const emojiHtml = injectRuntime('<head></head>', {
+      id: "x", base: "/b/", version: 0, documentPath: null,
+      application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+      branding: {
+        name: "Daily Anchor",
+        icon: "⚓",
+        rasterIcon: { href: "/b/_tendril/icon-512.png?v=abc", sizes: "512x512" },
+        appleIcon: { href: "/b/_tendril/icon-maskable-512.png?v=abc", sizes: "512x512" },
+      },
+    });
+    expect(emojiHtml).not.toContain('/_tendril/brand/icon-180.png');
+    expect(emojiHtml).toContain('<link rel="icon" href="/b/_tendril/icon-512.png?v=abc" type="image/png" sizes="512x512">');
+    expect(emojiHtml).toContain('<link rel="apple-touch-icon" href="/b/_tendril/icon-maskable-512.png?v=abc" sizes="512x512">');
+  });
+
 });

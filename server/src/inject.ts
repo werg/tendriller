@@ -90,19 +90,28 @@ function installMetadata(html: string, cfg: InjectConfig): string {
     (attributes.get("rel") ?? "").toLowerCase().split(/\s+/).some(value => names.includes(value)));
   const meta = (name: string) => tags.some(({ tag, attributes }) => tag === "meta" && attributes.get("name")?.toLowerCase() === name);
   const authoredManifest = link("manifest");
+  const authoredIcon = link("icon");
   const branding = cfg.branding;
   const customFavicon = branding?.icon && !isEmojiIcon(branding.icon) ? branding.icon : null;
   const faviconType = customFavicon ? iconMediaType(customFavicon) : "image/svg+xml";
   const customAppleIcon = branding?.appleIcon ?? (branding?.icon && iconMediaType(branding.icon) === "image/png" ? { href: branding.icon } : null);
+  const rasterIcon = !customFavicon ? branding?.rasterIcon : null;
+  // Never inject the generic Tendriller brand apple-touch-icon over a page that already
+  // authored its own `<link rel="icon">` or configured a custom/emoji icon — Android Firefox
+  // ranks a 180x180 PNG apple-touch-icon ahead of SVG/authored favicons for tab & bookmark icons.
+  const appleIconTag = !authoredManifest && !link("apple-touch-icon", "apple-touch-icon-precomposed")
+    ? customAppleIcon
+      ? `<link rel="apple-touch-icon" href="${attr(customAppleIcon.href)}"${customAppleIcon.sizes ? ` sizes="${attr(customAppleIcon.sizes)}"` : ""}>`
+      : (!authoredIcon && !branding?.icon ? `<link rel="apple-touch-icon" href="/_tendril/brand/icon-180.png" sizes="180x180">` : "")
+    : "";
   return [
     // Fetching a same-origin manifest still omits cookies without this attribute.
     !authoredManifest ? `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest" crossorigin="use-credentials">` : "",
     // Apple touch icons and title/theme metadata can take precedence over a
     // manifest's branding. Leave an authored manifest in charge of those defaults.
-    !authoredManifest && !link("icon") ? `<link rel="icon" href="${attr(customFavicon ?? `${cfg.base}_tendril/icon.svg`)}"${faviconType ? ` type="${faviconType}"` : ""}${customFavicon ? "" : ' sizes="any"'}>` : "",
-    !authoredManifest && !link("apple-touch-icon", "apple-touch-icon-precomposed") ? customAppleIcon
-      ? `<link rel="apple-touch-icon" href="${attr(customAppleIcon.href)}"${customAppleIcon.sizes ? ` sizes="${attr(customAppleIcon.sizes)}"` : ""}>`
-      : `<link rel="apple-touch-icon" href="/_tendril/brand/icon-180.png" sizes="180x180">` : "",
+    !authoredManifest && !authoredIcon ? `<link rel="icon" href="${attr(customFavicon ?? `${cfg.base}_tendril/icon.svg`)}"${faviconType ? ` type="${faviconType}"` : ""}${customFavicon ? "" : ' sizes="any"'}>` : "",
+    !authoredManifest && !authoredIcon && rasterIcon ? `<link rel="icon" href="${attr(rasterIcon.href)}" type="image/png"${rasterIcon.sizes ? ` sizes="${attr(rasterIcon.sizes)}"` : ""}>` : "",
+    appleIconTag,
     !authoredManifest && !meta("theme-color") ? `<meta name="theme-color" content="${attr(branding?.themeColor ?? DEFAULT_THEME_COLOR)}">` : "",
     !authoredManifest && branding && !meta("apple-mobile-web-app-title")
       ? `<meta name="apple-mobile-web-app-title" content="${attr(branding.shortName ?? branding.name)}">` : "",

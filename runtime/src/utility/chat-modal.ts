@@ -17,12 +17,39 @@ const LANGUAGES = [
 
 const STATUS_LABELS: Record<NonNullable<RuntimeChatMessage["status"]>, string> = {
   sending: "Sending…",
-  delivered: "Delivered",
-  seen: "Seen",
+  delivered: "Saved locally",
+  seen: "Seen by agent",
   thinking: "Thinking…",
   answered: "Answered",
   error: "Failed",
 };
+
+/** Normalize 64-char hex or 32-byte base64url/base64 Ed25519 public key to lowercase 64-char hex. */
+function normalizeKeyHex(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (/^[a-f0-9]{64}$/i.test(trimmed)) return trimmed.toLowerCase();
+  if (/^[A-Za-z0-9+/_-]{43,44}={0,2}$/.test(trimmed)) {
+    try {
+      const b64 = trimmed.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+      const bin = atob(padded);
+      if (bin.length !== 32) return null;
+      let hex = "";
+      for (let i = 0; i < 32; i++) hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
+      return hex;
+    } catch { return null; }
+  }
+  return null;
+}
+
+interface RetainedPendingSend {
+  operationId: string;
+  text: string;
+  via: "text" | "voice";
+  to: string[];
+  createdAt: number;
+}
 
 export interface TalkDockState {
   unreadCount: number;
@@ -67,7 +94,32 @@ export interface ChatModalCallbacks {
 export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks): ChatModalController {
   const pageId = api.identity?.page || api.identity?.base || "page";
   const draftKey = `tendril:utility-chat-draft:${pageId}`;
+  const pendingSendKey = `tendril:utility-chat-pending:${pageId}`;
   const prefsKey = `tendril:utility-chat-voice:${pageId}`;
+
+  let retainedPending: RetainedPendingSend | null = null;
+  try {
+    const rawPending = sessionStorage.getItem(pendingSendKey);
+    if (rawPending) {
+      const parsed = JSON.parse(rawPending) as Partial<RetainedPendingSend>;
+      if (typeof parsed.operationId === "string" && parsed.operationId && typeof parsed.text === "string" && parsed.text.trim()) {
+        retainedPending = {
+          operationId: parsed.operationId,
+          text: parsed.text.trim(),
+          via: parsed.via === "voice" ? "voice" : "text",
+          to: Array.isArray(parsed.to) ? parsed.to.filter((x): x is string => typeof x === "string") : [],
+          createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : Date.now(),
+        };
+      }
+    }
+  } catch { /* ignore */ }
+  const persistPending = (next: RetainedPendingSend | null) => {
+    retainedPending = next;
+    try {
+      if (next) sessionStorage.setItem(pendingSendKey, JSON.stringify(next));
+      else sessionStorage.removeItem(pendingSendKey);
+    } catch { /* ignore */ }
+  };
 
   let disposed = false;
   let isOpen = false;
@@ -200,7 +252,8 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     const focused = (target && target !== "*") ? (roster.agents.find(a => a.id === target || a.public_key === target) ?? primary) : primary;
     const stateOf = (a: typeof primary): "online" | "busy" | "offline" | "unknown" => {
       if (a.kind === "hosted-mcp") return "online";
-      const live = roster.live?.[a.public_key] ?? roster.live?.[a.id];
+      const hexKey = normalizeKeyHex(a.public_key);
+      const live = (hexKey ? roster.live?.[hexKey] : undefined) ?? roster.live?.[a.public_key] ?? roster.live?.[a.id];
       return live?.state === "online" || live?.state === "busy" || live?.state === "offline" ? live.state : "offline";
     };
     const st = stateOf(focused);
@@ -522,6 +575,47 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     }
   };
 
+  const restoreDraftWithoutOverwrite = (text: string) => {
+    const piece = text.trim();
+    if (!piece) return;
+    const current = (textarea.value ?? "").trim();
+    if (!current) textarea.value = piece;
+    else if (!current.includes(piece)) textarea.value = `${current}\n${piece}`;
+    autoResize();
+    try { sessionStorage.setItem(draftKey, textarea.value); } catch { /* ignore */ }
+  };
+
+  const formatSendError = (err: unknown): string => {
+    const raw = err instanceof Error ? err.message : String(err ?? "");
+    const code = (err && typeof err === "object" && "code" in err && typeof (err as { code?: unknown }).code === "string")
+      ? (err as { code: string }).code : "";
+    if (/ENDPOINT_CLOSED/i.test(raw) || /ENDPOINT_CLOSED/i.test(code)) {
+      return "Page session endpoint closed before delivery could be confirmed. Your message is preserved in the box below — wait for reconnection or reload before retrying.";
+    }
+    return raw ? `${raw} Your message is preserved in the box below.` : "Could not confirm message delivery. Your message is preserved in the box below.";
+  };
+
+  const isOperationStoredLocally = async (operationId: string): Promise<boolean> => {
+    if (!api.application?.available || !operationId) return false;
+    try {
+      const view = await api.application.backend.readView();
+      try {
+        let cursor: string | undefined;
+        for (let i = 0; i < 32; i++) {
+          const batch = await view.readEvents({ topics: ["agent/message"], limit: 128, ...(cursor ? { cursor } : {}) });
+          if (batch.events.some(ev => ev.operationId === operationId)) return true;
+          if (!batch.hasMore || !batch.cursor || batch.cursor === cursor) break;
+          cursor = batch.cursor;
+        }
+        return false;
+      } finally {
+        await view.release();
+      }
+    } catch {
+      return false;
+    }
+  };
+
   const ensureVoice = async (): Promise<VoiceAdapter> => {
     if (voice) return voice;
     if (!voiceModulePromise) {
@@ -535,16 +629,16 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         consentMode: "auto",
         autoOutput: autoSpeak ? voiceOutputEngine : false,
         transcript(text) {
-          if (disposed || !text.trim()) return;
+          const trimmed = text.trim();
+          if (disposed || !trimmed) return;
           holdRecordingActive = false;
           voiceError = "";
           const canSendNow = Boolean(api.chat?.hasProvider || api.application?.available);
-          if (autoSendVoice && canSendNow) {
-            void sendMessage(text.trim(), "voice");
+          if (autoSendVoice && canSendNow && !sending) {
+            void sendMessage(trimmed, "voice");
           } else {
-            textarea.value = [textarea.value.trim(), text.trim()].filter(Boolean).join(" ");
-            autoResize();
-            try { sessionStorage.setItem(draftKey, textarea.value); } catch { /* ignore */ }
+            restoreDraftWithoutOverwrite(trimmed);
+            if (sending) voiceError = "Voice transcript kept in the box while the previous message finishes.";
             if (!isOpen) callbacks.onRequestOpen();
             renderControls();
             textarea.focus();
@@ -673,19 +767,27 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     const byHandle = new Map(roster.agents.map(a => [a.handle.toLowerCase(), a]));
     const to: string[] = [];
     let broadcast = false;
+    const addAgentKey = (rawKey: string | undefined) => {
+      const normalized = normalizeKeyHex(rawKey);
+      if (normalized && !to.includes(normalized)) to.push(normalized);
+    };
     for (const m of text.matchAll(/(?:^|[\s([{"'])@([a-z][a-z0-9_-]{1,31})\b/gi)) {
       const h = (m[1] ?? "").toLowerCase();
       if (h === "all" || h === "everyone") { broadcast = true; break; }
       const hit = byHandle.get(h);
-      if (hit && !to.includes(hit.public_key)) to.push(hit.public_key);
+      if (hit) addAgentKey(hit.public_key);
     }
     if (broadcast) return ["*"];
     if (to.length > 0) return to;
     const tgt = currentTarget();
     if (tgt === "*") return ["*"];
     if (tgt) {
-      const chosen = roster.agents.find(a => a.id === tgt || a.public_key === tgt);
-      if (chosen && chosen.id !== roster.primary_agent_id && !chosen.is_primary) return [chosen.public_key];
+      const tgtHex = normalizeKeyHex(tgt);
+      const chosen = roster.agents.find(a => a.id === tgt || a.public_key === tgt || (tgtHex && normalizeKeyHex(a.public_key) === tgtHex));
+      if (chosen && chosen.id !== roster.primary_agent_id && !chosen.is_primary) {
+        addAgentKey(chosen.public_key);
+        return to;
+      }
     }
     return [];
   };
@@ -705,7 +807,12 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           cursor = batch.cursor;
         }
         const roster = rosterSnap();
-        const byKey = new Map(roster.agents.map(a => [a.public_key, a]));
+        const byKey = new Map<string, (typeof roster.agents)[number]>();
+        for (const a of roster.agents) {
+          byKey.set(a.public_key, a);
+          const hexKey = normalizeKeyHex(a.public_key);
+          if (hexKey) byKey.set(hexKey, a);
+        }
         const msgs: RuntimeChatMessage[] = [];
         const acts: RuntimeChatActivity[] = [];
         const receipts = new Map<string, string[]>();
@@ -722,9 +829,14 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           if (ev.topic !== "agent/message") continue;
           const p = ev.payload ?? {};
           const atMs = /^\d+$/.test(String(ev.authorTimestampMs ?? "")) ? Number(ev.authorTimestampMs) : undefined;
-          const agent = byKey.get(ev.author);
+          const authorHex = normalizeKeyHex(ev.author) ?? ev.author;
+          const agent = byKey.get(authorHex) ?? byKey.get(ev.author);
           const toList: string[] = Array.isArray(p.to) ? p.to : [];
-          const toHandles = toList.map(t => t === "*" ? "*" : (byKey.get(t)?.handle ?? t.slice(0, 8)));
+          const toHandles = toList.map(t => {
+            if (t === "*") return "*";
+            const hexT = normalizeKeyHex(t) ?? t;
+            return byKey.get(hexT)?.handle ?? byKey.get(t)?.handle ?? t.slice(0, 8);
+          });
           const id = ev.operationId || `${ev.author}:${ev.id}`;
           if (p.channel === "agents") {
             acts.push({ id, senderHandle: agent?.handle ?? ev.author.slice(0, 8), toHandles, text: String(p.text ?? ""), at: atMs });
@@ -761,9 +873,20 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           });
           optimistic.delete(id);
         }
+        const wasSeeded = sessionSeeded;
         sessionSeeded = true;
         sessionMessages = msgs;
         sessionActivity = acts;
+        // Reconcile any pending send retained from before a reload or closed endpoint
+        if (retainedPending && !sending) {
+          if (msgs.some(m => m.id === retainedPending!.operationId)) {
+            persistPending(null);
+          } else if (!wasSeeded) {
+            restoreDraftWithoutOverwrite(retainedPending.text);
+            if (!voiceError) voiceError = "Previous message was not confirmed before reload — kept in the box to review or retry.";
+            renderControls();
+          }
+        }
         if (newlyArrived > 0) sessionUnread += newlyArrived;
         renderMessages();
         renderActivity();
@@ -797,7 +920,8 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
             if (!val || typeof val !== "object") continue;
             if (val.done || !String(val.text ?? "").trim()) liveStreams.delete(frame.authorId);
             else {
-              const agent = rosterSnap().agents.find(a => a.public_key === frame.authorId);
+              const authorHex = normalizeKeyHex(frame.authorId) ?? frame.authorId;
+              const agent = rosterSnap().agents.find(a => a.public_key === frame.authorId || normalizeKeyHex(a.public_key) === authorHex);
               liveStreams.set(frame.authorId, { id: frame.authorId, senderHandle: val.handle || agent?.handle, text: String(val.text).slice(0, 8000) });
             }
             sessionStreams = [...liveStreams.values()];
@@ -810,10 +934,30 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
 
   const sendMessage = async (text: string, via: "text" | "voice") => {
     const trimmed = text.trim();
-    if (!trimmed || sending || disposed) return;
+    if (!trimmed || disposed) return;
+    if (sending) {
+      if (via === "voice") {
+        restoreDraftWithoutOverwrite(trimmed);
+        voiceError = "Voice transcript kept in the box while the previous message finishes.";
+        if (!isOpen) callbacks.onRequestOpen();
+        renderControls();
+      }
+      return;
+    }
     closeMentionMenu();
     sending = true;
     voiceError = "";
+    const target = currentTarget();
+    const to = parseAddressing(trimmed);
+    const samePending = retainedPending
+      && retainedPending.text === trimmed
+      && JSON.stringify(retainedPending.to) === JSON.stringify(to);
+    const operationId = samePending
+      ? retainedPending!.operationId
+      : (typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    // Persist the exact intent & operationId BEFORE submission so endpoint closure or reload never loses it.
+    persistPending({ operationId, text: trimmed, via, to, createdAt: samePending ? retainedPending!.createdAt : Date.now() });
+
     if (via === "text") {
       textarea.value = "";
       autoResize();
@@ -821,14 +965,23 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     }
     renderControls();
     try {
-      const target = currentTarget();
-      const to = parseAddressing(trimmed);
       if (api.chat?.hasProvider) {
         await api.chat.send({ text: trimmed, via, target, to });
+        persistPending(null);
       } else if (api.application?.available) {
-        const operationId = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // Before retrying a retained operationId, inspect the local store so we never duplicate an already-stored write.
+        if (samePending && await isOperationStoredLocally(operationId)) {
+          persistPending(null);
+          await refreshSessionFeed();
+          return;
+        }
         ownOperationIds.add(operationId);
-        const toHandles = to.map(t => t === "*" ? "*" : (rosterSnap().agents.find(a => a.public_key === t)?.handle ?? t.slice(0, 8)));
+        const roster = rosterSnap();
+        const toHandles = to.map(t => {
+          if (t === "*") return "*";
+          const hit = roster.agents.find(a => a.public_key === t || normalizeKeyHex(a.public_key) === t);
+          return hit?.handle ?? t.slice(0, 8);
+        });
         optimistic.set(operationId, {
           id: operationId,
           role: "user",
@@ -836,7 +989,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           at: Date.now(),
           status: "sending",
           senderHandle: currentUserHandle(),
-          senderRole: rosterSnap().viewer?.role === "guest" ? "guest" : "owner",
+          senderRole: roster.viewer?.role === "guest" ? "guest" : "owner",
           isSelf: true,
           toHandles: toHandles.length ? toHandles : undefined,
         });
@@ -849,6 +1002,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
             steps: [{ op: "emit", topic: "agent/message", payload: { channel: "chat", to, text: trimmed.slice(0, 8000) } }],
           },
         });
+        persistPending(null);
         const pending = optimistic.get(operationId);
         if (pending) {
           optimistic.set(operationId, { ...pending, status: "delivered" });
@@ -856,15 +1010,20 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         }
         await refreshSessionFeed();
       } else {
-        throw new Error("No app session is connected yet. Your text is kept in the draft box.");
+        throw new Error("No app session is connected yet.");
       }
     } catch (err) {
+      optimistic.delete(operationId);
       if (!disposed) {
-        voiceError = err instanceof Error ? err.message : "Could not send message.";
-        if (via === "text" && !textarea.value) {
-          textarea.value = trimmed;
-          autoResize();
-          try { sessionStorage.setItem(draftKey, trimmed); } catch { /* ignore */ }
+        // If the operation was actually accepted locally before the error, confirm instead of duplicating.
+        if (!api.chat?.hasProvider && await isOperationStoredLocally(operationId)) {
+          persistPending(null);
+          await refreshSessionFeed();
+        } else {
+          voiceError = formatSendError(err);
+          restoreDraftWithoutOverwrite(trimmed);
+          if (!isOpen) callbacks.onRequestOpen();
+          renderMessages();
         }
       }
     } finally {
@@ -1010,7 +1169,8 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         const row = el("div", undefined, "row-between");
         const left = el("div", undefined, "row");
         const dot = el("span", undefined, "pdot");
-        const live = roster.live?.[agent.public_key] ?? roster.live?.[agent.id];
+        const liveKey = normalizeKeyHex(agent.public_key);
+        const live = (liveKey ? roster.live?.[liveKey] : undefined) ?? roster.live?.[agent.public_key] ?? roster.live?.[agent.id];
         setData(dot, "status", agent.kind === "hosted-mcp" ? "online" : (live?.state ?? "offline"));
         const name = el("strong", `@${agent.handle}`);
         left.append(dot, name);
@@ -1430,6 +1590,9 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   textarea.addEventListener("input", () => {
     autoResize();
     updateMentionMenu();
+    if (retainedPending && textarea.value.trim() !== retainedPending.text) {
+      persistPending(null);
+    }
     try {
       if (textarea.value) sessionStorage.setItem(draftKey, textarea.value);
       else sessionStorage.removeItem(draftKey);

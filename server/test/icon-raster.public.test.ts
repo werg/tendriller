@@ -58,3 +58,20 @@ it('reads real pixel sizes from PNG, GIF, WebP and JPEG headers', () => {
   const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0, 0, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x80, 0x02, 0x00, 0x03]);
   expect(imageSize(jpeg)).toEqual({ type: 'image/jpeg', width: 512, height: 384 });
 });
+
+it('default letter pages also rasterize into page-specific 512px PNGs for mobile favicons and manifests', async () => {
+  const h = await create({ name: 'Daily Anchor' });
+  const iconKey = JSON.stringify([2, 'D', '#2d6a4f']);
+  const origin = new URL(h.page_url).origin;
+  const res = await req(h.page_url + '_tendril/icon-raster', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ key: iconKey, any: png(512, 512), maskable: png(512, 512) }),
+  });
+  expect(res.status).toBe(204);
+  const manifest = await (await req(h.page_url + '_tendril/manifest.webmanifest')).json() as { icons: Icon[] };
+  expect(manifest.icons[0]).toMatchObject({ sizes: '512x512', type: 'image/png', purpose: 'any' });
+  expect(manifest.icons.some(icon => icon.src.includes('/_tendril/brand/icon-180.png'))).toBe(false);
+  const base = new URL(h.page_url).pathname;
+  expect(await inDO(h.id, t => appleTouchIcon(t, base, h.page_url))).toEqual({ href: manifest.icons[1]!.src, sizes: '512x512' });
+});

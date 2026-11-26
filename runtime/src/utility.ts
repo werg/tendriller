@@ -425,6 +425,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     clearChildren(modalExtraSlot);
     const target = modalOpener;
     modalOpener = null;
+    renderSensors();
     if (restoreFocus) (target ?? optionsBtn).focus();
     updateKeyboardLayout();
   };
@@ -474,6 +475,7 @@ export function mountUtility(api: RuntimeApi): () => void {
       nav.classList?.add("behind-modal");
       modalTitle.focus();
     }
+    renderSensors();
     updateKeyboardLayout();
   }
 
@@ -724,8 +726,11 @@ export function mountUtility(api: RuntimeApi): () => void {
 
   const renderSensors = () => {
     const summary = sensorSummary(api.sensors.status());
-    activeSensors.hidden = stopSensors.hidden = modalStopSensors.hidden = !summary.visible;
-    setData(nav, "sensors", String(summary.visible));
+    const modalOpen = activeModal !== null;
+    activeSensors.hidden = !summary.visible || modalOpen;
+    stopSensors.hidden = !summary.visible || modalOpen;
+    modalStopSensors.hidden = !summary.visible || !modalOpen;
+    setData(nav, "sensors", String(summary.visible && !modalOpen));
     activeSensors.textContent = summary.message;
     activeSensors.title = summary.message;
     stopSensors.disabled = modalStopSensors.disabled = !summary.canStop;

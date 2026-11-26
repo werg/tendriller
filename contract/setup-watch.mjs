@@ -1,13 +1,36 @@
 export const SETUP_WATCH_PROTOCOL = 'tendriller.setup.v1';
 const fail = code => Object.assign(Error(code), { code });
 export function validateSetupNotice(value) {
-  const a = value?.assistant, hex = /^[a-f0-9]{64}$/;
-  if (!value || value.type !== 'setup' || value.version !== 1 || Object.keys(value).sort().join() !== 'assistant,type,version' ||
-      !a || Object.keys(a).sort().join() !== 'approved,proposalId,revision' || typeof a.approved !== 'boolean' ||
-      a.proposalId !== null && (typeof a.proposalId !== 'string' || !hex.test(a.proposalId)) ||
-      a.revision !== null && (typeof a.revision !== 'string' || a.revision.length > 80 || !a.revision.length) ||
-      a.approved !== (a.revision !== null) || a.approved && a.proposalId === null) throw fail('INVALID_SETUP_NOTICE');
-  return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.type !== 'setup' || value.version !== 1)
+    throw fail('INVALID_SETUP_NOTICE');
+  const keys = Object.keys(value).sort().join();
+  const hex = /^[a-f0-9]{64}$/;
+  const validAssistant = a => Boolean(a && typeof a === 'object' && !Array.isArray(a)
+    && Object.keys(a).sort().join() === 'approved,proposalId,revision'
+    && typeof a.approved === 'boolean'
+    && (a.proposalId === null || (typeof a.proposalId === 'string' && hex.test(a.proposalId)))
+    && (a.revision === null || (typeof a.revision === 'string' && a.revision.length > 0 && a.revision.length <= 80))
+    && a.approved === (a.revision !== null) && (!a.approved || a.proposalId !== null));
+  const validMcp = m => Boolean(m && typeof m === 'object' && !Array.isArray(m)
+    && Object.keys(m).sort().join() === 'connected,grants,updatedAt'
+    && typeof m.connected === 'boolean'
+    && Array.isArray(m.grants) && m.grants.length <= 64
+    && m.grants.every(g => typeof g === 'string' && g.length > 0 && g.length <= 128)
+    && m.connected === (m.grants.length > 0)
+    && Number.isSafeInteger(m.updatedAt) && m.updatedAt >= 0);
+  if (keys === 'assistant,type,version') {
+    if (!validAssistant(value.assistant)) throw fail('INVALID_SETUP_NOTICE');
+    return value;
+  }
+  if (keys === 'mcp,type,version') {
+    if (!validMcp(value.mcp)) throw fail('INVALID_SETUP_NOTICE');
+    return value;
+  }
+  if (keys === 'assistant,mcp,type,version') {
+    if (!validAssistant(value.assistant) || !validMcp(value.mcp)) throw fail('INVALID_SETUP_NOTICE');
+    return value;
+  }
+  throw fail('INVALID_SETUP_NOTICE');
 }
 const pause = (ms, signal) => new Promise(resolve => {
   const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
