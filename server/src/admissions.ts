@@ -12,6 +12,7 @@ import { requireHostAttestationIdentity } from './host-attestation';
 import { HttpError } from './http';
 import { notifyDiscoveryWatchers } from './discovery';
 import { readAuthorityBundle, withAuthorityMutation } from './authority';
+import { maybeSignGroupAttestation } from './groups/org-groups';
 import type { Tendril } from './tendril';
 
 export const ATTESTATION_TTL_MS = 60 * 60_000;
@@ -139,6 +140,7 @@ export async function attestDevice(t: Tendril, input: { accountId: string; publi
     }
     retainAttestation(t, signed, bundle);
   });
+  await maybeSignGroupAttestation(t, { accountId: input.accountId, publicKey: input.publicKey, wrapKey: input.wrapKey }).catch(() => null);
   return signed;
 }
 

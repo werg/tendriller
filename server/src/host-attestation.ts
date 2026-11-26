@@ -1,4 +1,5 @@
-import { importSigningIdentity, signRecord, type SigningIdentity } from '@chronolog/authority';
+import { importSigningIdentity, signRecord, verifyRecord, type AuthorityBundle, type Signed, type SigningIdentity } from '@chronolog/authority';
+export { signRecord, verifyRecord, type AuthorityBundle, type Signed };
 import type { Env } from './env';
 import { HttpError } from './http';
 

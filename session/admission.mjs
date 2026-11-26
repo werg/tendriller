@@ -6,7 +6,7 @@
 // membership and never sees an epoch key.
 import {
   createAuthorityProvider, createWrapKeyPair, importWrapPrivateKey, signAppDescriptor, signMembership,
-  signEnrollmentRequest, verifyAuthorityBundle, verifyHostAttestation, attestedAccountAuthorized, attestedGrant, inviteAdmits,
+  signEnrollmentRequest, signRecord, verifyRecord, verifyAuthorityBundle, verifyHostAttestation, attestedAccountAuthorized, attestedGrant, inviteAdmits,
   inviteCapacity, inviteGrant, inviteRedemptions, epochKeyCommitment, encodeRecord, decodeRecord, recordDigest, bytesToHex,
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
@@ -301,6 +301,98 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
       try { await admit(chosen); } catch (error) { if (!conflict(error)) throw error; again = true; }
     }
     await wrapAll();
+    // Seamless org/group admission & seamless org-departure key rotation (administrators only).
+    if (authority.grant(identity.publicKey)?.administrator && typeof peers.groups === 'function') {
+      await processOrgGroups(classified, chain);
+    }
+  }
+  async function processOrgGroups(classified, chain) {
+    let groupState;
+    try { groupState = await peers.groups({ signal: lifetime.signal }); }
+    catch { return; }
+    const head = authority.currentMembership;
+    const bundle = authority.bundle();
+    const rootPrincipal = bundle.descriptor.payload.rootPrincipal;
+
+    // 1. Seamless org join: verify admin-signed policy + companion host-signed group attestation.
+    const signedPolicy = groupState?.policy;
+    if (signedPolicy && Array.isArray(groupState?.group_attestations) && groupState.group_attestations.length > 0) {
+      let policyValid = false;
+      try {
+        await verifyRecord('tendriller-group-policy-v1', signedPolicy);
+        const signerMember = head.members.find(m => m.publicKey === signedPolicy.signer);
+        policyValid = Boolean(signerMember?.administrator && signedPolicy.payload?.applicationId === applicationId);
+      } catch { policyValid = false; }
+      if (policyValid) {
+        const ruleById = new Map((signedPolicy.payload.rules ?? []).map(r => [r.ruleId, r]));
+        const gaByKey = new Map();
+        for (const ga of groupState.group_attestations) {
+          try {
+            await verifyRecord('tendriller-group-attestation-v1', ga);
+            if (ga.signer !== head.admission.hostKey) continue;
+            if (ga.payload?.applicationId !== applicationId || ga.payload.expiresAt <= now()) continue;
+            gaByKey.set(ga.payload.publicKey, ga);
+          } catch { /* ignore invalid attestation */ }
+        }
+        for (const entry of classified) {
+          if (entry.via !== null || entry.reason === 'previously_removed') continue;
+          const ga = gaByKey.get(entry.payload.publicKey);
+          if (!ga || ga.payload.accountId !== entry.payload.accountId || ga.payload.wrapKey !== entry.payload.wrapKey) continue;
+          const rule = ruleById.get(ga.payload.ruleId);
+          if (!rule || rule.group.toLowerCase() !== String(ga.payload.group).toLowerCase()) continue;
+          const grant = ROLE_GRANTS[rule.role];
+          if (!grant) continue;
+          try {
+            await admit([entry], 'approved', grant);
+            notice({ kind: 'org-admitted', publicKey: entry.payload.publicKey, group: rule.group, role: rule.role });
+          } catch (error) {
+            if (!conflict(error)) throw error;
+            again = true;
+          }
+        }
+      }
+    }
+
+    // 2. Seamless org offboarding: automatically revoke & rotate epoch key on verified host departure attestation.
+    if (Array.isArray(groupState?.departures) && groupState.departures.length > 0) {
+      const admittedEvidence = new Map();
+      for (const m of chain) {
+        for (const a of m.payload.admitted) admittedEvidence.set(a.publicKey, a);
+      }
+      for (const dep of groupState.departures) {
+        try {
+          await verifyRecord('tendriller-org-departure-v1', dep);
+        } catch { continue; }
+        if (dep.signer !== head.admission.hostKey || dep.payload?.applicationId !== applicationId) continue;
+        const targetKey = dep.payload.publicKey;
+        if (!targetKey || targetKey === identity.publicKey || targetKey === rootPrincipal) continue;
+        const currentHead = authority.currentMembership;
+        if (!currentHead.members.some(m => m.publicKey === targetKey)) {
+          await peers.ackDeparture?.(targetKey, { signal: lifetime.signal }).catch(() => {});
+          continue;
+        }
+        // Guardrail: never auto-revoke owner-account devices or individually invited devices.
+        const ev = admittedEvidence.get(targetKey);
+        if (!ev || ev.attestation.payload.inviteId !== null || attestedAccountAuthorized(currentHead.admission, ev.attestation.payload)) {
+          continue;
+        }
+        const nextEpoch = Math.max(...authority.bundle().memberships.map(item => item.payload.epoch)) + 1;
+        const nextKey = crypto.getRandomValues(new Uint8Array(32));
+        try {
+          await extend({
+            members: currentHead.members.filter(m => m.publicKey !== targetKey),
+            epoch: nextEpoch,
+            epochKeyDigest: await epochKeyCommitment(applicationId, nextEpoch, nextKey),
+          }, { rotateTo: nextKey });
+          await wrapAll(true);
+          await peers.ackDeparture?.(targetKey, { signal: lifetime.signal }).catch(() => {});
+          notice({ kind: 'org-offboarded', publicKey: targetKey, group: dep.payload.group, epoch: nextEpoch });
+        } catch (error) {
+          if (!conflict(error)) throw error;
+          again = true;
+        }
+      }
+    }
   }
   function observeMembership() {
     const current = new Set(authority.currentMembership.members.map(member => member.publicKey));
@@ -430,6 +522,26 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
         await extend({ invites: head.invites.map(item => item.inviteId === inviteId ? { ...item, revoked: true } : item) });
         return { revoked: inviteId };
       });
+    },
+    async 'admission.setGroupPolicy'(pageId, rules) {
+      return administer(async () => {
+        if (typeof peers.setGroupPolicy !== 'function') throw failure('GROUPS_UNSUPPORTED', 'Host peer client does not support group policies.');
+        const current = await peers.groups?.({ signal: lifetime.signal }).catch(() => null);
+        const nextRevision = (current?.policy?.payload?.revision ?? -1) + 1;
+        const signed = await signRecord('tendriller-group-policy-v1', {
+          pageId,
+          applicationId,
+          revision: nextRevision,
+          rules,
+          updatedAt: now(),
+        }, identity);
+        await peers.setGroupPolicy(signed, { signal: lifetime.signal });
+        return { policy: signed };
+      });
+    },
+    async 'admission.groups'() {
+      if (typeof peers.groups !== 'function') return { policy: null, group_attestations: [], departures: [] };
+      return peers.groups({ signal: lifetime.signal });
     },
     /** A newcomer presents an invite from its link fragment; the secret goes only to this page's host. */
     async 'admission.redeem'(fragment) {

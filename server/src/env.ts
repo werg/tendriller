@@ -64,4 +64,8 @@ export interface Env {
   BROADCAST_PUBLIC_JWKS?: string;
   /** Optional operator bearer token for CI/CLI access to /api/admin/broadcasts. */
   BROADCAST_ADMIN_TOKEN?: string;
+  /** Optional JSON map of outbound OAuth provider credentials: `{ github: { client_id, client_secret }, linear: ... }`. */
+  OUTBOUND_OAUTH_CLIENTS_JSON?: string;
+  /** Optional HMAC-SHA256 secret for verifying GitHub org/team membership webhooks (`/api/webhooks/github-org`). */
+  GITHUB_ORG_WEBHOOK_SECRET?: string;
 }

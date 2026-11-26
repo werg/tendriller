@@ -31,6 +31,7 @@ import type { Features } from './inject';
 import { ACCESS_WRITE_INTERVAL, ACCOUNT_STORAGE_LIMIT, AD_HOC_IDLE, DAY, HOUR, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
 import { accountLimits } from './service-state';
 import { handlePage, pageAccessDenied } from './page';
+import { enforceOrgDepartureOnPage, matchingPageGroupRule } from './groups/org-groups';
 import { agentPageApi, pageUrl, publicBase } from './urls';
 import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
 import { agentPageSummary } from './agent';
@@ -176,6 +177,18 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === 'mcp' && req.method === 'POST') return await mcpRequest(this, req);
       if (kind === 'agent-grant') return await handleAgentGrants(this, req, url);
+      if (kind === 'org-departure' && req.method === 'POST') {
+        const b = await readJson(req, 8192);
+        if (typeof b.account_id !== "string" || !Array.isArray(b.departed_groups)) {
+          throw new HttpError(400, "bad_request", "account_id and departed_groups are required");
+        }
+        const result = await enforceOrgDepartureOnPage(this, {
+          accountId: b.account_id,
+          departedGroups: b.departed_groups.filter((g: unknown): g is string => typeof g === "string"),
+          observedAbsentAt: typeof b.observed_absent_at === "number" ? b.observed_absent_at : this.now(),
+        });
+        return json(result);
+      }
       if (kind === 'agent-summary') {
         const agentId = req.headers.get(AGENT_HEADER) ?? '';
         if (!AGENT_ID_RE.test(agentId)) throw new HttpError(400, 'invalid_agent');
@@ -470,10 +483,32 @@ export class Tendril extends DurableObject<Env> {
       const b = await readJson(req, 4096);
       if (typeof b.account_id !== "string" || typeof b.hash !== "string" || !/^[a-f0-9]{64}$/.test(b.hash)) throw new HttpError(403, "forbidden");
       if (b.role === "owner" && (link.role !== "owner" || b.account_id !== this.db.get<string | null>("owner_account", null))) throw new HttpError(403, "forbidden");
-      if (b.role === "guest" && (link.role !== "guest" || !this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", b.account_id, link.id))) throw new HttpError(403, "forbidden");
+      if (b.role === "guest") {
+        const orgApproved = link.role === "owner" && this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = '__org__' AND approved = 1", b.account_id);
+        const linkApproved = link.role === "guest" && this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = ? AND approved = 1", b.account_id, link.id);
+        if (!orgApproved && !linkApproved) throw new HttpError(403, "forbidden");
+      }
       if (b.role !== "owner" && b.role !== "guest") throw new HttpError(403, "forbidden");
       this.db.run("INSERT INTO page_sessions (hash, account_id, role, expires_at) VALUES (?, ?, ?, ?)", b.hash, b.account_id, b.role, this.now() + 30 * DAY);
       return json({ ok: true });
+    }
+    if (url.pathname === "/claim/org" && req.method === "POST") {
+      const b = await readJson(req, 4096);
+      if (link.role !== "owner" || !this.db.get<string | null>("owner_account", null) || typeof b.account_id !== "string") throw new HttpError(403, "forbidden");
+      const rule = await matchingPageGroupRule(this, b.account_id);
+      if (!rule) throw new HttpError(403, "org_membership_required", "Your account does not belong to an authorized organization or team for this page");
+      this.db.run("INSERT OR REPLACE INTO guest_accounts (account_id, link_id, approved, created_at) VALUES (?, '__org__', 1, ?)",
+        b.account_id, this.now());
+      this.db.set(`org_member:${b.account_id}`, {
+        accountId: b.account_id,
+        group: rule.group.toLowerCase(),
+        ruleId: rule.ruleId,
+        role: rule.role,
+        joinedAt: this.now(),
+      });
+      await this.recordVisitorSignal("guest", b.account_id);
+      if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
+      return json({ approved: true, group: rule.group, rule_id: rule.ruleId, role: rule.role });
     }
     if (url.pathname === "/claim/guest" && req.method === "POST") {
       const b = await readJson(req, 8192);

@@ -117,15 +117,18 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
   if (t.db.get("disabled", false)) return null;
   const link = t.db.cached(`access:link:${identity.linkId}`, () =>
     t.db.one<{ key: string; role: Role; expires_at: number | null; created_by_agent: number }>("SELECT key,role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId));
-  if (!link || (key !== undefined && link.key !== key) || link.role !== identity.role || link.expires_at !== null && link.expires_at <= t.now()) return null;
+  if (!link || (key !== undefined && link.key !== key) || (link.role !== identity.role && !(link.role === "owner" && identity.role === "guest")) || link.expires_at !== null && link.expires_at <= t.now()) return null;
   if (identity.role === "display") {
     if (link.created_by_agent || !t.db.get("owner_account", null)) return null;
   } else {
     const session = identity.sessionHash && localSession(t, identity.sessionHash);
     if (!session || session.account_id !== identity.accountId || session.role !== identity.role || session.expires_at <= t.now()) return null;
     if (identity.role === "owner" && identity.accountId !== t.db.get("owner_account", null)) return null;
-    if (identity.role === "guest" && !t.db.cached(`access:guest:${JSON.stringify([identity.accountId, identity.linkId])}`, () =>
-      t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, identity.linkId))) return null;
+    if (identity.role === "guest") {
+      const targetLink = link.role === "owner" ? "__org__" : identity.linkId;
+      if (!t.db.cached(`access:guest:${JSON.stringify([identity.accountId, targetLink])}`, () =>
+        t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, targetLink))) return null;
+    }
   }
   return { kind: "page", name: identity.accountId ?? identity.linkId, ...identity };
 }
@@ -159,7 +162,8 @@ export function participantIdentity(t: Tendril, principal: Principal): { route: 
 
 export async function authenticateLocalPage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
   const session = link.role === "display" ? null : await browserSession(t, req);
-  const principal = localPagePrincipal(t, { role: link.role, accountId: session?.account_id ?? null,
+  const role: Role = link.role === "owner" && session?.role === "guest" ? "guest" : link.role;
+  const principal = localPagePrincipal(t, { role, accountId: session?.account_id ?? null,
     linkId: link.id, sessionHash: session?.hash ?? null });
   if (!principal) throw new HttpError(401, "unauthorized", "Page sign-in required");
   return { principal, session };

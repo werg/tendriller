@@ -25,11 +25,12 @@ test('the fresh account baseline enforces reservations and account limits atomic
 test('the account schema holds OAuth, assistant and agent tables, and agent rows cascade with their account and page', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
   db.exec('PRAGMA foreign_keys = ON');
-  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql'])
+  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0006_oauth_connections_and_groups.sql'])
     db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   for (const table of ['integration_oauth_access', 'integration_oauth_codes', 'integration_oauth_refresh',
     'integration_oauth_grants', 'integration_oauth_intents', 'mcp_connections', 'agents', 'agent_grants', 'agent_join_codes',
-    'system_broadcasts', 'broadcast_keys', 'agent_versions', 'page_versions']) {
+    'system_broadcasts', 'broadcast_keys', 'agent_versions', 'page_versions',
+    'oauth_custom_providers', 'outbound_oauth_states', 'outbound_connections', 'outbound_page_grants', 'identity_groups', 'page_group_rules']) {
     assert.equal(db.prepare('SELECT name FROM sqlite_master WHERE type=? AND name=?').get('table', table)?.name, table);
   }
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'account_setup%'").get(), undefined);
@@ -50,7 +51,7 @@ test('the account schema holds OAuth, assistant and agent tables, and agent rows
 test('configurable account limits default to production caps and allow unlimited NULL caps for localhost', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
   db.exec('PRAGMA foreign_keys = ON');
-  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql'])
+  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0006_oauth_connections_and_groups.sql'])
     db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
   // Default resident cap is 5.

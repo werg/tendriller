@@ -86,6 +86,10 @@ tendril page mode notes attested|strict
 tendril page owner-grant notes admin|writer|reader   # rights your own signed-in devices get
 tendril page invite notes --email friend@example.com | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
 tendril page revoke-invite notes INVITE_ID
+tendril page group notes [--add github-team:acme/eng --role writer] [--remove RULE_ID]
+tendril connection providers [--server https://YOUR_HOST]
+tendril connection connect github --tier agent-held|host-brokered [--custody personal|page] [--scopes s1,s2] [--page notes]
+tendril connection list | pull | revoke CONNECTION_ID
 tendril status                                   # workspace, agent, grants, agent program
 ```
 

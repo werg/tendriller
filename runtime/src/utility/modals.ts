@@ -232,7 +232,10 @@ export function createShareModal(
   const linksList = el("ul", undefined, "item-list");
   const linksEmpty = el("p", "No invite or page-only links created yet.", "muted"); linksEmpty.hidden = true;
   const linksVisitor = el("p", "Only the page owner can view or revoke invite links.", "muted"); linksVisitor.hidden = true;
-  linksPanel.append(pendingBox, linksHeader, linksList, linksEmpty, linksVisitor);
+  const orgRulesBox = el("div", undefined, "stack-sm"); orgRulesBox.hidden = true;
+  const orgRulesList = el("ul", undefined, "item-list");
+  orgRulesBox.append(el("strong", "Team & org access rules"), orgRulesList);
+  linksPanel.append(pendingBox, orgRulesBox, linksHeader, linksList, linksEmpty, linksVisitor);
 
   const showReadyLink = (link: ShareLink) => {
     clearChildren(readyCard);
@@ -382,12 +385,29 @@ export function createShareModal(
       const data = await res.json() as { name?: string; links?: ShareLink[] };
       if (data.name) shared.pageName = data.name;
       shared.ownerChecked = true; shared.canManage = true; shared.links = data.links ?? [];
-      // Also fetch pending guest approvals if available
+      // Also fetch pending guest approvals and active org/group rules if available
       try {
         const gRes = await fetch(`${api.identity.base}_tendril/guests`, { credentials: "same-origin", cache: "no-store" });
         if (gRes.ok) {
           const gData = await gRes.json() as { guests?: PendingGuest[] };
           shared.pendingGuests = Array.isArray(gData.guests) ? gData.guests : [];
+        }
+      } catch { /* ignore */ }
+      try {
+        const grpRes = await fetch(`${api.identity.base}_tendril/groups`, { credentials: "same-origin", cache: "no-store" });
+        if (grpRes.ok && !disposed) {
+          const grpData = await grpRes.json() as { policy?: { payload?: { rules?: Array<{ ruleId: string; group: string; role: string; label?: string }> } } };
+          const rules = grpData.policy?.payload?.rules ?? [];
+          clearChildren(orgRulesList);
+          orgRulesBox.hidden = rules.length === 0;
+          for (const rule of rules) {
+            const li = el("li", undefined, "item-card");
+            const top = el("div", undefined, "row-between");
+            top.append(el("strong", rule.label || rule.group), el("span", rule.role, "pill accent"));
+            li.append(top);
+            if (rule.label) li.append(el("div", rule.group, "mono"));
+            orgRulesList.append(li);
+          }
         }
       } catch { /* ignore */ }
       if (!disposed) syncOwnerVisibility();
@@ -586,9 +606,12 @@ export function createAgentsModal(
   addOwnerWrap.append(accountBox, newAgentBox);
   addPanel.append(addOwnerWrap, addVisitorNote);
 
-  // ─ Tab 3: Hosted MCP (ChatGPT / OAuth) ─
+  // ─ Tab 3: Hosted MCP & External OAuth Connections ─
   const mcpBox = el("div", undefined, "stack agent-mcp-box");
   const mcpList = el("ul", undefined, "item-list");
+  const extConnBox = el("div", undefined, "stack-sm"); extConnBox.hidden = true;
+  const extConnList = el("ul", undefined, "item-list");
+  extConnBox.append(el("strong", "External OAuth connections"), extConnList);
   const mcpActionsRow = el("div", undefined, "row");
   const connectionsLink = el("a", "Hosted MCP connections", "btn sm"); connectionsLink.target = "_blank"; connectionsLink.rel = "noopener";
   const mcpRefreshBtn = btn("Refresh grants", "btn sm");
@@ -596,6 +619,7 @@ export function createAgentsModal(
   mcpBox.append(
     el("p", "Connect an OAuth client (such as ChatGPT) directly to this page. Keys are X25519-sealed to its Bearer token with zero plaintext keys stored on Tendriller.", "muted"),
     mcpList,
+    extConnBox,
     mcpActionsRow,
   );
   const mcpVisitorNote = el("p", "Only the page owner can manage Hosted MCP connections.", "muted"); mcpVisitorNote.hidden = true;
@@ -813,9 +837,45 @@ export function createAgentsModal(
     if (disposed || !api.identity?.base || !shared.canManage) return;
     try {
       const res = await fetch(`${api.identity.base}_tendril/mcp/grants`, { credentials: "same-origin", cache: "no-store" });
-      if (!res.ok) return;
-      shared.mcpGrants = await res.json();
-      if (!disposed) renderHostedMcp();
+      if (res.ok) {
+        shared.mcpGrants = await res.json();
+        if (!disposed) renderHostedMcp();
+      }
+    } catch { /* offline */ }
+    try {
+      const cRes = await fetch(`${api.identity.base}_tendril/connections`, { credentials: "same-origin", cache: "no-store" });
+      if (!cRes.ok || disposed) return;
+      const cData = await cRes.json() as {
+        connections?: Array<{ id: string; provider: string; label: string; tier: string; custody: string; external_label?: string | null; actions?: string[] }>;
+      };
+      const conns = cData.connections ?? [];
+      clearChildren(extConnList);
+      extConnBox.hidden = conns.length === 0;
+      for (const conn of conns) {
+        const li = el("li", undefined, "item-card");
+        const top = el("div", undefined, "row-between");
+        const pills = el("div", undefined, "row");
+        pills.append(el("span", conn.tier === "agent-held" ? "Zero-Trust" : "Wrapped Proxy", conn.tier === "agent-held" ? "pill ok" : "pill accent"));
+        if (conn.tier === "host-brokered") pills.append(el("span", conn.custody === "page" ? "Team" : "Personal", "pill"));
+        top.append(el("strong", conn.label || conn.provider), pills);
+        li.append(top);
+        if (conn.external_label) li.append(el("p", conn.external_label, "muted"));
+        const remBtn = btn("Remove from page", "btn sm danger");
+        remBtn.addEventListener("click", async () => {
+          remBtn.disabled = true;
+          try {
+            const del = await fetch(`${api.identity.base}_tendril/connections/${encodeURIComponent(conn.id)}`, { method: "DELETE", credentials: "same-origin" });
+            if (!del.ok) throw Error();
+            if (!disposed) { setStatus(`Removed ${conn.label || conn.provider} from this page.`); await refreshMcpGrants(); }
+          } catch {
+            remBtn.disabled = false;
+            if (!disposed) setStatus("Could not remove external connection.", true);
+          }
+        });
+        li.append(el("div", undefined, "row"));
+        (li.lastChild as HTMLElement).append(remBtn);
+        extConnList.append(li);
+      }
     } catch { /* offline */ }
   };
 

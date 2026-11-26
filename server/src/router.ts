@@ -6,6 +6,8 @@ import { schemaDocument } from "../../contract/index.mjs";
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
 import { routeIntegrationOAuth } from "./accounts/integration-oauth";
+import { handleOutboundCallback, routeOutboundOAuthApi } from "./oauth-outbound/routes";
+import { routeGroupsApi } from "./groups/org-groups";
 import { dashboard } from "./accounts/keys";
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
@@ -171,6 +173,8 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/internal/budget") return budgetWebhook(req, env);
   if (path === "/appeal" || path === "/appeal/account") return appealPage(req, env, url);
   if (path === "/admin" || path === "/admin/action" || path === "/admin/broadcast" || path === "/admin/broadcast/revoke" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
+  const outboundCb = /^\/auth\/outbound\/callback\/([^/]{2,96})$/.exec(path);
+  if (outboundCb && req.method === "GET") return handleOutboundCallback(req, env, url, decodeURIComponent(outboundCb[1]!));
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
@@ -364,6 +368,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       }
       return errorResponse(405, 'method_not_allowed');
     }
+    const outboundResponse = await routeOutboundOAuthApi(req, env, url);
+    if (outboundResponse) return outboundResponse;
+    const groupsResponse = await routeGroupsApi(req, env, url);
+    if (groupsResponse) return groupsResponse;
     const agentResponse = await routeAgentApi(req, env, url);
     if (agentResponse) return agentResponse;
     return errorResponse(404, "not_found", "No such API route");

@@ -89,7 +89,19 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   const owner = await env.ACCOUNTS.prepare("SELECT owner_account FROM tendrils WHERE id = ?").bind(id).first<{ owner_account: string | null }>();
   if (!owner) return errorResponse(404, "not_found", "No such tendril");
   if (info.role === "owner" && owner.owner_account === session.accountId) return issuePageCode(env, id, key, session.accountId);
-  if (info.role === "owner" && owner.owner_account) return html("<section class=\"card\"><h1>This page belongs to another account</h1></section>", 403);
+  if (info.role === "owner" && owner.owner_account) {
+    const orgClaim = await stub(env, id).fetch(claimRequest(id, key, "org", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_id: session.accountId }),
+    }));
+    if (orgClaim.ok) {
+      await orgClaim.body?.cancel();
+      return issuePageCode(env, id, key, session.accountId, "guest");
+    }
+    await orgClaim.body?.cancel();
+    return html("<section class=\"card\"><h1>This page belongs to another account</h1></section>", 403);
+  }
   if (info.role === "guest" && !owner.owner_account) return html("<section class=\"card\"><h1>Waiting for the owner to claim this page</h1></section>", 403);
   if (req.method !== "GET") return errorResponse(405, "method_not_allowed", "Use GET");
   if (info.role === "owner") {

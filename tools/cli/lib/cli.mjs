@@ -10,6 +10,7 @@ import { exportSourceHandoff } from './handoff.mjs';
 import { exportWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from './checkpoint.mjs';
 import { acknowledgeWorkspaceBroadcast, adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, syncWorkspaceBroadcasts, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
+import { connectProvider, listConnections, listProviders, pullAgentConnections, revokeConnection } from './connections.mjs';
 
 export const usage = `Usage: tendril <command> [options]
 
@@ -36,9 +37,13 @@ Workspace (one agent credential and signing key for many pages):
   page owner-grant <slug> admin|writer|reader   Rights owner-account devices get on admission (default admin)
   page invite <slug> --email ADDRESS | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
   page revoke-invite <slug> <invite-id> Stop an invite (signed in page state; the host stops redemptions)
+  page group <slug> [--add GROUP --role reader|writer|admin] [--remove RULE_ID]  Manage org/team admission rules
   status                                Workspace, agent, grants and the agent program
   agent run                             The only long-running program: hub, one session per page, attach socket
   agent profile [--handle H] [--bio B]  Update this agent's @handle or short bio
+  connection providers [--server URL]   List built-in and custom outbound OAuth 2.1 providers
+  connection connect <provider> --tier agent-held|host-brokered [--custody personal|page] [--scopes S] [--actions A] [--page SLUG]
+  connection list | pull | revoke <id>  Manage external OAuth connections (pull unseals Tier A tokens locally)
   mcp-stdio                             Local MCP server for every page; each tool takes page
   checkpoint export <file> [--secret-env VAR]   Move this stopped workspace's private state (agent key,
                                         credential, every page device and record) into one encrypted file;
@@ -84,7 +89,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'],
-  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role'], agent: ['handle', 'bio'], 'mcp-stdio': [],
+  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role', 'add', 'remove', 'label'], agent: ['handle', 'bio'], connection: ['server', 'tier', 'custody', 'scopes', 'actions', 'page', 'label'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -92,7 +97,7 @@ const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
   events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], finality: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
-  readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], 'mcp-stdio': [0, 0],
+  readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], connection: [1, 2], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
 const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts']);
 const invalid = message => Object.assign(Error(message), { exit: 64 });
@@ -174,8 +179,8 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       const page = await workspace.registerPage(slug, granted);
       return { slug, id: page.id, name: page.name, source: page.source };
     }
-    if (['devices', 'approve', 'remove-device', 'mode', 'owner-grant', 'invite', 'revoke-invite'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
-    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|owner-grant|invite|revoke-invite; see --help');
+    if (['devices', 'approve', 'remove-device', 'mode', 'owner-grant', 'invite', 'revoke-invite', 'group'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
+    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|owner-grant|invite|revoke-invite|group; see --help');
   }
   if (command === 'agent') {
     if (args[0] === 'profile') {
@@ -184,6 +189,24 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     if (args[0] !== 'run') throw invalid('Use agent run or agent profile');
     await runAgent(workspace, { signal, report: value => { void emit(value).catch(() => {}); } });
     return undefined;
+  }
+  if (command === 'connection') {
+    const [sub, target] = args;
+    if (sub === 'providers') {
+      const origin = flags.server ? publicServiceOrigin(flags.server) : (await workspace.credential()).service;
+      return listProviders(origin, signal);
+    }
+    if (sub === 'connect') {
+      if (!target) throw invalid('Use: tendril connection connect <provider> --tier agent-held|host-brokered');
+      return connectProvider(workspace, target, flags, signal);
+    }
+    if (sub === 'list') return listConnections(workspace, signal);
+    if (sub === 'pull') return pullAgentConnections(workspace, signal);
+    if (sub === 'revoke') {
+      if (!target) throw invalid('Use: tendril connection revoke <connection-id>');
+      return revokeConnection(workspace, target, signal);
+    }
+    throw invalid('Use connection providers|connect|list|pull|revoke');
   }
   if (command === 'mcp-stdio') {
     const client = await workspace.client(), attached = new Map();
@@ -294,6 +317,24 @@ async function pageAdmission(workspace, action, slug, value, flags, signal) {
   if (action === 'mode') { if (!['attested', 'strict'].includes(value)) throw invalid('page mode takes attested or strict'); return call('admission.mode', value); }
   if (action === 'owner-grant') { if (!['admin', 'writer', 'reader'].includes(value)) throw invalid('page owner-grant takes admin, writer or reader'); return call('admission.ownerGrant', value); }
   if (action === 'revoke-invite') { if (!/^[0-9a-f]{32}$/u.test(value ?? '')) throw invalid('page revoke-invite requires the invite id'); return call('admission.revokeInvite', value); }
+  if (action === 'group') {
+    const page = await workspace.page(slug);
+    const current = await call('admission.groups');
+    const existingRules = Array.isArray(current?.policy?.payload?.rules) ? [...current.policy.payload.rules] : [];
+    if (!flags.add && !flags.remove) return { page: slug, rules: existingRules, departures: current?.departures ?? [] };
+    let nextRules = existingRules;
+    if (flags.remove) {
+      nextRules = nextRules.filter(r => r.ruleId !== flags.remove && r.group !== flags.remove);
+    }
+    if (flags.add) {
+      const group = String(flags.add).trim().toLowerCase();
+      const role = flags.role ?? 'writer';
+      if (!['reader', 'writer', 'admin'].includes(role)) throw invalid('--role must be reader, writer, or admin');
+      const ruleId = `r_${group.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48)}`;
+      nextRules = [...nextRules.filter(r => r.group !== group), { ruleId, group, role, ...(flags.label ? { label: String(flags.label).slice(0, 80) } : {}) }];
+    }
+    return call('admission.setGroupPolicy', page.id, nextRules);
+  }
   const kinds = ['email', 'open', 'public'].filter(name => flags[name] !== undefined && flags[name] !== false);
   if (kinds.length !== 1 || value !== undefined) throw invalid('page invite takes exactly one of --email ADDRESS, --open or --public');
   if (kinds[0] === 'email' && typeof flags.email !== 'string') throw invalid('--email requires the invitee address');

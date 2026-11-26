@@ -48,6 +48,9 @@ export interface AuthorityClient {
   wraps(recipient: string): Promise<{ readonly wraps: readonly AuthorityRecord[] }>;
   publication(id?: string): Promise<{ readonly publication: unknown; readonly version: number } | null>;
   publish(publication: unknown, assets: readonly { readonly hash: string; readonly bytes: string }[]): Promise<unknown>;
+  groups?(options?: AuthorityRequestOptions): Promise<{ readonly policy: unknown; readonly group_attestations: readonly unknown[]; readonly departures: readonly unknown[] }>;
+  setGroupPolicy?(policy: unknown, options?: AuthorityRequestOptions): Promise<{ readonly policy: unknown }>;
+  ackDeparture?(publicKey: string, options?: AuthorityRequestOptions): Promise<{ readonly cleared: boolean }>;
   participant(record: AuthorityRecord): Promise<AuthorityRecord>;
 }
 export declare function authorityRecord(bytes: Uint8Array): AuthorityRecord;

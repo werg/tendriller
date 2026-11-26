@@ -37,7 +37,7 @@ if (compiledAuthority.provenanceSha256 !== createHash('sha256').update(authority
 copyFileSync(join(authorityRoot, 'provenance.json'), join(engine, 'authority-provenance.json'));
 writeFileSync(join(engine, 'index.d.mts'), readFileSync(join(root, 'contract/engine.d.mts'), 'utf8'));
 mkdirSync(join(engine, 'migrations'), { recursive: true });
-for (const migration of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql'])
+for (const migration of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0006_oauth_connections_and_groups.sql'])
   copyFileSync(join(root, 'server/migrations', migration), join(engine, 'migrations', migration));
 // Independent workerd consumers must create the same host traffic bindings.
 const testRateLimits = JSON.parse(readFileSync(join(root, 'server/wrangler.public-test.jsonc'), 'utf8')).ratelimits;
@@ -51,14 +51,14 @@ const wasmAssets = JSON.parse(readFileSync(join(engine, 'wasm-assets.json'), 'ut
 writeFileSync(join(engine, 'package.json'), JSON.stringify({
   name: '@tendriller/engine', version: CORE_RELEASE, type: 'module',
   description: 'Tendriller page host and filtered Chronolog participant',
-  exports: { '.': { types: './index.d.mts', import: './worker.mjs' }, './accounts-schema': './migrations/0001_accounts.sql', './agents-schema': './migrations/0002_agents.sql', './broadcasts-schema': './migrations/0003_broadcasts.sql', './limits-schema': './migrations/0004_account_limits.sql',
+  exports: { '.': { types: './index.d.mts', import: './worker.mjs' }, './accounts-schema': './migrations/0001_accounts.sql', './agents-schema': './migrations/0002_agents.sql', './broadcasts-schema': './migrations/0003_broadcasts.sql', './limits-schema': './migrations/0004_account_limits.sql', './oauth-groups-schema': './migrations/0006_oauth_connections_and_groups.sql',
     './testing': { types: './testing.d.mts', import: './testing.mjs' }, './testing-ratelimits': './testing-ratelimits.json', './provenance': './provenance.json',
     './authority-provenance': './authority-provenance.json' },
   files: ['worker.mjs', ...wasmAssets, 'wasm-assets.json', 'index.d.mts', 'migrations', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'provenance.json', 'authority-provenance.json', 'authority-inputs.json'], peerDependencies: { '@tendriller/core': CORE_RELEASE },
   dependencies: { '@cloudflare/workers-types': workersTypes },
   tendriller: { contract: CONTRACT_VERSION },
 }, null, 2) + '\n');
-const files = ['worker.mjs', ...wasmAssets, 'wasm-assets.json', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'migrations/0001_accounts.sql', 'migrations/0002_agents.sql', 'migrations/0003_broadcasts.sql', 'migrations/0004_account_limits.sql',
+const files = ['worker.mjs', ...wasmAssets, 'wasm-assets.json', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'migrations/0001_accounts.sql', 'migrations/0002_agents.sql', 'migrations/0003_broadcasts.sql', 'migrations/0004_account_limits.sql', 'migrations/0006_oauth_connections_and_groups.sql',
   'package.json', 'authority-provenance.json', 'authority-inputs.json'];
 writeFileSync(join(engine, 'provenance.json'), JSON.stringify({ ...identity, storageSchemaRevision,
   files: Object.fromEntries(files.map(name => [name, sha256(join(engine, name))])) }, null, 2) + '\n');

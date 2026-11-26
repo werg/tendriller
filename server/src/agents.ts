@@ -9,6 +9,7 @@ import { accountLimits, checkCreationIp, requireCreationOpen, reserveCreationIp 
 import { broadcastSummary, getAgentVersions, recordAgentVersions } from './broadcasts';
 import { publicBase } from './urls';
 import { joinBlurb } from './sharing';
+import { routeAgentConnectionsApi } from './oauth-outbound/routes';
 
 export const HUB_PROTOCOL = 'tendriller.hub.v1';
 export { AGENT_HANDLE_RE };
@@ -157,6 +158,8 @@ export async function routeAgentApi(req: Request, env: Env, url: URL): Promise<R
     if (req.method === 'POST') return createAgentPage(req, env, agent);
     throw new HttpError(405, 'method_not_allowed');
   }
+  const connResponse = await routeAgentConnectionsApi(req, env, url);
+  if (connResponse) return connResponse;
   const page = /^\/api\/agent\/pages\/([^/]+)(?:\/(.*))?$/.exec(path);
   if (page) {
     if (!TENDRIL_ID_RE.test(page[1])) throw new HttpError(404, 'not_found', 'No such granted page');

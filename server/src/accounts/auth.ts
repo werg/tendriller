@@ -6,6 +6,7 @@ import { sha256Hex } from "../ids";
 import { publicBase } from "../urls";
 import { routeTestAccess, testAccountEnabled } from './test-access';
 import { authFormAction, readSessionCookie, renderAuthControls, routeLocalAuth, sessionCookieHeader } from "./local-auth";
+import { recordGoogleWorkspaceDomain, syncGitHubOrgGroups } from "../groups/org-groups";
 
 type Provider = "github" | "google";
 export interface AccountSession { accountId: string; email: string | null; createdAt: number; suspendedAt: number | null }
@@ -123,7 +124,8 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     auth.searchParams.set("state", state);
     auth.searchParams.set("code_challenge", challenge);
     auth.searchParams.set("code_challenge_method", "S256");
-    auth.searchParams.set("scope", provider === "github" ? "read:user user:email" : "openid email profile");
+    const orgSync = provider === "github" && url.searchParams.get("org_sync") === "1";
+    auth.searchParams.set("scope", provider === "github" ? (orgSync ? "read:user user:email read:org" : "read:user user:email") : "openid email profile");
     return redirect(auth.toString(), `__Host-tendriller-oauth=${state}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`);
   }
 
@@ -156,7 +158,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
         grant_type: "authorization_code" }),
     });
     if (!tokenRes.ok) return errorResponse(502, "oauth_failed", "Token exchange failed");
-    const token = await tokenRes.json() as { access_token?: string };
+    const token = await tokenRes.json() as { access_token?: string; scope?: string };
     if (!token.access_token) return errorResponse(502, "oauth_failed", "Provider did not issue a token");
     mark("token");
     const profile = await providerProfile(provider, token.access_token);
@@ -191,6 +193,11 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
       db.prepare("DELETE FROM identity_emails WHERE provider = ? AND subject = ?").bind(provider, profile.subject),
       ...profile.emails.map((email) => db.prepare("INSERT INTO identity_emails (provider, subject, email) VALUES (?, ?, ?)").bind(provider, profile.subject, email.toLowerCase())),
     ]);
+    if (provider === "google") {
+      await recordGoogleWorkspaceDomain(env, profile.subject, accountId, profile.hostedDomain).catch(() => {});
+    } else if (provider === "github" && typeof token.scope === "string" && /\bread:org\b/.test(token.scope)) {
+      await syncGitHubOrgGroups(env, profile.subject, accountId, token.access_token).catch(() => {});
+    }
     const session = randomUrlToken();
     await db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .bind(await sha256Hex(session), accountId, Date.now(), Date.now() + 30 * 86_400_000).run();
@@ -213,7 +220,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
   return errorResponse(404, "not_found", "Unknown auth route");
 }
 
-async function providerProfile(provider: Provider, token: string): Promise<{ subject: string; login: string; email: string | null; emails: string[] } | null> {
+async function providerProfile(provider: Provider, token: string): Promise<{ subject: string; login: string; email: string | null; emails: string[]; hostedDomain?: string | null } | null> {
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": "Tendriller" };
   if (provider === "github") {
     const [userRes, emailRes] = await Promise.all([
@@ -230,8 +237,9 @@ async function providerProfile(provider: Provider, token: string): Promise<{ sub
   }
   const res = await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers });
   if (!res.ok) return null;
-  const user = await res.json() as { sub?: string; email?: string; email_verified?: boolean; name?: string };
+  const user = await res.json() as { sub?: string; email?: string; email_verified?: boolean; name?: string; hd?: string };
   if (!user.sub) return null;
   const email = user.email_verified ? user.email ?? null : null;
-  return { subject: user.sub, login: user.name ?? user.email ?? user.sub, email, emails: email ? [email] : [] };
+  const hostedDomain = user.email_verified && typeof user.hd === "string" ? user.hd : null;
+  return { subject: user.sub, login: user.name ?? user.email ?? user.sub, email, emails: email ? [email] : [], hostedDomain };
 }

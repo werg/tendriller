@@ -16,6 +16,8 @@ import { addActivity } from "./activity";
 import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from "./agent-grants";
 import { createJoinCode, listAccountAgents } from "./agents";
 import { handlePageMcp } from "./mcp-participant";
+import { handlePageConnections } from "./oauth-outbound/routes";
+import { handlePageGroups } from "./groups/org-groups";
 import { publicBase } from "./urls";
 import { brandMark } from "./brand";
 import { renderShell } from "./accounts/ui";
@@ -77,7 +79,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (!rest.startsWith("_tendril/")) {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method_not_allowed");
-    return servePageFile(t, req, base, rest, link.role, session?.account_id ?? null, link.id);
+    return servePageFile(t, req, base, rest, principal.role, session?.account_id ?? null, link.id);
   }
 
   const sub = rest.slice("_tendril/".length);
@@ -87,6 +89,12 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (sub === 'manage') return handleManagement(t, req, base, principal);
   if (sub === 'mcp/grants' || sub === 'mcp/connect' || sub === 'mcp/rekey' || sub === 'mcp/sync' || /^mcp\/[A-Za-z0-9_-]{1,128}$/.test(sub)) {
     return handlePageMcp(t, req, sub, principal);
+  }
+  if (sub === 'connections' || sub.startsWith('connections/')) {
+    return handlePageConnections(t, req, sub, principal);
+  }
+  if (sub === 'groups' || sub.startsWith('groups/')) {
+    return handlePageGroups(t, req, sub, principal);
   }
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t.env));
   if (sub === 'broadcasts' && (m === 'GET' || m === 'HEAD')) {

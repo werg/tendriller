@@ -197,6 +197,8 @@ Pages that keep long-lived browser state (such as `templates/call/` with active 
 
 For on-device speech recognition in page code, load `const { bindDictation, transcribeAudio } = await window.tendril.loadVoice()` rather than bundling a second WASM model; it shares the tab's verified Cactus Whistle worker and captures 16 kHz PCM directly via `AudioWorklet`. See [voice & hands-free](HANDS_FREE.md).
 
+For third-party service integrations (GitHub, Google, Linear, Notion, Slack, Spotify, Strava, etc., or BYO OAuth 2.1) and GitHub/Google org or team page admission, discuss the Tier A (`agent-held`, zero-trust) vs. Tier B (`host-brokered`, wrapped `K_conn` with `personal` or `page` custody) trade-offs with the user in chat and configure the chosen tier via API or `tendril connection connect` / `tendril page group`. See [outbound OAuth & org tie-ins](OAUTH_CONNECTIONS.md).
+
 ## 5. Give the ready page URL to the person
 
 Do not wait for a “claimed” reply. Start `npm run agent` and keep it running, then give the owner the page URL. They open the already-published page and complete their own sign-in. The browser creates its device key and wrap key, and the host attests them for the owner account. The agent (or any other online member) verifies that attestation against the signed admission policy, appends the browser to membership and wraps the epoch keys to it. Until then the page shows that it is waiting and retries; nothing needs pasting. On a `--browser-first` page the first browser creates the genesis itself and its key is saved **locally before sending**; a lost reply resends the same genesis, never replacement keys.

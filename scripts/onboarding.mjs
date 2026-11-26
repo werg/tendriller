@@ -11,7 +11,7 @@ export const ONBOARDING_DOCS = Object.freeze([
   'docs/STATE_MODELS.md', 'docs/APPLICATION_BACKENDS.md', 'docs/SESSION_BOOTSTRAP.md', 'docs/AUTHORITY_AND_PUBLICATIONS.md',
   'docs/PEER_ARCHITECTURE.md', 'docs/PEER_CONNECTIONS.md', 'docs/WEBRTC_MEDIA.md', 'docs/MEMBERSHIP.md',
   'docs/MULTIPARTICIPANT.md', 'docs/TRANSPORT_DIAGNOSTICS.md', 'docs/AGENT_BINDINGS.md', 'docs/APPLICATION_SIGNALS.md',
-  'docs/CHATGPT_INTEGRATION.md', 'docs/CLOUDFLARE_ASSISTANT.md',
+  'docs/CHATGPT_INTEGRATION.md', 'docs/CLOUDFLARE_ASSISTANT.md', 'docs/OAUTH_CONNECTIONS.md',
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md', 'docs/DEPLOYMENT_GUIDE.md', 'docs/SERVERLESS_HOST.md',
   'docs/LOCAL_HOST.md',
 ]);
@@ -35,6 +35,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'shared/helpers/browser-profile.mjs',
   'shared/helpers/call-domain.mjs',
   'shared/helpers/codex-rpc.mjs',
+  'shared/helpers/connections.mjs',
   'shared/helpers/data-feed.mjs',
   'shared/helpers/dev-telemetry.mjs',
   'shared/helpers/devices-view.mjs',

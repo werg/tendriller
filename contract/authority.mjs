@@ -32,6 +32,9 @@ export function createAuthorityClient(dispatch, { applicationId } = {}) {
     wraps: recipient => request('peers/enrollment', { method: 'POST', body: { action: 'wraps', recipient } }),
     publication: id => request('peers/publication', { method: 'POST', body: { action: 'read', ...(id === undefined ? {} : { id }) } }),
     publish: (publication, assets) => request('peers/publication', { method: 'POST', body: { action: 'publish', publication, assets } }),
+    groups: options => request('groups', options),
+    setGroupPolicy: (policy, options) => request('groups/policy', { method: 'PUT', body: { policy }, ...options }),
+    ackDeparture: (publicKey, options) => request(`groups/departures/${encodeURIComponent(publicKey)}/ack`, { method: 'POST', ...options }),
     async participant(record) { authorityRecordBytes(record, AUTHORITY_PARTICIPANT_LIMITS.recordBytes - 32); return request('peers/participant', { method: 'POST', body: record }); },
   });
 }
