@@ -67,6 +67,8 @@ export interface ResolvedProvider {
   clientId: string;
   clientSecret: string | null;
   isCustom: boolean;
+  /** True when built-in `github`/`google` fell back to the login OAuth app (`GITHUB_CLIENT_ID`/`GOOGLE_CLIENT_ID`), reusing `/auth/callback/:provider`. */
+  usesLoginClient?: boolean;
 }
 
 export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<OutboundProviderSpec[]>([
@@ -222,7 +224,7 @@ export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<
       'youtube.googleapis.com',
     ],
     defaultScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
-    extraAuthParams: { access_type: 'offline', prompt: 'consent' },
+    extraAuthParams: { access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true' },
     profileUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
     actions: [
       { id: 'google.calendar.events:list', description: 'List Google Calendar events', method: 'GET', url: 'https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events', scopes: ['https://www.googleapis.com/auth/calendar.readonly'] },
@@ -412,18 +414,18 @@ function parseClientMap(env: Env): ConfiguredClientMap {
   }
 }
 
-export function builtinClientCredentials(env: Env, providerId: string): { clientId: string; clientSecret: string | null } | null {
+export function builtinClientCredentials(env: Env, providerId: string): { clientId: string; clientSecret: string | null; usesLoginClient?: boolean } | null {
   const map = parseClientMap(env);
   const fromMap = map[providerId];
   if (fromMap && typeof fromMap.client_id === 'string' && fromMap.client_id.trim()) {
-    return { clientId: fromMap.client_id.trim(), clientSecret: typeof fromMap.client_secret === 'string' && fromMap.client_secret ? fromMap.client_secret : null };
+    return { clientId: fromMap.client_id.trim(), clientSecret: typeof fromMap.client_secret === 'string' && fromMap.client_secret ? fromMap.client_secret : null, usesLoginClient: false };
   }
   // Reuse host GitHub/Google OAuth credentials if outbound-specific ones aren't set separately.
   if (providerId === 'github' && env.GITHUB_CLIENT_ID) {
-    return { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET ?? null };
+    return { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET ?? null, usesLoginClient: true };
   }
   if (providerId === 'google' && env.GOOGLE_CLIENT_ID) {
-    return { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET ?? null };
+    return { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET ?? null, usesLoginClient: true };
   }
   return null;
 }
@@ -477,7 +479,7 @@ export async function resolveProvider(env: Env, accountId: string, providerId: s
   if (!spec) throw new HttpError(404, 'provider_not_found', `Unsupported provider "${providerId}"`);
   const creds = builtinClientCredentials(env, providerId);
   if (!creds) throw new HttpError(503, 'provider_unconfigured', `${spec.name} outbound OAuth is not configured on this host. Register a custom BYO provider or configure OUTBOUND_OAUTH_CLIENTS_JSON.`);
-  return { spec, clientId: creds.clientId, clientSecret: creds.clientSecret, isCustom: false };
+  return { spec, clientId: creds.clientId, clientSecret: creds.clientSecret, isCustom: false, usesLoginClient: Boolean(creds.usesLoginClient) };
 }
 
 /**

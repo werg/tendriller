@@ -6,6 +6,7 @@ import { generateConnectionKey } from '../src/oauth-outbound/crypto';
 import { unsealAgentTokens, consumeConnectionCallbackFragment } from '../../contract/connections.mjs';
 import { sha256Hex } from '../src/ids';
 import { applyPlanToAccount } from '../src/billing/entitlements';
+import { route } from '../src/router';
 
 async function importX25519Priv(raw32: Uint8Array): Promise<CryptoKey> {
   const prefix = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20]);
@@ -72,6 +73,60 @@ it('lists the expanded built-in provider catalog and supports BYO custom OAuth 2
 
   const del = await req('/api/account/oauth/providers/nextcloud', { method: 'DELETE', anonymous: true, headers: { Cookie: h.session!, Origin: BASE } });
   expect(del.status).toBe(204);
+
+  // Verify built-in GitHub reuses `/auth/callback/github` when no separate outbound override is configured,
+  // completes end-to-end through `/auth/callback/github` via `out_` state demuxing, and Google sends
+  // `include_granted_scopes=true` requesting only the exact incremental scopes asked for.
+  const loginEnv = {
+    ...env,
+    GITHUB_CLIENT_ID: 'gh_login_id',
+    GITHUB_CLIENT_SECRET: 'gh_login_sec',
+    GOOGLE_CLIENT_ID: 'g_login_id',
+    GOOGLE_CLIENT_SECRET: 'g_login_sec',
+  };
+  const ghStart = await route(new Request(`${BASE}/api/account/connections`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ provider: 'github', tier: 'agent-held', agent_id: h.agent.id, scopes: ['read:user'] }),
+  }), loginEnv);
+  expect(ghStart.status).toBe(201);
+  const ghBody = await ghStart.json() as { authorize_url: string; state: string; connection_id: string };
+  expect(ghBody.state.startsWith('out_')).toBe(true);
+  const ghAuthUrl = new URL(ghBody.authorize_url);
+  expect(ghAuthUrl.searchParams.get('redirect_uri')).toBe(`${BASE}/auth/callback/github`);
+
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const u = String(input);
+    if (u === 'https://github.com/login/oauth/access_token') {
+      const bodyStr = String(init?.body ?? '');
+      expect(bodyStr).toContain(encodeURIComponent(`${BASE}/auth/callback/github`));
+      return Response.json({ access_token: 'gho_reused_cb', token_type: 'bearer', scope: 'read:user' });
+    }
+    if (u === 'https://api.github.com/user') {
+      return Response.json({ id: 777, login: 'octocat' });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+  try {
+    const ghCb = await route(new Request(`${BASE}/auth/callback/github?code=ghcode&state=${encodeURIComponent(ghBody.state)}`, {
+      headers: { Cookie: h.session!, Accept: 'application/json' },
+    }), loginEnv);
+    expect(ghCb.status).toBe(201);
+    const completed = await ghCb.json() as { connection: { id: string; provider: string; external_label: string } };
+    expect(completed.connection.id).toBe(ghBody.connection_id);
+    expect(completed.connection.external_label).toBe('octocat');
+  } finally {
+    fetchMock.mockRestore();
+  }
+
+  const gStart = await route(new Request(`${BASE}/api/account/connections`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ provider: 'google', tier: 'agent-held', agent_id: h.agent.id, scopes: ['https://www.googleapis.com/auth/tasks.readonly'] }),
+  }), loginEnv);
+  expect(gStart.status).toBe(201);
+  const gAuthUrl = new URL(((await gStart.json()) as { authorize_url: string }).authorize_url);
+  expect(gAuthUrl.searchParams.get('redirect_uri')).toBe(`${BASE}/auth/callback/google`);
+  expect(gAuthUrl.searchParams.get('include_granted_scopes')).toBe('true');
+  expect(gAuthUrl.searchParams.get('scope')).toBe('https://www.googleapis.com/auth/tasks.readonly');
 });
 
 it('Tier A (agent-held): X25519-seals tokens to agent wrapKey with zero plaintext in D1, wipes on ack, and supports stateless refresh', async () => {

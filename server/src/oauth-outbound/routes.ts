@@ -90,6 +90,13 @@ interface OutboundStateRow {
 function newConnectionId(): string { return `oc_${randomB32(26)}`; }
 function randomToken(): string { return base64url(crypto.getRandomValues(new Uint8Array(32))); }
 
+function outboundCallbackUri(env: Env, resolved: ResolvedProvider): string {
+  if (resolved.usesLoginClient && (resolved.spec.id === 'github' || resolved.spec.id === 'google')) {
+    return `${publicBase(env)}/auth/callback/${resolved.spec.id}`;
+  }
+  return `${publicBase(env)}/auth/outbound/callback/${encodeURIComponent(resolved.spec.id)}`;
+}
+
 function aadFor(id: string, accountId: string, custody: OutboundCustody): string {
   return `${id}:${accountId}:${custody}`;
 }
@@ -240,7 +247,7 @@ export async function startOutboundConnect(
 
   const label = typeof body.label === 'string' ? body.label.trim().slice(0, 80) : resolved.spec.name;
   const connectionId = newConnectionId();
-  const state = randomToken();
+  const state = `out_${randomToken()}`;
   const verifier = randomToken();
   const challenge = base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
   const now = Date.now();
@@ -255,7 +262,7 @@ export async function startOutboundConnect(
       verifier, safeReturnTo(body.return_to, env), now, expiresAt,
     ).run();
 
-  const callback = `${publicBase(env)}/auth/outbound/callback/${encodeURIComponent(providerId)}`;
+  const callback = outboundCallbackUri(env, resolved);
   const auth = new URL(resolved.spec.authorizeUrl);
   auth.searchParams.set('client_id', resolved.clientId);
   auth.searchParams.set('redirect_uri', callback);
@@ -411,7 +418,7 @@ export async function handleOutboundCallback(req: Request, env: Env, url: URL, p
   if (!pending) throw new HttpError(400, 'invalid_state', 'Connection authorization expired, already used, or started by another account');
 
   const resolved = await resolveProvider(env, session.accountId, providerId);
-  const redirectUri = `${publicBase(env)}/auth/outbound/callback/${encodeURIComponent(providerId)}`;
+  const redirectUri = outboundCallbackUri(env, resolved);
   const tokens = await exchangeProviderCode(resolved, code, redirectUri, pending.verifier);
   const profile = await lookupExternalProfile(resolved, tokens.access_token);
   const now = Date.now();

@@ -51,6 +51,8 @@ Query `GET /api/oauth/providers` for the live catalog. Every built-in provider s
 | `oura` | Personal & Media | `oura.readiness:read`, `oura.sleep:read` | `api.ouraring.com` |
 | `custom:<slug>` | BYO OAuth 2.1 | `http:request` (pinned to registered `allowed_hosts`) | User-configured HTTPS hosts |
 
+> **Incremental scopes & single-callback reuse:** Google connections always send `include_granted_scopes=true`, so pass only the exact minimal scopes each app needs (e.g. `calendar.readonly` or `tasks.readonly`) rather than asking for Gmail/Drive upfront — Google adds scopes bit by bit only when the user approves an integration that needs them. When a host does not set separate `OUTBOUND_OAUTH_CLIENTS_JSON` overrides for `github` or `google`, outbound connections automatically reuse the existing sign-in OAuth app and `/auth/callback/{github,google}` URL.
+
 ---
 
 ## 3. End-to-End Integration Recipes
