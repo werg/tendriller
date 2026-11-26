@@ -1,9 +1,9 @@
 // One optional page inside the workspace's single agent program.
 // Chronolog v2: zero native C/C++ builds, built-in QuickJS-NG + sqlite-cas.wasm,
 // and atomic `$permissions` + `$keys` admission.
-import { createApplicationSession, describeApplication, encodeSignedOperation, hexToBytes } from '@chronolog/peer-session';
+import { bytesToHex, createApplicationSession, describeApplication, encodeSignedOperation, genesisChainId, hexToBytes } from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
-import { authorityRecord } from '@tendriller/core/authority';
+import { authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';
 import { createAdmission, openPageGenesis } from '@tendriller/core/admission';
 import { participateNativeApplication } from '@tendriller/core/native-rtc';
 import { watchApplicationSetup } from '@tendriller/core/setup';
@@ -29,11 +29,15 @@ export function publicationControl(context, definition) {
         }
         return saved.op;
       }
+      const metadata = await context.host.peers.application();
+      const targetChainId = metadata.genesis
+        ? bytesToHex(genesisChainId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
+        : metadata.selection.id;
       const previous = await context.host.peers.publication();
       const { signOperationCore } = await import('@chronolog/peer-session/kernel');
       const signed = await signOperationCore({
         version: 1,
-        chainId: hexToBytes(context.page.applicationId),
+        chainId: hexToBytes(targetChainId),
         author: hexToBytes(context.signer.publicKey),
         operationId,
         authorTimestampMs: BigInt(Date.now()),
@@ -48,7 +52,7 @@ export function publicationControl(context, definition) {
             ...(previous ? { expectedRevision: previous.revision } : {}),
           },
         }],
-      }, context.signer);
+      }, context.signer.privateKey);
       const op = authorityRecord(encodeSignedOperation(signed));
       await context.savePrivate(name, { entry, files, op });
       return op;

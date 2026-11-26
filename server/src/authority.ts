@@ -209,6 +209,12 @@ export function readStoredGenesisBytes(t: Tendril): Uint8Array | null {
   return rec ? authorityRecordBytes(rec, 1024 * 1024) : null;
 }
 
+/** Active Chronolog v2 chainId once genesis is initialized, falling back to pre-genesis page application ID. */
+export function activeChainId(t: Tendril): string {
+  const genesisBytes = readStoredGenesisBytes(t);
+  return genesisBytes ? bytesToHex(genesisChainId(genesisBytes)) : selectedApplication(t).id;
+}
+
 export function listPublicOpRows(t: Tendril): Array<{ op_id: string; author: string; author_ts: number; raw: Uint8Array }> {
   return t.db.all<{ op_id: string; author: string; author_ts: number; raw: ArrayBuffer | Uint8Array }>(
     'SELECT op_id, author, author_ts, raw FROM v2_public_ops ORDER BY author_ts, author, op_id',
@@ -759,7 +765,7 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
   try {
     return await withAuthorityMutation(t, async () => {
       await freshAuthorityAccess(t, principal);
-      const accountId = authorityAccount(t, principal), applicationId = selectedApplication(t).id;
+      const accountId = authorityAccount(t, principal), applicationId = activeChainId(t);
       const browserOnly = () => { if (principal.kind !== 'page') throw new HttpError(403, 'browser_account_required'); };
       const fields = (...allowed: string[]) => {
         if (Object.keys(input).some(key => key !== 'action' && !allowed.includes(key))) throw new HttpError(400, 'bad_request');
@@ -864,11 +870,6 @@ async function initializeGenesis(
   catch { throw new HttpError(400, 'authority_genesis_invalid'); }
   const chainId = bytesToHex(genesisChainId(genesisBytes));
 
-  const pinned = t.db.get<boolean>('application_pinned', false);
-  if (pinned && chainId !== selectedApplication(t).id) {
-    throw new HttpError(400, 'authority_application_mismatch', 'Genesis chainId does not match this page’s pinned applicationId');
-  }
-
   const casNodes = parseCasNodesInput(casNodesInput);
   const initialOpsRaw = Array.isArray(initialOpsInput) ? initialOpsInput : [];
   if (initialOpsRaw.length > 32) throw new HttpError(400, 'too_many_operations');
@@ -931,10 +932,6 @@ async function initializeGenesis(
   t.transaction(() => {
     authorityAccount(t, principal);
     if (t.db.get(GENESIS_KEY, null) !== null) throw new HttpError(409, 'application_initialized');
-    if (!pinned) {
-      t.db.set('application', { id: chainId });
-      t.db.set('application_pinned', true);
-    }
     t.db.set(GENESIS_KEY, authorityRecord(genesisBytes));
     for (const node of casNodes) {
       const copy = new Uint8Array(node.bytes.byteLength); copy.set(node.bytes);

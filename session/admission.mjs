@@ -441,7 +441,7 @@ export function createAdmission(session, {
       if (session.isMember(entry.payload.publicKey)) continue;
       const roleGrant = entry.invite
         ? (ROLE_GRANTS[entry.invite.role] ?? ROLE_GRANTS.writer)
-        : (entry.payload.subject === 'agent' ? { reader: true, writer: true, administrator: false } : grantDefault);
+        : (entry.payload.subject === 'agent' ? { reader: true, writer: true, administrator: false, publisher: true } : grantDefault);
       await session.admitMember({
         publicKey: entry.payload.publicKey,
         wrapKey: entry.payload.wrapKey,

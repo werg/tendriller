@@ -292,7 +292,7 @@ describe('v2 genesis initialization', () => {
 
     const valid = await buildGenesis(root, { accounts: [...accounts, 'email:extra@example.com'] });
     const stored = await body(await init(valid));
-    expect(stored.selection.id).toBe(valid.chainId);
+    expect(bytesToHex(genesisChainId(authorityRecordBytes(stored.genesis)))).toBe(valid.chainId);
     expect(stored.genesis).toEqual(authorityRecord(valid.genesisBytes));
     // Exact retry is idempotent.
     expect((await body(await init(valid))).genesis).toEqual(stored.genesis);
@@ -322,7 +322,7 @@ describe('v2 genesis initialization', () => {
       genesis: authorityRecord(goodFixture.genesisBytes),
       casNodes: goodFixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
     }));
-    expect(initialized.selection.id).toBe(goodFixture.chainId);
+    expect(bytesToHex(genesisChainId(authorityRecordBytes(initialized.genesis)))).toBe(goodFixture.chainId);
   });
 });
 

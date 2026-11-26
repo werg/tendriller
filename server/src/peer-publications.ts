@@ -18,11 +18,12 @@ import { assertFilePath } from '../../contract/index.mjs';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import { requireAgentScope, type Principal } from './access';
 import {
-  authorityAccount, authorityError, freshAuthorityAccess, listCheckpointRows,
+  activeChainId, authorityAccount, authorityError, freshAuthorityAccess, listCheckpointRows,
   listPublicCasRows, listPublicOpRows, readControlState, readStoredGenesisBytes,
   reconcileHostEffects, replayBlindHostControl, verifyPublicControlOp, withAuthorityMutation,
   type ControlRelease,
 } from './authority';
+import type { HostAppConfig } from '../../contract/authority.mjs';
 import { notifyDiscoveryWatchers } from './discovery';
 import { createVersion, storeContent, type VersionFile } from './files';
 import { HttpError } from './http';
@@ -65,9 +66,11 @@ export async function exchangePeerPublication(
   return withAuthorityMutation(t, async () => {
     await freshAuthorityAccess(t, principal);
     const genesisBytes = readStoredGenesisBytes(t);
-    if (!genesisBytes) throw new HttpError(409, 'application_uninitialized', 'Initialize Chronolog v2 genesis before publishing.');
-    const state = await readControlState(t);
-    if (!state) throw new HttpError(409, 'application_uninitialized');
+    const state = genesisBytes ? await readControlState(t) : null;
+    const config = t.db.get<HostAppConfig | null>('application_configuration', null);
+    if (!genesisBytes && !config) {
+      throw new HttpError(409, 'application_uninitialized', 'Prepare or initialize Chronolog v2 genesis before publishing.');
+    }
 
     if (action === 'read') {
       const query = record(input, ['id']);
@@ -77,8 +80,11 @@ export async function exchangePeerPublication(
       if (query.id !== undefined) {
         return structuredClone(t.db.get<PeerPublicationReceipt | null>(`v2_pub_receipt:${query.id}`, null));
       }
+      if (!state) {
+        return structuredClone(t.db.get<PeerPublicationReceipt | null>('v2_bootstrap_pub_receipt', null));
+      }
       const effective = state.hasActiveFinality ? state.finalizedPublications?.current ?? null : state.publications.current;
-      if (!effective) return null;
+      if (!effective) return structuredClone(t.db.get<PeerPublicationReceipt | null>('v2_bootstrap_pub_receipt', null));
       const version = t.db.get<number | null>(`v2_pub_version:${effective.opId}`, null) ?? 0;
       const receipt: PeerPublicationReceipt = {
         opId: effective.opId,
@@ -95,7 +101,7 @@ export async function exchangePeerPublication(
 
     const value = record(input, ['op', 'assets']);
     const rawOp = authorityRecordBytes(value.op, 512 * 1024);
-    const chainId = bytesToHex(genesisChainId(genesisBytes));
+    const chainId = activeChainId(t);
     const parsed = await verifyPublicControlOp(rawOp, chainId);
     const pubUpdate = parsed.kernelInput.core.updates.find(u => u.topic === '$publications');
     if (!pubUpdate || !pubUpdate.input || typeof pubUpdate.input !== 'object' || Array.isArray(pubUpdate.input)) {
@@ -163,6 +169,41 @@ export async function exchangePeerPublication(
       if (!supplied.has(hash)) {
         throw new HttpError(409, 'peer_publication_content_missing', 'A code publication requires every referenced asset');
       }
+    }
+
+    // Pre-genesis bootstrap publication (browser-first flow): authorize against prepared `publisherKeys`,
+    // store immutable R2 assets, and serve v1 so the owner's browser can initialize Chronolog v2 genesis.
+    if (!genesisBytes || !state) {
+      if (!config?.publisherKeys?.includes(parsed.author)) {
+        throw new HttpError(403, 'publisher_required', 'Author is not in prepared publisherKeys');
+      }
+      await freshAuthorityAccess(t, principal);
+      for (const [hash, bytes] of supplied) {
+        await storeContent(t, bytes.slice().buffer, required.get(hash)!.type);
+        await freshAuthorityAccess(t, principal);
+      }
+      const release: ControlRelease = {
+        revision: 0,
+        opId: parsed.opId,
+        author: parsed.author,
+        timestampMs: Number(parsed.authorTimestampMs),
+        entry: payload.entry,
+        files: [...files.values()],
+      };
+      let receipt: PeerPublicationReceipt | null = null;
+      await createVersion(t, files, null, parsed.author, {
+        entry: payload.entry,
+        beforeCommit: () => freshAuthorityAccess(t, principal),
+        commit(version) {
+          t.db.set(`v2_pub_version:${parsed.opId}`, version);
+          receipt = { opId: parsed.opId, revision: 0, version, release, finalized: false };
+          t.db.set(`v2_pub_receipt:${parsed.opId}`, receipt);
+          t.db.set('v2_bootstrap_pub_receipt', receipt);
+          notifyDiscoveryWatchers(t);
+        },
+      });
+      if (receipt === null) throw new HttpError(500, 'peer_publication_receipt_missing');
+      return structuredClone(receipt);
     }
 
     // Replay the candidate publication op through TopicKernel BEFORE writing assets or versions!
