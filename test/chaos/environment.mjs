@@ -185,6 +185,15 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
       await agent.waitFor(value => value.page === pages[slug].id && value.canAuthor === true, `page ${slug} agent admitted`, 90_000);
       const self = await tendril(['--page', slug, 'self']);
       assert.equal(self.identity?.publicKey, pages[slug].nativeDeviceId, 'The agent page owner must use the shared workspace signer.');
+      if (isSql) {
+        // Wait for the owner browser's encrypted initial SQL migration to replicate to the agent before closing the owner tab.
+        await waitFor(
+          () => tendril(['--page', slug, 'query', 'inventory', 'null']),
+          reply => Array.isArray(reply?.value?.stock) && reply.value.stock.length >= 2,
+          60_000,
+          `agent received initial SQL schema on ${slug}`,
+        );
+      }
     }
     for (const tab of tabs) await tab.close();
     await owner.close(); owner = undefined;
