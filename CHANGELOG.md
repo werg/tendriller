@@ -9,6 +9,17 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
 
 ## Unreleased
 
+- **Owner-account devices are administrators by default.** The signed admission
+  policy grant is exactly `{reader, writer, administrator}` (Chronolog rejects the
+  old two-field shape; pages created before this change do not open and must be
+  recreated). Genesis grants `{reader: true, writer: true, administrator: true}`,
+  so a device admitted through the owner account's host attestation, or approved
+  in strict mode without flags, is an administrator; attested agent keys and
+  invitees keep their current rights. Administrators change it with
+  `admission.ownerGrant` / `tendril page owner-grant <slug> admin|writer|reader`,
+  and **Devices and access** marks administrators. In attested mode a compromised
+  host or login could admit an administrator device; it is visible and revocable
+  by the other administrators.
 - **Page keys and one admission mechanism.** The page's creator signs its
   descriptor, genesis membership and first epoch key: the agent by default
   (`npm run init -- <slug>`), or the owner's first browser with `--browser-first`.

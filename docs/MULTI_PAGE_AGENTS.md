@@ -158,7 +158,7 @@ my-pages/
   an account-linked MCP `register_agent`.
 - `tendril page new <slug>` creates a page and its source folder.
 - `tendril page grant <slug> <page-id>` / `tendril page list` / `tendril status`.
-- `tendril page devices|approve|remove-device|mode|invite|revoke-invite <slug>`
+- `tendril page devices|approve|remove-device|mode|owner-grant|invite|revoke-invite <slug>`
   run admission actions inside the running agent program's page owner.
 - `tendril agent run` is the one optional local program: one hub
   connection, one Chronolog session per initialized page (each with its own device

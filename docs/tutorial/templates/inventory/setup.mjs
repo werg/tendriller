@@ -7,10 +7,10 @@ import { definition } from './domain.mjs';
 export const databasePathOf = context => context.privatePath('materialized.sqlite');
 // Browser WASM acquisition/verification only: never load a native addon in setup.
 export const preflight = () => prepareBrowserEngine();
-export async function initializePage(context, { requestedFinality, browserFirst = false } = {}) {
+export async function initializePage(context, { requestedFinality, browserFirst = false, ownerGrant } = {}) {
   const manifest = await prepareBrowserEngine();
   const execution = createDoltLiteExecutionManifest({ engineDigest: digestEngineManifest(manifest.nativeManifest) });
   const executionManifestDigest = bytesToHex((await executionManifestArtifacts(execution)).executionManifestDigest);
   const prepared = await prepareHost(context, { definition, executionManifestDigest, executionProfile: 'sql', requestedFinality });
-  return { ...prepared, ...await initializePageData(context, { executionManifestDigest, browserFirst }) };
+  return { ...prepared, ...await initializePageData(context, { executionManifestDigest, browserFirst, ownerGrant }) };
 }

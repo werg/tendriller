@@ -23,12 +23,12 @@ export async function createPage(slug,{template='notes',name}={}) {
  return{slug,id:page.id,page_url:page.page_url,template,next:`npm run init -- ${slug} (this agent creates the page keys), then npm run deploy -- ${slug}.`};
 }
 export async function run(action,args) {
- const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'}}});
+ const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'}}});
  const[slug]=positionals;if(action==='new')return createPage(slug,values);
  const selected=await workspace(),context=await selected.pageContext(requireSlug(slug));
  if(action==='demo'){await pageModule(slug,'demo.mjs');return;}
  if(action==='init'){
-  const result=await(await pageModule(slug,'setup.mjs')).initializePage(context,{...(values['browser-finalizer']?{requestedFinality:{kind:'browser-signed-frontier'}}:{}),browserFirst:values['browser-first']===true||values['browser-finalizer']===true}); // a browser finalizer is the browser creator's key
+  const result=await(await pageModule(slug,'setup.mjs')).initializePage(context,{...(values['browser-finalizer']?{requestedFinality:{kind:'browser-signed-frontier'}}:{}),browserFirst:values['browser-first']===true||values['browser-finalizer']===true,...(values['owner-grant']===undefined?{}:{ownerGrant:values['owner-grant']})}); // a browser finalizer is the browser creator's key
   return{...result,next:result.creator==='agent'?`npm run deploy -- ${slug}, then give the owner the page URL. Keep npm run agent running so this agent admits the owner's browsers; it already holds this page's keys and can import data now.`:`npm run deploy -- ${slug}, then give the owner the page URL. Their first browser creates the page data; npm run agent is admitted from its signed grant once a holder is online.`};
  }
  if(action==='build'||action==='deploy'){

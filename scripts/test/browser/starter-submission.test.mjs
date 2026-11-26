@@ -56,7 +56,7 @@ async function bundles() {
           const owner = { applicationId, historyId: 'history', identity: { publicKey: author },
             extensions: { async call(name) { if (name !== 'admission.state') throw Error('Unsupported fixture action ' + name);
               // The owner's admission controller state for an admitted creator device (devices view input).
-              return { phase: 'admitted', publicKey: author, wrapKey: 'd'.repeat(64), subject: 'device', mode: 'attested', accounts: ['acct_owner'], epoch: 0, revision: 0,
+              return { phase: 'admitted', publicKey: author, wrapKey: 'd'.repeat(64), subject: 'device', mode: 'attested', accounts: ['acct_owner'], ownerGrant: { reader: true, writer: true, administrator: true }, epoch: 0, revision: 0,
                 administrator: true, canAdmit: true, members: [{ publicKey: author, self: true, reader: true, writer: true, administrator: true, wrapKey: 'd'.repeat(64), via: 'creator', subject: 'creator', label: 'Browser device' }],
                 pending: [], invites: [], notices: [], attestationExpiresAt: null, error: null }; },
               subscribe() { return () => {}; } },

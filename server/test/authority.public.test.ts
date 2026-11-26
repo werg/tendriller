@@ -43,7 +43,7 @@ async function genesis(root: Device, options: GenesisOptions): Promise<Authority
   const membership = await signMembership({ applicationId: appId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
     epochKeyDigest: await epochKeyCommitment(appId, 0, crypto.getRandomValues(new Uint8Array(32))),
     members: [{ publicKey: root.identity.publicKey, wrapKey: root.wrapKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: options.finalizer ?? false }],
-    admission: { mode: options.mode ?? 'attested', hostKey: options.hostKey ?? hostKey, accounts: options.accounts, grant: { reader: true, writer: true } }, admitted: [], invites: [] }, signer);
+    admission: { mode: options.mode ?? 'attested', hostKey: options.hostKey ?? hostKey, accounts: options.accounts, grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, signer);
   return { descriptor, memberships: [membership] };
 }
 /** One member-signed revision on top of the bundle's head. */
@@ -54,7 +54,7 @@ async function extend(bundle: AuthorityBundle, signer: SigningIdentity, change: 
   return { descriptor: bundle.descriptor, memberships: [...bundle.memberships, next] };
 }
 /** An attested (or invited) admission exactly as any reader member may sign it. */
-function admit(bundle: AuthorityBundle, signer: SigningIdentity, attestation: SignedHostAttestation, grant = { reader: true, writer: true, administrator: false }, via: 'attested' | 'invited' = 'attested') {
+function admit(bundle: AuthorityBundle, signer: SigningIdentity, attestation: SignedHostAttestation, grant = { reader: true, writer: true, administrator: true }, via: 'attested' | 'invited' = 'attested') {
   return extend(bundle, signer, prior => ({
     members: [...prior.members, { publicKey: attestation.payload.publicKey, wrapKey: attestation.payload.wrapKey, ...grant, publisher: false, finalizer: false }],
     admitted: [{ publicKey: attestation.payload.publicKey, via, attestation }],
@@ -212,14 +212,17 @@ describe('membership extension', () => {
     const { root, bundle } = await ownerRooted(page);
     const membership = (value: AuthorityBundle) => page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(value) });
     const laptop = await device(), laptopEvidence = await enroll(page.ownerApi, laptop);
-    const one = await admit(bundle, root.identity, laptopEvidence);
+    // The root administrator may choose any grant: the laptop joins as a non-administrator editor.
+    const one = await admit(bundle, root.identity, laptopEvidence, { reader: true, writer: true, administrator: false });
     await body(await membership(one));
     expect((await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'admissions' }))).pending.filter((record: unknown) => dec<SignedHostAttestation>(record).payload.publicKey === laptop.identity.publicKey)).toEqual([]);
-    // A non-administrator reader may append another attested device with exactly the policy grant.
+    // A non-administrator reader may append another attested device with exactly the policy grant (administrator by default)...
     const phone = await device(), phoneEvidence = await enroll(page.ownerApi, phone);
+    expect(one.memberships.at(-1)!.payload.admission.grant).toEqual({ reader: true, writer: true, administrator: true });
     const two = await admit(one, laptop.identity, phoneEvidence);
-    // ...but not a broader grant, and a non-member signer can never extend the chain.
-    expect((await membership(await admit(one, laptop.identity, phoneEvidence, { reader: true, writer: true, administrator: true }))).status).toBe(403);
+    // ...but not any other grant, and a non-member signer can never extend the chain.
+    expect((await membership(await admit(one, laptop.identity, phoneEvidence, { reader: true, writer: true, administrator: false }))).status).toBe(403);
+    expect((await membership(await admit(one, laptop.identity, phoneEvidence, { reader: true, writer: false, administrator: true }))).status).toBe(403);
     const stranger = await createSigningIdentity();
     expect((await membership(await extend(one, stranger, prior => ({ members: [...prior.members, { publicKey: stranger.publicKey, wrapKey: testWrapKey(), reader: true, writer: true, administrator: true, publisher: false, finalizer: false }] })))).status).toBe(403);
     const forged = await extend(one, root.identity, prior => ({ members: prior.members.map(member => ({ ...member, writer: false })) }));

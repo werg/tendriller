@@ -66,7 +66,7 @@ serveBrowserOwner({
                 publicKey: device.identity.publicKey, wrapKey: null,
                 reader: true, writer: true, administrator: true, publisher: false, finalizer: false,
               }],
-              admission: { mode: 'strict', hostKey: host.publicKey, accounts: [], grant: { reader: true, writer: true } },
+              admission: { mode: 'strict', hostKey: host.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } },
               admitted: [],
               invites: [],
             }, host);

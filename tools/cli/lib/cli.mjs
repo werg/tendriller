@@ -33,6 +33,7 @@ Workspace (one agent credential and signing key for many pages):
   page approve <slug> <public-key> [--writer] [--admin]   Admit a pending device (strict mode, guests)
   page remove-device <slug> <public-key>  Remove a device or agent and rotate the page key
   page mode <slug> attested|strict      Auto-admit owner devices, or require approval
+  page owner-grant <slug> admin|writer|reader   Rights owner-account devices get on admission (default admin)
   page invite <slug> --email ADDRESS | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
   page revoke-invite <slug> <invite-id> Stop an invite (signed in page state; the host stops redemptions)
   status                                Workspace, agent, grants and the agent program
@@ -173,8 +174,8 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       const page = await workspace.registerPage(slug, granted);
       return { slug, id: page.id, name: page.name, source: page.source };
     }
-    if (['devices', 'approve', 'remove-device', 'mode', 'invite', 'revoke-invite'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
-    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|invite|revoke-invite; see --help');
+    if (['devices', 'approve', 'remove-device', 'mode', 'owner-grant', 'invite', 'revoke-invite'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
+    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|owner-grant|invite|revoke-invite; see --help');
   }
   if (command === 'agent') {
     if (args[0] === 'profile') {
@@ -283,7 +284,7 @@ async function pageAdmission(workspace, action, slug, value, flags, signal) {
   };
   if (action === 'devices') {
     const state = await call('admission.state');
-    return { page: slug, phase: state.phase, mode: state.mode, administrator: state.administrator, members: state.members, pending: state.pending, invites: state.invites };
+    return { page: slug, phase: state.phase, mode: state.mode, ownerGrant: state.ownerGrant, administrator: state.administrator, members: state.members, pending: state.pending, invites: state.invites };
   }
   if (action === 'approve' || action === 'remove-device') {
     if (!KEY_RE.test(value ?? '')) throw invalid(`page ${action} requires the device's 64-hex public key (see page devices)`);
@@ -291,6 +292,7 @@ async function pageAdmission(workspace, action, slug, value, flags, signal) {
       : call('admission.remove', value);
   }
   if (action === 'mode') { if (!['attested', 'strict'].includes(value)) throw invalid('page mode takes attested or strict'); return call('admission.mode', value); }
+  if (action === 'owner-grant') { if (!['admin', 'writer', 'reader'].includes(value)) throw invalid('page owner-grant takes admin, writer or reader'); return call('admission.ownerGrant', value); }
   if (action === 'revoke-invite') { if (!/^[0-9a-f]{32}$/u.test(value ?? '')) throw invalid('page revoke-invite requires the invite id'); return call('admission.revokeInvite', value); }
   const kinds = ['email', 'open', 'public'].filter(name => flags[name] !== undefined && flags[name] !== false);
   if (kinds.length !== 1 || value !== undefined) throw invalid('page invite takes exactly one of --email ADDRESS, --open or --public');

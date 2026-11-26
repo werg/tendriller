@@ -29,10 +29,10 @@ async function world({ owner } = {}) {
   const host = await createAdmissionHost({ applicationId, configuration, ...(owner ? { owner } : {}) });
   const opened = [];
   /** One participant: its own store/signer/wrap key, a host client and an admission controller. */
-  async function participant({ principal, subject = 'device', create = true, signer, store = new MemoryStore() } = {}) {
+  async function participant({ principal, subject = 'device', create = true, signer, store = new MemoryStore(), ownerGrant } = {}) {
     const device = await openApplicationDevice({ store, create: true, ...(signer ? { managedSigner: signer } : {}) });
     const wrapKey = await deviceWrapKey(device.store), peers = host.client(principal);
-    const { authority, created } = await openPageAuthority({ store: device.store, identity: device.identity, wrapKey, peers, applicationId, executionManifestDigest: digest, create });
+    const { authority, created } = await openPageAuthority({ store: device.store, identity: device.identity, wrapKey, peers, applicationId, executionManifestDigest: digest, create, ...(ownerGrant ? { ownerGrant } : {}) });
     const session = await createApplicationSession({ device, definition, authority });
     const admission = createAdmission(session, { peers, wrapKey, store: device.store, subject, memberIntervalMs: 50, waitingIntervalMs: 20 });
     const value = { device, session, admission, peers, created, wrapKey, store, close: async () => { admission.close(); await session.close(); } };
@@ -54,13 +54,15 @@ test('agent-first: the agent creates keys and imports data before any browser; t
     const descriptor = agent.session.authority.descriptor;
     assert.equal(descriptor.rootPrincipal, signer.publicKey); assert.equal(descriptor.authorityPublicKey, signer.publicKey, 'the creator, not the host, is the descriptor authority');
     assert.deepEqual(agent.session.authority.currentMembership.admission.accounts, ['acct_owner', 'email:owner@example.test']);
+    assert.deepEqual(agent.session.authority.currentMembership.admission.grant, { reader: true, writer: true, administrator: true }, 'the signed policy states the owner-device grant explicitly');
+    assert.deepEqual(agent.admission.state.ownerGrant, { reader: true, writer: true, administrator: true });
     const imported = await agent.session.command('say', 'imported by the agent', { operationId: 'import-1' }); await imported.materialized();
     const browser = await w.participant({ principal: owner });
     assert.equal(browser.created, false); assert.equal(browser.session.status.canAuthor, false);
     await until(() => browser.admission.state.phase === 'admitted', 'browser admitted');
     assert.equal(browser.session.status.canAuthor, true);
     const self = browser.session.authority.grant(browser.device.identity.publicKey);
-    assert.deepEqual({ reader: self.reader, writer: self.writer, administrator: self.administrator, wrapKey: self.wrapKey }, { reader: true, writer: true, administrator: false, wrapKey: browser.wrapKey.publicKey });
+    assert.deepEqual({ reader: self.reader, writer: self.writer, administrator: self.administrator, wrapKey: self.wrapKey }, { reader: true, writer: true, administrator: true, wrapKey: browser.wrapKey.publicKey });
     const admitted = browser.session.authority.currentMembership.admitted[0];
     assert.equal(admitted.via, 'attested'); assert.equal(admitted.attestation.payload.accountId, 'acct_owner');
     await until(() => agent.admission.state.notices.some(notice => notice.kind === 'new-device' && notice.publicKey === browser.device.identity.publicKey), 'agent saw new device');
@@ -87,6 +89,9 @@ test('browser-first: the owner browser creates; the agent is admitted from its s
     await until(() => agent.admission.state.phase === 'admitted', 'agent admitted');
     const evidence = agent.session.authority.currentMembership.admitted[0];
     assert.equal(evidence.attestation.payload.subject, 'agent'); assert.equal(evidence.attestation.payload.label, '@atlas');
+    // Agents admitted from a signed host grant keep editor rights; they never become administrators automatically.
+    const agentGrant = agent.session.authority.grant(signer.publicKey);
+    assert.deepEqual([agentGrant.reader, agentGrant.writer, agentGrant.administrator], [true, true, false]);
     await relay(browser, agent); assert.deepEqual(await messages(agent), ['browser first']);
   } finally { await w.close(); }
 });
@@ -127,9 +132,12 @@ test('with no key holder online the newcomer waits, retries and is admitted once
 test('remove device writes a signed revocation and rotates; the removed device cannot read new data and is not auto-readmitted', async () => {
   const w = await world();
   try {
-    const admin = await w.participant({ principal: owner }), kept = await w.participant({ principal: owner }), lost = await w.participant({ principal: owner });
+    // Owner devices join as editors on this page, so only the creator administers it.
+    const admin = await w.participant({ principal: owner, ownerGrant: 'writer' }), kept = await w.participant({ principal: owner }), lost = await w.participant({ principal: owner });
     await until(() => kept.admission.state.phase === 'admitted' && lost.admission.state.phase === 'admitted', 'both admitted');
+    assert.equal(kept.session.authority.grant(kept.device.identity.publicKey).administrator, false);
     await assert.rejects(kept.admission.call('admission.remove', lost.device.identity.publicKey), { code: 'ADMINISTRATOR_REQUIRED' });
+    await assert.rejects(kept.admission.call('admission.ownerGrant', 'admin'), { code: 'ADMINISTRATOR_REQUIRED' });
     const result = await admin.admission.call('admission.remove', lost.device.identity.publicKey);
     assert.equal(result.epoch, 1);
     await until(() => kept.session.authority.epochKey(1) !== null, 'remaining member received the new epoch key');
@@ -162,6 +170,36 @@ test('strict mode keeps an attested device pending until an administrator approv
     await admin.admission.call('admission.approve', phone.device.identity.publicKey);
     await until(() => phone.admission.state.phase === 'admitted', 'approved device admitted');
     assert.equal(phone.session.authority.currentMembership.admitted.at(-1).via, 'approved');
+    // Without flags an approved owner-account device receives the policy grant, administrator included.
+    assert.equal(admin.session.authority.grant(phone.device.identity.publicKey).administrator, true);
+    // Flags still choose narrower rights, and another account's device is never an administrator by default.
+    const tablet = await w.participant({ principal: owner }), guest = await w.participant({ principal: { account: { accountId: 'acct_guest', email: 'guest@example.test' } } });
+    await until(() => [tablet, guest].every(item => admin.admission.state.pending.some(entry => entry.publicKey === item.device.identity.publicKey)), 'admin sees both pending');
+    await admin.admission.call('admission.approve', tablet.device.identity.publicKey, { administrator: false });
+    await admin.admission.call('admission.approve', guest.device.identity.publicKey);
+    const tabletGrant = admin.session.authority.grant(tablet.device.identity.publicKey), guestGrant = admin.session.authority.grant(guest.device.identity.publicKey);
+    assert.deepEqual([tabletGrant.writer, tabletGrant.administrator, guestGrant.writer, guestGrant.administrator], [true, false, true, false]);
+  } finally { await w.close(); }
+});
+
+test('owner-account devices admitted by attestation are administrators by default; the policy grant is configurable', async () => {
+  const w = await world();
+  try {
+    const creator = await w.participant({ principal: owner }), laptop = await w.participant({ principal: owner });
+    await until(() => laptop.admission.state.phase === 'admitted', 'laptop admitted');
+    assert.equal(laptop.session.authority.grant(laptop.device.identity.publicKey).administrator, true);
+    assert.equal(laptop.admission.state.administrator, true);
+    // The attested administrator administers the page from its own device.
+    await laptop.admission.call('admission.ownerGrant', 'writer');
+    await until(() => creator.session.authority.currentMembership.admission.grant.administrator === false, 'creator sees the narrowed grant');
+    assert.deepEqual(laptop.session.authority.currentMembership.admission.grant, { reader: true, writer: true, administrator: false });
+    await assert.rejects(laptop.admission.call('admission.ownerGrant', 'owner'), { code: 'ADMISSION_GRANT_INVALID' });
+    const phone = await w.participant({ principal: owner });
+    await until(() => phone.admission.state.phase === 'admitted', 'phone admitted');
+    await until(() => creator.session.authority.grant(phone.device.identity.publicKey) !== null, 'creator sees phone');
+    const grant = creator.session.authority.grant(phone.device.identity.publicKey);
+    assert.deepEqual([grant.reader, grant.writer, grant.administrator], [true, true, false]);
+    assert.equal(phone.session.authority.currentMembership.admitted.at(-1).via, 'attested');
   } finally { await w.close(); }
 });
 

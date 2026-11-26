@@ -24,7 +24,7 @@ Descriptor: `{applicationId,rootPrincipal,authorityPublicKey,executionManifestDi
 
 1. Same-origin service/discovery/readiness and immutable kit verification.
 2. Register the workspace agent once (`tendril workspace init|join|key|adopt`; one credential and one signing key) and create the page (`npm run page:new -- <slug>`; the creating agent is granted it automatically). Retain the private workspace.
-3. `npm run init -- <slug>`: prepare `{executionManifestDigest,executionProfile,publisherKeys,requestedFinality?,tools?}` (ordinary apps omit finality to choose `none`), then create the page data as its creator: `createPageGenesis` signs the descriptor, genesis membership and first epoch key with the shared signer and wrap key, `openPageAuthority` retains the exact bundle and key before `initialize`, and `initialized.json` is written. `--browser-first` (implied by `--browser-finalizer`) skips creation.
+3. `npm run init -- <slug>`: prepare `{executionManifestDigest,executionProfile,publisherKeys,requestedFinality?,tools?}` (ordinary apps omit finality to choose `none`), then create the page data as its creator: `createPageGenesis` signs the descriptor, genesis membership and first epoch key with the shared signer and wrap key, `openPageAuthority` retains the exact bundle and key before `initialize`, and `initialized.json` is written. `--owner-grant admin|writer|reader` (default `admin`) sets the signed grant owner-account devices receive. `--browser-first` (implied by `--browser-finalizer`) skips creation; the first browser then signs the default grant, which an administrator can change with `tendril page owner-grant`.
 4. `npm run deploy -- <slug>`: build and sign the complete UI. Publisher authorization is independent from the data descriptor/database schema.
 5. Give the person the ready page URL and keep `npm run agent` running. Their sign-in yields a host attestation of the browser's device key and wrap key; the agent admits that owner-account device and wraps the keys to it. On a browser-first page the first browser is the creator, and the agent is admitted from its signed host grant.
 6. Additional devices, agents and invited people use the same admission (see [membership](MEMBERSHIP.md#admission)). Account access alone never reconstructs a data key.
@@ -92,10 +92,11 @@ The controller returns `{state,subscribe,refresh,extensions,call,close}`. Pass `
 
 | Action | Effect |
 | --- | --- |
-| `admission.state` / `admission.refresh` | Current `AdmissionState` (phase, mode, members, pending, invites, notices) |
-| `admission.approve(publicKey,{writer?,administrator?})` | Administrator: admit a pending device (strict mode, other accounts, previously removed keys) |
+| `admission.state` / `admission.refresh` | Current `AdmissionState` (phase, mode, ownerGrant, members, pending, invites, notices) |
+| `admission.approve(publicKey,{writer?,administrator?})` | Administrator: admit a pending device (strict mode, other accounts, previously removed keys); without flags an owner-account device gets the policy grant, an invitee its role, another account editor rights |
 | `admission.remove(publicKey)` | Administrator: sign the member's revocation and a new epoch wrapped only to the remaining members |
 | `admission.mode('attested'\|'strict')` | Administrator: auto-admit owner devices, or require approval |
+| `admission.ownerGrant('admin'\|'writer'\|'reader')` | Administrator: sign the policy grant owner-account devices receive on admission (default `admin`) |
 | `admission.grant(publicKey,{writer?,administrator?})` | Administrator: change a member's rights |
 | `admission.addKey(publicKey,wrapKey?,{writer?})` | Administrator: add a key no host attests, such as the hosted MCP identity an owner device creates (no wrap key means it never receives wrapped keys) |
 | `admission.invite({binding,role,expiresInMs})` | Administrator: sign an invite; returns `{inviteId,fragment}` for the link `PAGE_URL#invite=<id>.<secret>` |
@@ -176,7 +177,7 @@ Use `@tendriller/core/authority` (`createAuthorityClient`) for transport and `@c
 Record shapes (hex keys, bigint milliseconds):
 
 - `HostAttestation {subject:'device'|'agent', pageId, applicationId, accountId, email (verified lowercase or null), publicKey, wrapKey, label (≤128), inviteId (32 hex or null), issuedAt, expiresAt (≤24 h window; devices get 60 min), nonce (64 hex)}`, signed by the host attestation key. An agent's attestation names the page owner account (or `pending:<pageId>` before claim) and its `@handle` label.
-- `AdmissionPolicy {mode:'attested'|'strict', hostKey, accounts: ('<accountId>'|'email:<email>')[], grant:{reader,writer}}`.
+- `AdmissionPolicy {mode:'attested'|'strict', hostKey, accounts: ('<accountId>'|'email:<email>')[], grant:{reader,writer,administrator}}`. Genesis (`createPageGenesis({…, ownerGrant})`, also accepted by `openPageAuthority`) defaults `grant` to `{reader:true,writer:true,administrator:true}`: attested owner-account devices become administrators, attested agent keys receive the grant without `administrator`, and invitees keep their invite role. In attested mode a compromised host or account login could therefore admit an administrator device; that admission is visible in every replica's device list and revocable by the other administrators.
 - `MemberGrant {publicKey, wrapKey, reader, writer, administrator, publisher, finalizer}`; `MemberAdmission {publicKey, via:'attested'|'invited'|'approved', attestation}`.
 - `PageInvite {inviteId, role:'reader'|'writer'|'admin', binding:{kind:'email',email}|{kind:'open'}|{kind:'public',max}, expiresAt, secretDigest (sha256 of the 32 secret bytes), revoked}`.
 - `KeyWrap {applicationId, descriptorId, membershipId, recipient, wrapKey, epochs, authority, encrypted}`, signed by a member (`session.provisioning.wrapKeys(recipient)` / `.unwrapKeys(wrap, wrapPrivateKey)`).

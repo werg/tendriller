@@ -17,7 +17,7 @@ export async function authorityForDevices(devices, { applicationId = 'a'.repeat(
     executionManifestDigest: p.bytesToHex(artifacts.executionManifestDigest), finalityPolicy: { kind: 'none' } }, signer);
   const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
     epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key), members: devices.map((device, index) => ({ publicKey: device.identity.publicKey, wrapKey: null, reader: true, writer: true, administrator: index === 0, publisher: false, finalizer: false })),
-    admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, signer);
+    admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, signer);
   return { authority: { descriptor, memberships: [membership] }, key };
 }
 export async function createPhysicalSession({ definition, applicationId = 'a'.repeat(64), close } = {}) {

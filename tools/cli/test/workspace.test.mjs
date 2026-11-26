@@ -101,7 +101,7 @@ export async function openPage(context) {
     const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
       epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key),
       members: [{ publicKey: signer, wrapKey: context.wrapKey.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }],
-      admission: { mode: 'strict', hostKey: authority.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, authority);
+      admission: { mode: 'strict', hostKey: authority.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, authority);
     retained = p.encodeRecord({ descriptor, memberships: [membership] });
     await device.store.put('fixture/authority', retained); await device.store.put('fixture/epoch-key', key);
   }

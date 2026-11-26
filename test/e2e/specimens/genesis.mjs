@@ -17,7 +17,7 @@ export async function signSpecimenGenesis(log, { metadata, identity, members, ke
     members: [grant(identity.publicKey, (await log.createWrapKeyPair()).publicKey, true),
       ...members.filter(publicKey => publicKey !== identity.publicKey).map(publicKey => grant(publicKey, null, false))],
     // The admission policy pins the host attestation key and the page owner account, as every page does.
-    admission: { mode: 'attested', hostKey: metadata.hostAttestationKey, accounts: [...metadata.admissionAccounts], grant: { reader: true, writer: true } },
+    admission: { mode: 'attested', hostKey: metadata.hostAttestationKey, accounts: [...metadata.admissionAccounts], grant: { reader: true, writer: true, administrator: true } },
     admitted: [], invites: [] }, identity);
   const bundle = { descriptor, memberships: [membership] };
   await log.verifyAuthorityBundle(bundle);

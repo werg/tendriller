@@ -40,7 +40,8 @@ first epoch key as the agent (`--browser-first` leaves creation to the owner's
 first browser). The host never signs membership or sees epoch keys. Admission is
 one mechanism: a signed-in browser obtains a host attestation of its device key
 and wrap key, and any online member admits an owner-account device (attested
-mode) and wraps the page keys to it. Strict mode holds owner devices for an
+mode) as an administrator by default (the signed policy grant) and wraps the
+page keys to it. Strict mode holds owner devices for an
 administrator's Approve; invite links admit other accounts by the same path.
 Remove device signs a revocation and rotates the epoch key to the remaining
 members. A new device waits, visibly, until a holder is online; retained devices

@@ -23,7 +23,7 @@ async function fixture(t, { native = true } = {}) {
     executionManifestDigest: revision.executionManifestDigest, finalityPolicy: { kind: 'none' } }, root);
   const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0, epochKeyDigest: 'ec'.repeat(32),
     members: [root, browserSigner].map(identity => ({ publicKey: identity.publicKey, wrapKey: null, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })),
-    admission: { mode: 'strict', hostKey: root.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, root);
+    admission: { mode: 'strict', hostKey: root.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, root);
   const bundle = { descriptor, memberships: [membership] }, membershipId = await p.recordDigest(membership);
   const envelope = await p.signRecord('operation-envelope', { applicationId, proposalId, author: root.publicKey, authorTimestampMs: 123n,
     membershipId, executionManifestDigest: revision.executionManifestDigest,

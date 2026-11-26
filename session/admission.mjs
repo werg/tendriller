@@ -6,7 +6,7 @@
 // membership and never sees an epoch key.
 import {
   createAuthorityProvider, createWrapKeyPair, importWrapPrivateKey, signAppDescriptor, signMembership,
-  signEnrollmentRequest, verifyAuthorityBundle, verifyHostAttestation, attestedAccountAuthorized, inviteAdmits,
+  signEnrollmentRequest, verifyAuthorityBundle, verifyHostAttestation, attestedAccountAuthorized, attestedGrant, inviteAdmits,
   inviteCapacity, inviteGrant, inviteRedemptions, epochKeyCommitment, encodeRecord, decodeRecord, recordDigest, bytesToHex,
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
@@ -37,6 +37,16 @@ export async function deviceWrapKey(store) {
   return Object.freeze({ publicKey: value.publicKey, privateKey: await importWrapPrivateKey(value.privateKey) });
 }
 
+/** Default policy grant for owner-account devices admitted by host attestation: full members, administrators included. */
+export const DEFAULT_OWNER_GRANT = Object.freeze({ reader: true, writer: true, administrator: true });
+const ROLE_GRANTS = Object.freeze({ reader: { reader: true, writer: false, administrator: false }, writer: { reader: true, writer: true, administrator: false }, admin: DEFAULT_OWNER_GRANT });
+function policyGrant(input) {
+  const value = typeof input === 'string' ? ROLE_GRANTS[input] : input;
+  if (!value || typeof value !== 'object' || Object.keys(value).length !== 3 || !['reader', 'writer', 'administrator'].every(key => typeof value[key] === 'boolean') || !value.reader && (value.writer || value.administrator))
+    throw failure('ADMISSION_GRANT_INVALID', 'The owner-device grant is reader, writer or admin (or exactly {reader,writer,administrator} booleans).');
+  return { reader: value.reader, writer: value.writer, administrator: value.administrator };
+}
+
 const memberGrant = (publicKey, wrapKey, flags) => ({ publicKey, wrapKey, reader: !!flags.reader, writer: !!flags.writer,
   administrator: !!flags.administrator, publisher: !!flags.publisher, finalizer: !!flags.finalizer });
 
@@ -44,7 +54,8 @@ const memberGrant = (publicKey, wrapKey, flags) => ({ publicKey, wrapKey, reader
  * Sign a page's descriptor and genesis membership as its creator. The creator is the
  * root principal and descriptor authority, an administrator, and the only member.
  */
-export async function createPageGenesis({ applicationId, identity, wrapKey, configuration, hostKey, accounts, mode = 'attested' }) {
+export async function createPageGenesis({ applicationId, identity, wrapKey, configuration, hostKey, accounts, mode = 'attested', ownerGrant = DEFAULT_OWNER_GRANT }) {
+  const grant = policyGrant(ownerGrant);
   if (!HEX.test(applicationId ?? '') || !HEX.test(hostKey ?? '') || !HEX.test(wrapKey ?? '')) throw failure('GENESIS_INPUT_INVALID');
   if (!Array.isArray(accounts) || !accounts.length) throw failure('GENESIS_OWNER_REQUIRED', 'The host did not name the page owner account to pin in the admission policy.');
   const requested = configuration.requestedFinality;
@@ -58,7 +69,7 @@ export async function createPageGenesis({ applicationId, identity, wrapKey, conf
   const membership = await signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
     epochKeyDigest: await epochKeyCommitment(applicationId, 0, epochKey),
     members: [memberGrant(identity.publicKey, wrapKey, { reader: true, writer: true, administrator: true, finalizer })],
-    admission: { mode, hostKey, accounts: [...accounts], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, identity);
+    admission: { mode, hostKey, accounts: [...accounts], grant }, admitted: [], invites: [] }, identity);
   const bundle = { descriptor, memberships: [membership] };
   await verifyAuthorityBundle(bundle);
   return { bundle, epochKey };
@@ -70,7 +81,7 @@ export async function createPageGenesis({ applicationId, identity, wrapKey, conf
  * retaining the exact genesis and key before sending it; an initialized page is
  * pinned from the host so the device can request admission.
  */
-export async function openPageAuthority({ store, identity, wrapKey, peers, applicationId, executionManifestDigest, create = true, signal }) {
+export async function openPageAuthority({ store, identity, wrapKey, peers, applicationId, executionManifestDigest, create = true, ownerGrant, signal }) {
   try { return { authority: await createAuthorityProvider({ store, applicationId }), created: false }; }
   catch (error) { if (codeOf(error) !== 'AUTHORITY_CACHE_MISSING') throw error; }
   let metadata = await peers.application({ signal });
@@ -83,7 +94,7 @@ export async function openPageAuthority({ store, identity, wrapKey, peers, appli
     if (!create) throw failure('PAGE_UNINITIALIZED', 'The page creator has not initialized its data yet.');
     if (intent === null) {
       // Keep the exact genesis and its key BEFORE sending; an uncertain reply resends these bytes.
-      intent = await createPageGenesis({ applicationId, identity, wrapKey: wrapKey.publicKey, configuration, hostKey: metadata.hostAttestationKey, accounts: metadata.admissionAccounts });
+      intent = await createPageGenesis({ applicationId, identity, wrapKey: wrapKey.publicKey, configuration, hostKey: metadata.hostAttestationKey, accounts: metadata.admissionAccounts, ...(ownerGrant === undefined ? {} : { ownerGrant }) });
       await store.put(GENESIS(applicationId), encodeRecord(intent));
     }
     try { metadata = await peers.initialize(record(intent.bundle)); }
@@ -157,7 +168,7 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
     const members = describeMembers(authority, identity.publicKey);
     const invites = head.invites.map(item => Object.freeze({ ...item, redemptions: inviteRedemptions(authority.bundle().memberships, item.inviteId), capacity: item.binding.kind === 'public' ? item.binding.max : 1,
       expired: BigInt(now()) >= item.expiresAt }));
-    return Object.freeze({ phase, publicKey: identity.publicKey, wrapKey: wrapKey.publicKey, subject, mode: head.admission.mode, accounts: [...head.admission.accounts],
+    return Object.freeze({ phase, publicKey: identity.publicKey, wrapKey: wrapKey.publicKey, subject, mode: head.admission.mode, accounts: [...head.admission.accounts], ownerGrant: Object.freeze({ ...head.admission.grant }),
       epoch: head.epoch, revision: head.revision, administrator: me?.administrator === true, canAdmit: me?.reader === true && hasKey,
       members, pending: [...pending], invites, notices: [...notices], attestationExpiresAt: attestation?.payload.expiresAt ?? null, error: lastError });
   }
@@ -222,7 +233,8 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
   function grantFor(entry, override) {
     if (override) return override;
     if (entry.via === 'invited' || entry.invite) return inviteGrant(entry.invite.role);
-    return { ...authority.currentMembership.admission.grant, administrator: false };
+    // Attested owner-account devices receive exactly the signed policy grant (administrator included); agent keys never administrator.
+    return attestedGrant(authority.currentMembership.admission, entry.payload);
   }
   /** Append one admin-or-member-signed revision and publish it; only a host-accepted revision is merged locally. */
   async function extend(change, { rotateTo } = {}) {
@@ -337,8 +349,10 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
         for (const item of list ?? []) {
           const entry = await classify(item, chain).catch(() => null);
           if (entry?.payload.publicKey !== publicKey) continue;
+          // Without flags: an invite keeps its role, an owner-account device gets the policy grant (agents: without administrator), a guest is an editor.
+          const policy = authority.currentMembership.admission, owner = !entry.invite && attestedAccountAuthorized(policy, entry.payload);
           const grant = entry.invite && flags.writer === undefined && flags.administrator === undefined ? inviteGrant(entry.invite.role)
-            : { reader: true, writer: flags.writer ?? authority.currentMembership.admission.grant.writer, administrator: flags.administrator === true };
+            : { reader: true, writer: flags.writer ?? (flags.administrator === true || policy.grant.writer), administrator: flags.administrator ?? (owner && attestedGrant(policy, entry.payload).administrator) };
           await admit([entry], 'approved', grant); return { approved: publicKey };
         }
         throw failure('ADMISSION_REQUEST_UNKNOWN', 'That device has no fresh, verified sign-in request; ask it to reload.');
@@ -358,6 +372,15 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
     async 'admission.mode'(mode) {
       if (mode !== 'attested' && mode !== 'strict') throw failure('ADMISSION_MODE_INVALID');
       return administer(async () => { const head = authority.currentMembership; if (head.admission.mode !== mode) await extend({ admission: { ...head.admission, mode } }); return { mode }; });
+    },
+    /** Administrator change of the signed grant owner-account devices receive on attested (and default approved) admission. */
+    async 'admission.ownerGrant'(input) {
+      const grant = policyGrant(input);
+      return administer(async () => {
+        const head = authority.currentMembership, current = head.admission.grant;
+        if (current.reader !== grant.reader || current.writer !== grant.writer || current.administrator !== grant.administrator) await extend({ admission: { ...head.admission, grant } });
+        return { ownerGrant: grant };
+      });
     },
     /** After an operator rotates the host attestation key: pin the key this host now publishes. */
     async 'admission.pinHostKey'() {

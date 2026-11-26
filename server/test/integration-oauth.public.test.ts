@@ -131,7 +131,7 @@ async function seedPageAuthorityAndDomain(
     epoch: 0,
     epochKeyDigest: await epochKeyCommitment(page.application.id, 0, epochKey),
     members: writers.map(publicKey => ({ publicKey, wrapKey: null, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })),
-    admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [],
+    admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [],
   }, signer);
   const bundle = { descriptor, memberships: [membership] };
   const configuration = { executionManifestDigest: manifestDigest, executionProfile, publisherKeys: [signer.publicKey] };

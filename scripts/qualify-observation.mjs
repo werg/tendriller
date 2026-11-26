@@ -66,7 +66,7 @@ try {
     const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
       epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key),
       members: [device.identity.publicKey, browserId].map((publicKey, index) => ({ publicKey, wrapKey: null, reader: true, writer: true, administrator: index === 0, publisher: index === 0, finalizer: false })),
-      admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, signer);
+      admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, signer);
     authority = { descriptor, memberships: [membership] };
     session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, key]]) });
     receiver = serveObservations({ session, allowedDevices: [browserId] });

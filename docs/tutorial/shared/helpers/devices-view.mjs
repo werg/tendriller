@@ -1,10 +1,12 @@
 // Devices and access: one reactive view over the owner's admission state. It renders
 // the newcomer's waiting state, every admitted device and agent from signed page
-// state, "New device signed in" notices, pending sign-ins with Approve, Remove device,
-// the strict-mode switch and invites. All actions run in the owner (its signer and
+// state with an Administrator badge, "New device signed in" notices, pending sign-ins
+// with Approve, Remove device, the strict-mode switch, the rights the owner's own
+// signed-in devices join with (administrator by default) and invites. All actions run in the owner (its signer and
 // keys); this page only calls them and re-renders the next coherent state.
 const short = key => `${key.slice(0, 8)}…${key.slice(-4)}`;
 const roleOf = member => member.administrator ? 'Administrator' : member.writer ? 'Can edit' : 'Can read';
+const grantRole = grant => grant?.administrator ? 'admin' : grant?.writer ? 'writer' : 'reader';
 const WAITING = {
   'waiting-admission': 'Waiting for one of your devices or your agent to come online to let this browser in. Keep this page open; it retries automatically.',
   'waiting-approval': 'Signed in. An administrator must approve this browser on one of their devices (this page uses strict mode). It retries automatically.',
@@ -19,11 +21,14 @@ const element = (tag, { dataset, ariaLabel, ...props } = {}, ...children) => {
   if (ariaLabel) node.setAttribute('aria-label', ariaLabel);
   node.append(...children.filter(child => child !== null && child !== undefined)); return node;
 };
+/** A self-styled badge so every starter shows administrators without extra CSS. */
+const adminBadge = () => { const node = element('span', { className: 'admin-badge', textContent: 'Admin', title: 'Administrator: can approve and remove devices and change access settings' });
+  node.style.cssText = 'display:inline-block;padding:0 .4em;border:1px solid currentColor;border-radius:.6em;font-size:.8em;font-weight:600'; return node; };
 const button = (text, onClick, props = {}) => { const node = element('button', { type: 'button', className: 'secondary', textContent: text, ...props }); node.addEventListener('click', onClick); return node; };
 
 /** Mount into `root` (an empty section). Returns { close }. */
 export function mountDevices({ root, session, pageUrl = location.href, storage }) {
-  const ids = { mode: `${root.id || 'devices'}-strict`, kind: `${root.id || 'devices'}-invite-kind` };
+  const ids = { mode: `${root.id || 'devices'}-strict`, kind: `${root.id || 'devices'}-invite-kind`, owner: `${root.id || 'devices'}-owner-grant` };
   const banner = element('p', { role: 'status', className: 'admission-banner' });
   const status = element('p', { role: 'status', className: 'muted' });
   const notices = element('ul', { className: 'admission-notices', ariaLabel: 'Device notices' });
@@ -34,6 +39,11 @@ export function mountDevices({ root, session, pageUrl = location.href, storage }
   const pendingSection = element('div', {}, element('h3', { textContent: 'Waiting to join' }), pending);
   const mode = element('input', { type: 'checkbox', id: ids.mode });
   const modeLabel = element('label', { htmlFor: ids.mode }, mode, ' Require approval for every new device (strict mode)');
+  // The signed admission policy names the rights the owner's own signed-in devices receive.
+  const ownerGrant = element('select', { id: ids.owner }, element('option', { value: 'admin', textContent: 'Administrator' }), element('option', { value: 'writer', textContent: 'Can edit' }), element('option', { value: 'reader', textContent: 'Can read' }));
+  const ownerGrantRow = element('p', {}, element('label', { htmlFor: ids.owner, textContent: 'Your own signed-in devices join as ' }), ownerGrant,
+    element('span', { className: 'muted', textContent: ' Administrators can remove any device; every admission is listed here.' }));
+  const summary = element('p', { className: 'muted admission-summary' });
   const inviteForm = element('form', { className: 'admission-invite' });
   const kind = element('select', { id: ids.kind }, element('option', { value: 'email', textContent: 'One person, by email' }), element('option', { value: 'open', textContent: 'Single-use link' }), element('option', { value: 'public', textContent: 'Public link (several people)' }));
   const email = element('input', { type: 'email', placeholder: 'friend@example.com', autocomplete: 'off', ariaLabel: 'Invitee email' });
@@ -43,9 +53,9 @@ export function mountDevices({ root, session, pageUrl = location.href, storage }
   const created = element('p', { role: 'status' }), invites = element('ul', { className: 'admission-invites' });
   inviteForm.append(element('label', { htmlFor: ids.kind, textContent: 'Invite someone' }), kind, email, element('label', { textContent: 'Role' }), role,
     element('label', { textContent: 'Public link limit' }), max, element('label', { textContent: 'Expires after (days)' }), days, element('button', { type: 'submit', textContent: 'Create invite' }), created);
-  const adminTools = element('div', {}, element('h3', { textContent: 'Access settings' }), modeLabel, inviteForm, element('h3', { textContent: 'Invites' }), invites);
+  const adminTools = element('div', {}, element('h3', { textContent: 'Access settings' }), modeLabel, ownerGrantRow, inviteForm, element('h3', { textContent: 'Invites' }), invites);
   root.replaceChildren(element('h2', { id: `${root.id || 'devices'}-heading`, textContent: 'Devices and access' }), banner, notices, selfKeyLabel, selfKey,
-    element('h3', { textContent: 'Devices and agents with access' }), members, pendingSection, adminTools, status);
+    element('h3', { textContent: 'Devices and agents with access' }), summary, members, pendingSection, adminTools, status);
   let state, closed = false;
   const seen = new Set((() => { try { return JSON.parse(storage?.getItem('admission:seen') ?? '[]'); } catch { return []; } })());
   const call = async (name, ...args) => {
@@ -72,8 +82,11 @@ export function mountDevices({ root, session, pageUrl = location.href, storage }
       item.kind === 'new-device' ? `New ${item.subject === 'agent' ? 'agent' : 'device'} signed in: ${item.label ?? 'device'} (${short(item.publicKey)}).`
         : item.kind === 'pending' ? `${item.label ?? 'A device'} (${short(item.publicKey)}) is waiting: ${REASONS[item.reason] ?? item.reason}.` : 'This device was removed.',
       button('Dismiss', () => { seen.add(item.id); try { storage?.setItem('admission:seen', JSON.stringify([...seen].slice(-50))); } catch {} render(state); }, { dataset: { action: 'dismiss' } })));
-    renderList(members, value.members, member => member.publicKey, member => element('li', {},
+    const admins = value.members.filter(member => member.administrator).length;
+    summary.textContent = `${value.members.length} with access · ${admins} administrator${admins === 1 ? '' : 's'}${value.administrator ? ' (including this one)' : ''}`;
+    renderList(members, value.members, member => member.publicKey, member => element('li', { dataset: { role: member.administrator ? 'administrator' : member.writer ? 'writer' : 'reader' } },
       element('strong', { textContent: member.self ? `${member.label} (this ${value.subject === 'agent' ? 'agent' : 'device'})` : member.label }), ' ',
+      member.administrator ? adminBadge() : null, member.administrator ? ' ' : null,
       element('span', { className: 'muted', textContent: `${roleOf(member)} · ${member.subject === 'agent' ? 'agent' : member.via === 'invited' ? 'invited' : member.subject} · key ${short(member.publicKey)}${member.accountId ? ` · account ${member.accountId}` : ''}` }),
       value.administrator && !member.self ? button(`Remove ${member.subject === 'agent' ? 'agent' : 'device'}`, () => {
         if (confirm(`Remove ${member.label} (${short(member.publicKey)})? It loses access to new changes and the page key is rotated.`)) void call('admission.remove', member.publicKey).catch(() => {});
@@ -84,11 +97,13 @@ export function mountDevices({ root, session, pageUrl = location.href, storage }
       value.administrator ? button('Approve this device', () => void call('admission.approve', item.publicKey).catch(() => {}), { className: '', dataset: { action: 'approve' } }) : element('span', { className: 'muted', textContent: ' An administrator can approve it.' })));
     adminTools.hidden = !value.administrator;
     mode.checked = value.mode === 'strict'; mode.disabled = !value.administrator;
+    if (document.activeElement !== ownerGrant) ownerGrant.value = grantRole(value.ownerGrant); ownerGrant.disabled = !value.administrator;
     renderList(invites, value.invites, item => item.inviteId, item => element('li', {},
       `${item.binding.kind === 'email' ? `For ${item.binding.email}` : item.binding.kind === 'open' ? 'Single-use link' : `Public link${item.capacity ? ` (up to ${item.capacity})` : ''}`} · ${item.role === 'admin' ? 'administrator' : item.role === 'writer' ? 'can edit' : 'can read'} · used ${item.redemptions}${item.capacity ? `/${item.capacity}` : ''} · ${item.revoked ? 'revoked' : item.expired ? 'expired' : `expires ${new Date(Number(item.expiresAt)).toLocaleDateString()}`}`,
       !item.revoked && !item.expired ? button('Revoke', () => void call('admission.revokeInvite', item.inviteId).catch(() => {}), { dataset: { action: 'revoke' } }) : null));
   }
   mode.addEventListener('change', () => void call('admission.mode', mode.checked ? 'strict' : 'attested').catch(() => { mode.checked = state?.mode === 'strict'; }));
+  ownerGrant.addEventListener('change', () => void call('admission.ownerGrant', ownerGrant.value).catch(() => { ownerGrant.value = grantRole(state?.ownerGrant); }));
   const syncKind = () => { email.hidden = kind.value !== 'email'; max.hidden = kind.value !== 'public'; if (kind.value === 'public' && role.value !== 'reader') role.value = 'reader'; };
   kind.addEventListener('change', syncKind); syncKind();
   inviteForm.addEventListener('submit', event => {

@@ -83,6 +83,7 @@ tendril page devices notes                       # members, pending sign-ins, in
 tendril page approve notes PUBLIC_KEY [--writer] [--admin]
 tendril page remove-device notes PUBLIC_KEY      # revoke and rotate the page key
 tendril page mode notes attested|strict
+tendril page owner-grant notes admin|writer|reader   # rights your own signed-in devices get
 tendril page invite notes --email friend@example.com | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
 tendril page revoke-invite notes INVITE_ID
 tendril status                                   # workspace, agent, grants, agent program
@@ -104,10 +105,14 @@ by the agent program once `.tendriller/pages/<page-id>/initialized.json` exists;
 
 The admission commands attach to the page owner inside the running agent program
 and call its admission actions with the agent's own signer; the host never signs
-membership. `page devices` returns `{phase, mode, administrator, members, pending,
-invites}`. `approve` admits a pending device (strict mode, another account, a
-previously removed key) as a reader, `--writer` adds writing and `--admin`
-administration. `remove-device` signs the member's revocation and a new epoch key
+membership. `page devices` returns `{phase, mode, ownerGrant, administrator, members,
+pending, invites}`. `approve` admits a pending device (strict mode, another
+account, a previously removed key): an owner-account device gets the policy
+grant (administrator by default), another account's device can read and
+write; `--admin` grants administration. `owner-grant` signs
+the rights the owner account's devices receive on admission (default `admin`;
+in attested mode a compromised host or login could therefore admit an
+administrator device, visible and revocable by the other administrators). `remove-device` signs the member's revocation and a new epoch key
 wrapped only to the remaining members; it does not sign out the account. `mode
 strict` holds every new device for an administrator's approval; `mode attested`
 lets any online member admit the owner account's devices automatically. `invite`

@@ -325,7 +325,7 @@ test('generated replies fit the actual public session signed signal encoder', as
       epochKeyDigest: await authority.epochKeyCommitment(applicationId, 0, key),
       members: [root.publicKey, device.identity.publicKey].map(publicKey => ({ publicKey, wrapKey: null, reader: true, writer: true,
         administrator: publicKey === root.publicKey, publisher: false, finalizer: false })),
-      admission: { mode: 'strict', hostKey: root.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, root);
+      admission: { mode: 'strict', hostKey: root.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, root);
     session = await peer.createApplicationSession({ device, definition, authority: { descriptor, memberships: [membership] }, epochKeys: new Map([[0, key]]) });
     assert.match(session.identity.publicKey, /^[a-f0-9]{64}$/);
     assert.equal(session.identity.publicKey, device.identity.publicKey);
