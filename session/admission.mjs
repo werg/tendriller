@@ -281,6 +281,8 @@ export function createAdmission(session, {
     const admission = perms.admission ?? {};
     const members = (perms.members ?? []).map(m => Object.freeze({
       ...m,
+      label: m.label ?? (m.administrator ? 'Administrator' : 'Member'),
+      subject: m.subject ?? 'device',
       self: m.publicKey === identity.publicKey,
     }));
     const me = members.find(m => m.publicKey === identity.publicKey) ?? null;
@@ -445,10 +447,12 @@ export function createAdmission(session, {
       await session.admitMember({
         publicKey: entry.payload.publicKey,
         wrapKey: entry.payload.wrapKey,
+        label: entry.payload.label,
+        subject: entry.payload.subject,
         ...roleGrant,
         attestation: entry.attestation,
       });
-      if (entry.invite) {
+      if (entry.invite && session.isAdministrator(identity.publicKey)) {
         const cur = session.permissions().admission ?? {};
         const nextInvites = (cur.invites ?? []).map(i =>
           i.inviteId === entry.invite.inviteId ? { ...i, redemptions: (i.redemptions ?? 0) + 1 } : i);
@@ -460,8 +464,8 @@ export function createAdmission(session, {
       changed = true;
     }
 
-    // Org-group admission and departure automation (verified admin-signed policy + host-signed attestations/departures).
-    if (typeof peers.groups === 'function') {
+    // Org-group admission and departure automation (administrators only).
+    if (session.isAdministrator(identity.publicKey) && typeof peers.groups === 'function') {
       const groupsData = await peers.groups({ signal: lifetime.signal }).catch(() => null);
       const permsNow = session.permissions();
       const hostKey = permsNow.admission?.hostKey;
@@ -542,9 +546,10 @@ export function createAdmission(session, {
       observeMembership();
       const me = session.isMember(identity.publicKey);
       const hasHostAdmission = Boolean(session.permissions().admission?.hostKey);
+      const hasCurrentKey = !session.genesis.privateChain || session.currentEpoch() < 0 || session.hasEpochKey(session.currentEpoch());
       if (!me) {
         if (!wasMember && hasHostAdmission) await attest();
-      } else if (session.isAdministrator(identity.publicKey) && hasHostAdmission) {
+      } else if (hasHostAdmission && hasCurrentKey && (session.isAdministrator(identity.publicKey) || session.isReader(identity.publicKey))) {
         await adminDuties();
       }
       lastError = null;
