@@ -129,8 +129,15 @@ export async function startPackedHost({ root, engine, directory, kit, port = DEF
   const oauthJwk = { ...await crypto.subtle.exportKey('jwk', oauthKey.privateKey), alg: 'ES256', kid: 'first-app-test' };
   const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
     redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
-  // Pages pin the host attestation key; restart() keeps the same identity with the same storage.
-  const attestationKey = JSON.stringify(createAttestationKey());
+  // Pages pin the host attestation key; restart() and golden-copy restarts keep the same identity with the same storage.
+  const attestationKeyPath = join(directory, 'host-attestation-key.json');
+  let attestationKey;
+  try {
+    attestationKey = await readFile(attestationKeyPath, 'utf8');
+  } catch {
+    attestationKey = JSON.stringify(createAttestationKey());
+    await writeFile(attestationKeyPath, attestationKey, { mode: 0o600 });
+  }
   const engineModules = await packedEngineModules(join(engine, 'package'));
   const options = () => ({ ...convertV4MiniflareOptions({
     host: '127.0.0.1', port, https: true, cf: false,
