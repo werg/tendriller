@@ -343,9 +343,7 @@ jobs:
 
   production:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master' && vars.PRODUCTION_READY == 'true' && needs.check.outputs.storage_schema != '' && vars.PRODUCTION_STORAGE_SCHEMA == needs.check.outputs.storage_schema
-    # staging_mcp_qualification is temporarily reported, not a production gate,
-    # while its review fixture's prepare/publish phase is fixed.
-    needs: [check, staging_acceptance, native-owner, artifacts, publish]
+    needs: [check, staging_acceptance, staging_mcp_qualification, native-owner, artifacts, publish]
     runs-on: ubuntu-latest
     environment: production
     env:
