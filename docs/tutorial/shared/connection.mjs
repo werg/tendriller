@@ -6,6 +6,8 @@ export function describeConnectionError(error, { appName = 'this app' } = {}) {
     return { title: 'Sign in to initialize this device', detail: `Open the signed ${appName} page with its actual owner/account session.`, action: 'reload', technical };
   if (['AUTHORITY_CACHE_MISSING', 'BOOTSTRAP_KEY_MISSING', 'APPLICATION_DEVICE_KEYS_MISSING'].includes(code))
     return { title: 'Restore this device’s retained setup', detail: 'Keep its private identity, bootstrap intent and original data keys. Never initialize replacement keys for an existing epoch.', technical };
+  if (code === 'TAB_ACTIVE_ELSEWHERE')
+    return { title: 'This page is open in another tab', detail: 'Switch to that tab, or move the active session here.', action: 'takeover', retry: true, technical };
   if (['OWNER_BUSY', 'OWNER_UNREACHABLE', 'ENDPOINT_STALE'].includes(code))
     return { title: 'The local owner could not answer', detail: 'Reattach this same profile, or close its other tabs and reopen. Original signed operations remain retained.', retry: true, technical };
   if (['OWNER_CAPABILITY_UNAVAILABLE', 'OWNER_STORAGE_UNSUPPORTED', 'QuotaExceededError'].includes(code))
@@ -58,10 +60,23 @@ export function createOwnerConnection({ configuration, connect, onState = () => 
           }
         }
         return connected;
-      } catch (error) { if (!closed) { const copy = describeConnectionError(error, { appName }); emit({ ...copy, phase: 'failed', ...(copy.retry ? { action: { label: 'Retry this local attachment', run: start } } : copy.action === 'reload' ? { action: { label: 'Reload and sign in', run: () => location.reload() } } : { action: undefined }) }); } throw error; }
+      } catch (error) { if (!closed) { const copy = describeConnectionError(error, { appName }); emit({ ...copy, phase: 'failed', ...(copy.action === 'takeover' ? { action: { label: 'Use here', run: start } } : copy.retry ? { action: { label: 'Retry this local attachment', run: start } } : copy.action === 'reload' ? { action: { label: 'Reload and sign in', run: () => location.reload() } } : { action: undefined }) }); } throw error; }
       finally { opening = undefined; }
     })(); return opening;
   }
   return Object.freeze({ start, retry: start, get state() { return state; }, close() { if (closed) return; closed = true; stopStatus(); stopAdmission(); lifetime.abort(Error('Local opening view closed')); } });
 }
-export function reloadOnOwnerReplaced() { location.reload(); }
+export function reloadOnOwnerReplaced() {
+  const doc = globalThis.document;
+  if (!doc) { location.reload(); return; }
+  // Wait until this tab actually regains visibility or focus so it never steals the
+  // lock back from the newly opened tab or PWA window in the foreground.
+  const reclaim = () => {
+    if (doc.visibilityState !== 'visible') return;
+    doc.removeEventListener('visibilitychange', reclaim);
+    globalThis.removeEventListener?.('focus', reclaim);
+    location.reload();
+  };
+  doc.addEventListener('visibilitychange', reclaim);
+  globalThis.addEventListener?.('focus', reclaim);
+}

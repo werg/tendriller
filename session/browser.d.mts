@@ -6,8 +6,8 @@ export interface BrowserOwnerOptions {
   profileId: string;
   applicationId: string;
   context?: { viewId?: string; documentPath?: string; publicationId?: string; runId?: string };
-  /** Take over the single-active-tab lock from another open tab via BroadcastChannel handoff. */
-  takeover?: boolean;
+  /** Single-active-tab lock handoff over BroadcastChannel. Default `'auto'` seamlessly takes over when this tab/PWA is visible (and never steals while hidden); `false` fails immediately with `TAB_ACTIVE_ELSEWHERE`; `true` takes over unconditionally. */
+  takeover?: 'auto' | boolean;
   /** Compatibility hint (all sessions run in a private 1:1 dedicated Worker). */
   mode?: 'auto' | 'dedicated' | 'elected';
   requiresDedicatedWorker?: boolean;

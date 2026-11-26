@@ -131,7 +131,24 @@ function viewError(error) { stale = true; $('#view-error').hidden = false; $('#v
 async function connect() {
   $('#reconnect').hidden = true;
   try {
-    attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, context: { viewId }, timeoutMs: 30_000 });
+    attachment = await openBrowserOwner({
+      workerUrl: new URL('./worker.mjs', import.meta.url),
+      profileId,
+      applicationId: configuration.applicationId,
+      context: { viewId },
+      timeoutMs: 30_000,
+      onOwnerReplaced() {
+        telemetry?.close(); unregisterFlush?.(); media?.close(); window.appRequests?.close(); live?.close(); stopAdmission?.(); devices?.close();
+        session = undefined; attachment = undefined;
+        submission.update({ attached: false });
+        $('#connection-status').textContent = 'This page moved to another tab or window. Reopen here to continue.';
+        $('#reconnect').hidden = false;
+        if (document.visibilityState === 'hidden') {
+          const onVisible = () => { if (document.visibilityState !== 'visible') return; document.removeEventListener('visibilitychange', onVisible); void connect(); };
+          document.addEventListener('visibilitychange', onVisible);
+        }
+      },
+    });
     session = attachment.session;
     submission.update({ attached: true });
     let lastStatus = session.status, admissionState = null;

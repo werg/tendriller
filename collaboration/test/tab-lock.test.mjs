@@ -55,10 +55,11 @@ function createMockBrowserEnv() {
   return { locks, MockBroadcastChannel };
 }
 
-test('single-active-tab lock rejects second tab with TAB_ACTIVE_ELSEWHERE and hands over cleanly on takeover()', async () => {
+test('single-active-tab lock auto-takes over for foreground tabs, respects hidden/opt-out, and hands over cleanly', async () => {
   const env = createMockBrowserEnv();
   const origNav = globalThis.navigator;
   const origLoc = globalThis.location;
+  const origDoc = globalThis.document;
   const origBC = globalThis.BroadcastChannel;
   const origWorker = globalThis.Worker;
 
@@ -105,8 +106,10 @@ test('single-active-tab lock rejects second tab with TAB_ACTIVE_ELSEWHERE and ha
     }
   }
 
+  let visibilityState = 'visible';
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: env.locks } });
   Object.defineProperty(globalThis, 'location', { configurable: true, value: new URL('https://app.example/call/') });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { get visibilityState() { return visibilityState; }, addEventListener() {}, removeEventListener() {} } });
   globalThis.BroadcastChannel = env.MockBroadcastChannel;
   globalThis.Worker = MockWorker;
 
@@ -124,8 +127,24 @@ test('single-active-tab lock rejects second tab with TAB_ACTIVE_ELSEWHERE and ha
     assert.equal(typeof tab1.rtc.onPeer, 'function');
     assert.equal(TAB_OWNER_PROTOCOL, 'tendriller/tab-owner/v2');
 
-    // Second tab must immediately fail with TAB_ACTIVE_ELSEWHERE and expose takeover().
-    let secondError;
+    // Explicit takeover:false fails immediately with TAB_ACTIVE_ELSEWHERE and exposes takeover().
+    let optOutError;
+    try {
+      await openBrowserOwner({
+        workerUrl: 'https://app.example/call/worker.mjs',
+        profileId: 'profile-call-1',
+        applicationId: 'a'.repeat(64),
+        persistStorage: false,
+        takeover: false,
+      });
+    } catch (err) { optOutError = err; }
+    assert.equal(optOutError?.code, 'TAB_ACTIVE_ELSEWHERE');
+    assert.equal(typeof optOutError.takeover, 'function');
+    assert.equal(tab1Replaced, null);
+
+    // Default 'auto' in a hidden background tab must NOT steal from the active foreground tab.
+    visibilityState = 'hidden';
+    let hiddenError;
     try {
       await openBrowserOwner({
         workerUrl: 'https://app.example/call/worker.mjs',
@@ -133,19 +152,34 @@ test('single-active-tab lock rejects second tab with TAB_ACTIVE_ELSEWHERE and ha
         applicationId: 'a'.repeat(64),
         persistStorage: false,
       });
-    } catch (err) { secondError = err; }
-    assert.equal(secondError?.code, 'TAB_ACTIVE_ELSEWHERE');
-    assert.equal(typeof secondError.takeover, 'function');
+    } catch (err) { hiddenError = err; }
+    assert.equal(hiddenError?.code, 'TAB_ACTIVE_ELSEWHERE');
+    assert.equal(tab1Replaced, null);
 
-    // Calling takeover() hands off cleanly from Tab 1 -> Tab 2!
-    const tab2 = await secondError.takeover();
+    // Default 'auto' in a visible foreground tab/PWA seamlessly takes over from Tab 1 -> Tab 2!
+    visibilityState = 'visible';
+    let tab2Replaced = null;
+    const tab2 = await openBrowserOwner({
+      workerUrl: 'https://app.example/call/worker.mjs',
+      profileId: 'profile-call-1',
+      applicationId: 'a'.repeat(64),
+      persistStorage: false,
+      onOwnerReplaced: info => { tab2Replaced = info; },
+    });
     assert.equal(tab2.mode, 'dedicated');
     assert.equal(tab1Replaced?.reason, 'tab_takeover');
 
-    await tab2.detach();
+    // Calling optOutError.takeover() also hands off cleanly from Tab 2 -> Tab 3!
+    const tab3 = await optOutError.takeover();
+    assert.equal(tab3.mode, 'dedicated');
+    assert.equal(tab2Replaced?.reason, 'tab_takeover');
+
+    await tab3.detach();
   } finally {
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: origNav });
     Object.defineProperty(globalThis, 'location', { configurable: true, value: origLoc });
+    if (origDoc === undefined) delete globalThis.document;
+    else Object.defineProperty(globalThis, 'document', { configurable: true, value: origDoc });
     globalThis.BroadcastChannel = origBC;
     globalThis.Worker = origWorker;
   }

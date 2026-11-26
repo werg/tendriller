@@ -124,11 +124,14 @@ profile, immutable application identity, and optional takeover callbacks.
 Every browser application (events, SQL/OPFS, and WebRTC media) uses one uniform
 single-active-tab lock paired 1:1 with a dedicated Worker: the active tab owns
 `RTCPeerConnection` and local media directly while the Worker owns device storage
-and Chronolog execution. Opening the same page in a second tab rejects with
-`code: 'TAB_ACTIVE_ELSEWHERE'` until the user explicitly chooses to take over
-(`takeover: true`), which retires the previous tab via `onOwnerReplaced` without
-losing stored operations or drafts. The page mounts the returned session as shown
-in [Compose one browser owner](#compose-one-browser-owner).
+and Chronolog execution. By default (`takeover: 'auto'`), opening the same page
+in a visible foreground tab or standalone PWA seamlessly takes over the lock from
+an existing tab via `BroadcastChannel` and notifies the previous tab via
+`onOwnerReplaced` without losing stored operations or drafts (hidden background
+tabs never steal an active lock). Apps that prefer an explicit prompt (such as an
+active voice/video call) pass `takeover: false`, which rejects a second tab with
+`code: 'TAB_ACTIVE_ELSEWHERE'` and an `error.takeover()` helper. The page mounts
+the returned session as shown in [Compose one browser owner](#compose-one-browser-owner).
 
 ## Compose one browser owner
 

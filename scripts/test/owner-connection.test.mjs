@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOwnerConnection, describeConnectionError } from '../../docs/tutorial/shared/connection.mjs';
+import { createOwnerConnection, describeConnectionError, reloadOnOwnerReplaced } from '../../docs/tutorial/shared/connection.mjs';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, connect, origin = 'https://page.example') {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
@@ -67,4 +67,27 @@ test('connection status distinguishes waiting-keys, waiting-approval, removed an
 
   f.controller.close();
   assert.equal(unsubscribed, 1);
+});
+test('TAB_ACTIVE_ELSEWHERE exposes a takeover action and reloadOnOwnerReplaced waits for visibility/focus', t => {
+  const elsewhere = describeConnectionError({ code: 'TAB_ACTIVE_ELSEWHERE' });
+  assert.equal(elsewhere.action, 'takeover');
+  assert.match(elsewhere.title, /another tab/i);
+
+  const prevLoc = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  let reloads = 0, vis = 'hidden';
+  const docTarget = new EventTarget();
+  Object.defineProperty(docTarget, 'visibilityState', { get() { return vis; } });
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: { reload() { reloads++; } } });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: docTarget });
+  t.after(() => {
+    if (prevLoc) Object.defineProperty(globalThis, 'location', prevLoc); else delete globalThis.location;
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc); else delete globalThis.document;
+  });
+
+  reloadOnOwnerReplaced();
+  assert.equal(reloads, 0, 'must not reload immediately while hidden or unfocused');
+  vis = 'visible';
+  docTarget.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(reloads, 1, 'reloads once the tab becomes visible again');
 });

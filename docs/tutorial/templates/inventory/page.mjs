@@ -108,7 +108,23 @@ $('#inspect').addEventListener('click', action(inspect));
 $('#retry').addEventListener('click', action(async () => { const id = $('#op-id').value, intent = intents[id]; if (intent) return command(intent.command, intent.input, intent); const operation = await session.operations.retry(id); diagnostics.update({lastStoredOperationId:operation.operationId}); show(await operation.inspect()); observeSelectedOperation(); }));
 $('#offline').addEventListener('click', action(async () => { $('#offline-status').textContent = 'Saving and verifying the complete immutable application and engine graph…'; try { const value = await window.tendril.publication.saveOffline(); $('#offline-status').textContent = `Offline ready: publication ${value.id}. Local identity, keys and operation history are separate retained device state.`; } catch (error) { $('#offline-status').textContent = `Not offline ready: ${error.message}`; } }));
 try {
-  attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, requiresDedicatedWorker: true, context: { viewId }, timeoutMs: 30_000 });
+  attachment = await openBrowserOwner({
+    workerUrl: new URL('./worker.mjs', import.meta.url),
+    profileId,
+    applicationId: configuration.applicationId,
+    requiresDedicatedWorker: true,
+    context: { viewId },
+    timeoutMs: 30_000,
+    onOwnerReplaced() {
+      telemetry?.close(); unregisterFlush?.(); live?.close(); stopAdmission?.(); devices?.close();
+      submission.update({ attached: false });
+      $('#session-status').textContent = 'This page moved to another tab or window. Reload this tab to use it here.';
+      if (document.visibilityState === 'hidden') {
+        const onVisible = () => { if (document.visibilityState !== 'visible') return; document.removeEventListener('visibilitychange', onVisible); location.reload(); };
+        document.addEventListener('visibilitychange', onVisible);
+      }
+    },
+  });
   session = attachment.session;
   submission.update({ attached: true });
   let lastStatus = session.status, admissionState = null;
