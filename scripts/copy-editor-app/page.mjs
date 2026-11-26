@@ -3,7 +3,7 @@ import { createApplicationBackend, createLiveView, createViewStore } from '@chro
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createOwnerConnection, reloadOnOwnerReplaced } from '../../shared/connection.mjs';
 import { mountConnectionView } from '../../shared/connect-view.mjs';
-import { mountProvisioning } from '../../shared/helpers/provisioning-view.mjs';
+import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { deriveCopyState } from './domain.mjs';
 
 const $ = (s) => document.querySelector(s);
@@ -38,12 +38,12 @@ const diffBtn = $('#tce-diff-btn');
 const countEl = $('#tce-count');
 const noteEl = $('#tce-note');
 const sendBtn = $('#tce-send');
-const pairBtn = $('#tce-pair-btn');
+const devicesBtn = $('#tce-devices-btn');
 const statusEl = $('#tce-status');
 const dotEl = $('#tce-dot');
 const drawer = $('#tce-drawer');
-const pairPanel = $('#tce-pair');
-$('#agent-pubkey').textContent = configuration.agentPublicKey ?? '(none)';
+const devicesPanel = $('#tce-devices');
+const devicesBody = $('#tce-devices-body');
 
 for (const p of site.pages) {
   const opt = document.createElement('option');
@@ -59,7 +59,7 @@ noteEl.value = local.readDraft('note') || '';
 noteEl.addEventListener('input', () => local.writeDraft(noteEl.value, 'note'));
 
 let editing = true;
-let session, attachment, live, provisioning;
+let session, attachment, live, devices;
 let state = { edits: [], submitted: [], batches: [] };
 let canAuthor = false;
 let connectedPeers = 0;
@@ -92,8 +92,11 @@ function syncIframeWithState() {
     if (!key) continue;
     if (!origRaw.has(key)) origRaw.set(key, el.getAttribute('data-copy-raw') ?? el.textContent ?? '');
     if (el === active || inflightRaw.has(key)) continue; // Never clobber active typing or in-flight saves
-    const edited = map.get(key);
-    const raw = edited ? edited.after : (origRaw.get(key) ?? '');
+    const orig = origRaw.get(key) ?? '';
+    const rawEdited = map.get(key);
+    // If a submitted edit's `before` no longer matches this publication's copy, the repo already applied/moved past it.
+    const edited = rawEdited && !(rawEdited.state === 'submitted' && orig !== rawEdited.before) ? rawEdited : null;
+    const raw = edited ? edited.after : orig;
     el.setAttribute('data-copy-raw', raw);
     if (edited) el.setAttribute('data-dirty', edited.state === 'submitted' ? 'submitted' : '1');
     else el.removeAttribute('data-dirty');
@@ -151,7 +154,7 @@ async function persistElementEdit(el, { formatDom = false } = {}) {
   if (!key) return;
   const existingTimer = saveTimers.get(key);
   if (existingTimer) { clearTimeout(existingTimer); saveTimers.delete(key); }
-  const raw = (el.textContent ?? '').replace(/\r\n/g, '\n').trim();
+  const raw = (el.textContent ?? '').replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
   const before = origRaw.get(key) ?? '';
   if (formatDom) {
     el.innerHTML = el.id === 'prompt-text'
@@ -167,10 +170,14 @@ async function persistElementEdit(el, { formatDom = false } = {}) {
     try {
       if (raw !== before) {
         setStatus(`Saving ${key}…`);
-        await session.command('putEdit', { key, before, after: raw }, { operationId: crypto.randomUUID() });
-        setStatus(connectedPeers > 0 ? 'Saved & syncing via Chronolog' : 'Saved locally (pair agent to sync)');
+        const op = await session.command('putEdit', { key, before, after: raw }, { operationId: crypto.randomUUID() });
+        await op.inspect();
+        await live?.refresh?.().catch(() => {});
+        setStatus(connectedPeers > 0 ? 'Saved & synced via Chronolog' : 'Saved locally in Chronolog');
       } else if (current) {
-        await session.command('undoEdit', { key }, { operationId: crypto.randomUUID() });
+        const op = await session.command('undoEdit', { key }, { operationId: crypto.randomUUID() });
+        await op.inspect();
+        await live?.refresh?.().catch(() => {});
         setStatus('Restored original copy');
       }
     } catch (err) {
@@ -246,18 +253,27 @@ function bindIframeDocument() {
     if (!el || !editing) return;
     const key = el.getAttribute('data-copy');
     if (!key) return;
+    const raw = (el.textContent ?? '').replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
+    inflightRaw.set(key, raw);
     const prev = saveTimers.get(key);
     if (prev) clearTimeout(prev);
     saveTimers.set(key, setTimeout(() => {
       saveTimers.delete(key);
       void persistElementEdit(el, { formatDom: false });
-    }, 500));
+    }, 400));
   });
 
   doc.addEventListener('focusout', (e) => {
     const el = e.target.closest?.('[data-copy]');
     if (!el || !editing) return;
     void persistElementEdit(el, { formatDom: true });
+  });
+
+  // Firefox may blur the iframe window without firing focusout on the inner activeElement.
+  frame.contentWindow?.addEventListener('blur', () => {
+    if (!editing) return;
+    const active = doc.activeElement;
+    if (active?.hasAttribute?.('data-copy')) void persistElementEdit(active, { formatDom: true });
   });
 }
 
@@ -284,19 +300,19 @@ modeBtn.addEventListener('click', () => {
   setStatus(editing ? 'Click any text to edit inline' : 'Preview mode — links work normally');
 });
 diffBtn.addEventListener('click', () => {
-  pairPanel.hidden = true;
+  devicesPanel.hidden = true;
   drawer.hidden = !drawer.hidden;
   if (!drawer.hidden) renderDrawer();
 });
-pairBtn.addEventListener('click', () => {
+devicesBtn.addEventListener('click', () => {
   drawer.hidden = true;
-  pairPanel.hidden = !pairPanel.hidden;
+  devicesPanel.hidden = !devicesPanel.hidden;
 });
-$('#tce-pair-close').addEventListener('click', () => { pairPanel.hidden = true; });
+$('#tce-devices-close').addEventListener('click', () => { devicesPanel.hidden = true; });
 $('#tce-hide').addEventListener('click', () => {
   $('#tce-dock').classList.add('collapsed');
   drawer.hidden = true;
-  pairPanel.hidden = true;
+  devicesPanel.hidden = true;
 });
 $('#tce-expand').addEventListener('click', () => { $('#tce-dock').classList.remove('collapsed'); });
 
@@ -314,7 +330,7 @@ sendBtn.addEventListener('click', async () => {
     await op.inspect();
     noteEl.value = '';
     local.writeDraft('', 'note');
-    setStatus(connectedPeers > 0 ? `Signed & queued (${batchId})` : `Signed & queued (${batchId}) — pair agent to sync`);
+    setStatus(connectedPeers > 0 ? `Sent to agent (${batchId})` : `Signed & queued (${batchId})`);
   } catch (err) {
     setStatus(err.message ?? String(err));
   } finally {
@@ -336,7 +352,11 @@ const connection = createOwnerConnection({
       dotEl.className = 'tce-dot ok';
       canAuthor = true;
       if (lastPhase !== 'connected') setStatus('Chronolog ready — click any text to edit');
-    } else if (s.phase === 'failed' || s.phase === 'key-required') {
+    } else if (s.phase === 'key-required') {
+      dotEl.className = 'tce-dot';
+      canAuthor = false;
+      setStatus('Waiting for automatic agent admission…');
+    } else if (s.phase === 'failed') {
       dotEl.className = 'tce-dot err';
       canAuthor = false;
       setStatus(s.title);
@@ -360,25 +380,27 @@ const connection = createOwnerConnection({
     session = attachment.session;
     session.onStatus?.((st) => {
       connectedPeers = st?.connectedPeers ?? 0;
+      if (st?.canAuthor && live) void live.refresh?.().catch(() => {});
     });
     if (globalThis.tendril) {
       globalThis.tendril.application?.install?.(createApplicationBackend(session));
       globalThis.tendril.signals?.install?.(session.signals);
       globalThis.tendril.transport?.install?.(session);
     }
-    const host = globalThis.tendril?.host;
-    if (host?.peers && !provisioning) {
-      provisioning = mountProvisioning({ root: pairPanel, session, peers: host.peers, local });
+    if (!devices) {
+      devices = mountDevices({ root: devicesBody, session, pageUrl: configuration.page_url, storage });
     }
     live = createLiveView(session, deriveCopyState, {
-      onError(err) { setStatus(err.message ?? String(err)); },
+      onError(err) {
+        if (canAuthor) setStatus(err.message ?? String(err));
+      },
     });
     live.subscribe((snapshot) => {
       state = snapshot.value;
       syncIframeWithState();
       updateControls();
     });
-    await live.ready({ timeoutMs: 30_000 });
+    void live.ready({ timeoutMs: 30_000 }).catch(() => {});
     globalThis.tendril?.ready?.();
     return attachment;
   },

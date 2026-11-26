@@ -32,9 +32,6 @@ const { values: flags } = parseArgs({
     "display-origin": { type: "string", default: "https://tendriller.dev" },
     republish: { type: "boolean", default: false },
     "no-agent": { type: "boolean", default: false },
-    "sign-enrollment": { type: "string" },
-    "provisioning-request": { type: "boolean", default: false },
-    "import-provisioning": { type: "string" },
     wait: { type: "boolean", default: false },
     timeout: { type: "string", default: "600" },
     inbox: { type: "boolean", default: false },
@@ -57,9 +54,6 @@ Options:
   --display-origin <origin>   Origin shown inside previewed pages (default: https://tendriller.dev)
   --no-agent                  Prepare & publish the page, print URL, and exit without running tendril agent run
   --republish                 Rebuild from current server/src/site-copy.json and publish a new signed version
-  --sign-enrollment <file>    Sign browser enrollment proof for native agent pairing
-  --provisioning-request      Generate native recipient-bound provisioning request JSON
-  --import-provisioning <f>   Import browser-granted wrapped epoch keys for native agent
   --wait [--timeout <s>]      Wait for the next replicated Chronolog copy.submit batch and print JSON
   --inbox                     Print all received Chronolog batches
   --apply <latest|batchId>    Apply a received batch's edits to server/src/site-copy.json
@@ -127,7 +121,7 @@ function applyBatchToRepo(batch) {
   const applied = [];
   for (const edit of batch.edits ?? []) {
     if (!edit?.key || typeof edit.after !== "string") continue;
-    setByPath(copy, edit.key, edit.after);
+    setByPath(copy, edit.key, edit.after.replace(/\u00a0/g, " "));
     applied.push(edit.key);
   }
   writeFileSync(COPY_JSON, JSON.stringify(copy, null, 2) + "\n", "utf8");
@@ -265,11 +259,23 @@ async function ensureProvisionedPage({ republish = false } = {}) {
     });
   }
 
-  const deploy = await runCmd(process.execPath, ["setup.mjs", "deploy", PAGE_SLUG], {
-    cwd: workspaceDir,
-    env: workspaceEnv(),
-    capture: true,
-  });
+  let deploy;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      deploy = await runCmd(process.execPath, ["setup.mjs", "deploy", PAGE_SLUG], {
+        cwd: workspaceDir,
+        env: workspaceEnv(),
+        capture: true,
+      });
+      break;
+    } catch (err) {
+      if (attempt < 4 && /non-JSON response|fetch failed|503|ECONNRESET/i.test(err.message)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      throw err;
+    }
+  }
   const receipt = JSON.parse(deploy.stdout.trim());
   return { config, pageMeta, receipt, republished: republish };
 }
@@ -326,26 +332,21 @@ if (flags.apply) {
     process.exit(1);
   }
   const keys = applyBatchToRepo(batch);
+  // Best-effort: record `copy.applied` in the running native Chronolog agent so submitted highlights clear cleanly.
+  if (existsSync(tendrilBin) && keys.length) {
+    try {
+      await runCmd(
+        process.execPath,
+        [tendrilBin, "--page", PAGE_SLUG, "command", "markApplied", JSON.stringify({ batchId: batch.id, keys }), "--operation", `apply-${batch.id}`],
+        { cwd: workspaceDir, env: workspaceEnv(), capture: true },
+      );
+    } catch {}
+  }
   let receipt = null;
   if (flags.republish) {
     receipt = (await ensureProvisionedPage({ republish: true })).receipt;
   }
   console.log(JSON.stringify({ appliedBatch: batch.id, keys, note: batch.note ?? "", republished: Boolean(receipt), receipt }, null, 2));
-  process.exit(0);
-}
-
-// ── Mode: Native pairing commands (sign-enrollment / provisioning-request / import-provisioning) ─
-if (flags["sign-enrollment"] || flags["provisioning-request"] || flags["import-provisioning"]) {
-  await ensureBuiltPackages();
-  prepareWorkspaceSkeleton();
-  syncAppSource();
-  let cmdArgs;
-  if (flags["sign-enrollment"]) cmdArgs = ["setup.mjs", "sign-enrollment", PAGE_SLUG, resolve(flags["sign-enrollment"])];
-  else if (flags["provisioning-request"]) cmdArgs = ["setup.mjs", "provisioning-request", PAGE_SLUG];
-  else cmdArgs = ["setup.mjs", "import-provisioning", PAGE_SLUG, resolve(flags["import-provisioning"])];
-  const res = await runCmd(process.execPath, cmdArgs, { cwd: workspaceDir, env: workspaceEnv(), capture: true });
-  process.stdout.write(res.stdout);
-  if (res.stderr) process.stderr.write(res.stderr);
   process.exit(0);
 }
 
@@ -375,9 +376,9 @@ console.error(`  Service:   ${serviceOrigin}`);
 console.error(`  Owner:     ${flags.owner}`);
 console.error(`  Workspace: ${workspaceDir}`);
 console.error(`  Inbox:     ${inboxPath}`);
-console.error(`\nStarting optional native participant (tendril agent run)...`);
-console.error(`Browser reads and inline edits save locally in Chronolog immediately without needing the agent.`);
-console.error(`To sync 'Send to agent' batches directly back here, pair the native device via 'Pair native agent' in the page toolbar.\n`);
+console.error(`\nStarting native participant (tendril agent run)...`);
+console.error(`This agent holds the page's keys and automatically admits your signed-in browser over E2EE — no manual pairing required.`);
+console.error(`Once admitted, browser reads and inline edits stay locally durable even offline.\n`);
 
 const agentProc = spawn(process.execPath, [tendrilBin, "agent", "run"], {
   cwd: workspaceDir,

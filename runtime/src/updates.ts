@@ -112,14 +112,18 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
   const policy = (): UpdatePolicy => options.policy ?? authoredUpdatePolicy();
   const reload = options.reload ?? (() => location.reload());
   const latestUrl = () => new URL(cfg.base, location.href).href;
-  let available: number | null = null, switching = false, closed = false;
+  let available: number | null = null, switching = false, switchReset: ReturnType<typeof setTimeout> | undefined, closed = false;
   const safe = () => holds.size === 0 && (policy() === "careful" ? !unsavedInput() : !typedDraftPending(edited));
   const announce = (version: number | null) => {
     for (const listener of listeners) { try { listener({ version }); } catch { /* Observers cannot block the switch. */ } }
   };
   const attempt = () => {
     if (closed || available === null || options.pinned || switching || !safe()) return;
-    switching = true; reload();
+    switching = true;
+    // If the navigation is aborted or fails transiently (e.g. dev reload or brief drop), allow a later retry.
+    clearTimeout(switchReset);
+    switchReset = setTimeout(() => { switching = false; switchReset = undefined; }, 5000);
+    reload();
   };
   const browser = typeof document !== "undefined" && typeof document.addEventListener === "function" && typeof window !== "undefined" && typeof window.addEventListener === "function";
   if (!browser) return Object.freeze({ pinned: options.pinned, policy: options.policy ?? "live", updateAvailable: false, onUpdate: () => () => {}, hold: () => () => {}, update() { reload(); }, close() {} });
@@ -178,7 +182,7 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
     update() { if (closed) return; switching = true; if (options.pinned) location.assign(documentUrl(cfg, new URL(latestUrl())).href); else reload(); },
     close() {
       if (closed) return;
-      closed = true; clearTimeout(deferred); watch?.close();
+      closed = true; clearTimeout(deferred); clearTimeout(switchReset); watch?.close();
       document.removeEventListener("visibilitychange", attempt); window.removeEventListener("pageshow", attempt);
       for (const event of editEvents) document.removeEventListener(event, afterEdit, true);
       holds.clear(); listeners.clear(); edited.clear(); available = null;

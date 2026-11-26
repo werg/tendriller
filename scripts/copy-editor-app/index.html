@@ -37,13 +37,13 @@
   #tce-dock select option{background:#16241e;color:#fff9ec}
   #tce-dock input#tce-note{width:clamp(140px,18vw,220px)}
   #tce-dock input::placeholder{color:#b6c6bc}
-  #tce-dock button,#tce-drawer button,#tce-pair button{
+  #tce-dock button,#tce-drawer button,#tce-devices button{
     appearance:none;display:inline-flex;align-items:center;gap:5px;flex:none;
     height:30px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,248,232,.2);
     background:rgba(255,248,232,.10);color:#fff9ec;font:650 12px/1 system-ui,sans-serif;
     cursor:pointer;white-space:nowrap;
   }
-  #tce-dock button:hover,#tce-drawer button:hover,#tce-pair button:hover{background:rgba(255,248,232,.18)}
+  #tce-dock button:hover,#tce-drawer button:hover,#tce-devices button:hover{background:rgba(255,248,232,.18)}
   #tce-dock button:disabled{opacity:.5;cursor:default}
   #tce-dock button.tce-send{background:#df5f32;border-color:transparent;color:#fff}
   #tce-dock button.tce-send:hover{background:#c84e23}
@@ -82,22 +82,10 @@
 
 <section id="tce-drawer" class="tce-panel" hidden aria-label="Pending copy edits and history"></section>
 
-<section id="tce-pair" class="tce-panel" hidden aria-label="Pair repo agent or another device">
-  <h3><span>Pair repo agent &amp; devices (Chronolog E2EE)</span><button type="button" id="tce-pair-close">Close</button></h3>
-  <p>Your browser holds the epoch keys locally. Every inline edit is saved durably in Chronolog even offline. Pair the repo agent once so submitted batches sync straight to <code>scripts/copy-editor.mjs --wait</code>.</p>
-  <p>Repo agent public key: <code id="agent-pubkey">loading…</code></p>
-  <div class="tce-row">
-    <button type="button" data-provisioning="request">Create request for this browser</button>
-    <button type="button" data-provisioning="review">Review incoming request</button>
-    <label style="display:inline-flex;align-items:center;gap:5px;margin:0"><input type="checkbox" data-provisioning="writer"> Allow writer</label>
-    <button type="button" data-provisioning="grant" disabled>Grant &amp; wrap keys</button>
-    <button type="button" data-provisioning="import">Import wrapped keys</button>
-  </div>
-  <label>Incoming (paste provisioning request, signed proof, or wrapped key package)</label>
-  <textarea data-provisioning="in" placeholder="Paste JSON here…"></textarea>
-  <label>Outgoing (copy challenge or encrypted key package)</label>
-  <textarea data-provisioning="out" readonly placeholder="Output appears here…"></textarea>
-  <p data-provisioning="status" role="status" aria-live="polite"></p>
+<section id="tce-devices" class="tce-panel" hidden aria-label="Devices and access">
+  <h3><span>Devices &amp; access</span><button type="button" id="tce-devices-close">Close</button></h3>
+  <p>The creating agent automatically admits your browser on sign-in with end-to-end encrypted keys. Use this panel to inspect admitted devices or manage access.</p>
+  <div id="tce-devices-body"></div>
 </section>
 
 <div id="tce-dock" role="region" aria-label="Tendriller live copy editor">
@@ -108,7 +96,7 @@
   <button type="button" id="tce-diff-btn">Edits <span class="tce-badge" id="tce-count">0</span></button>
   <input id="tce-note" type="text" placeholder="Note for agent (optional)…">
   <button type="button" id="tce-send" class="tce-send" disabled>Send to agent</button>
-  <button type="button" id="tce-pair-btn" title="Pair repo agent or another device">Pair agent</button>
+  <button type="button" id="tce-devices-btn" title="View admitted devices and access">Devices</button>
   <span class="tce-status" id="tce-status" role="status" aria-live="polite">Opening Chronolog…</span>
   <button type="button" id="tce-hide" title="Collapse dock">×</button>
 </div>

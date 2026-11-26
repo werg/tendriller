@@ -55,7 +55,7 @@ section[id]{scroll-margin-top:4.5rem}
 }
 @keyframes blink{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.84)}}
 .hero-copy .lead{font-size:clamp(1.05rem,1.4vw,1.18rem);line-height:1.54;color:#f6f0df;max-width:36rem;margin-bottom:.85rem}
-.hero-copy .sub{font-size:clamp(.97rem,1.16vw,1.04rem);line-height:1.56;color:var(--stage-muted);max-width:36rem;margin-bottom:0}
+.hero-copy .sub{font-size:clamp(1.05rem,1.4vw,1.18rem);line-height:1.54;color:var(--stage-muted);max-width:36rem;margin-bottom:0}
 .hero-copy strong{color:#fff9ec;font-weight:720}
 .actions{display:flex;align-items:center;flex-wrap:wrap;gap:.55rem;margin-top:1.55rem}
 .cta{
@@ -235,6 +235,47 @@ section[id]{scroll-margin-top:4.5rem}
 .timeline p{font-size:.91rem;color:var(--muted);line-height:1.5;max-width:16rem;margin:0}
 .how-note{margin-top:2rem;padding:1rem 1.2rem;border-radius:var(--radius-sm);background:var(--paper-2);border:1px solid var(--line);font-size:.92rem;color:var(--muted)}
 .how-note strong{color:var(--ink)}
+.pieces-card{
+  margin-top:2.25rem;padding:1.25rem 1.35rem 1.35rem;border-radius:var(--radius);
+  background:var(--paper-2);border:1px solid var(--line);
+}
+.pieces-head{
+  display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;
+  margin-bottom:1rem;padding-bottom:.75rem;border-bottom:1px solid var(--line);
+}
+.pieces-head-title{font-size:.78rem;font-weight:760;letter-spacing:.08em;text-transform:uppercase;color:var(--green)}
+.pieces-head-help{font-size:.84rem;color:var(--muted)}
+.pieces-head-help a{color:var(--green);font-weight:620;text-decoration:none}
+.pieces-head-help a:hover{text-decoration:underline}
+.pieces-flow{
+  display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);
+  gap:.7rem;align-items:stretch;
+}
+.piece{
+  display:flex;flex-direction:column;gap:.45rem;
+  padding:1.05rem 1.1rem;border-radius:var(--radius-sm);
+  background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow-sm);
+}
+.piece-top{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.1rem}
+.piece-ico{
+  display:grid;place-items:center;width:2rem;height:2rem;border-radius:9px;
+  background:var(--green-soft);color:var(--green);flex:none;
+}
+.piece[data-role="host"] .piece-ico{background:var(--surface-2);color:var(--ink);border:1px solid var(--line)}
+.piece[data-role="agent"] .piece-ico{background:var(--orange-soft);color:var(--orange)}
+.piece-badge{
+  font-size:.71rem;font-weight:700;letter-spacing:.03em;padding:.18rem .52rem;border-radius:999px;
+  background:var(--green-soft);color:var(--green);white-space:nowrap;
+}
+.piece[data-role="host"] .piece-badge{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+.piece[data-role="agent"] .piece-badge{background:var(--orange-soft);color:var(--orange)}
+.piece h3{font-size:.98rem;margin:0}
+.piece p{font-size:.87rem;color:var(--muted);line-height:1.48;margin:0}
+.piece-link{
+  display:flex;align-items:center;justify-content:center;color:var(--faint);
+  padding:0 .1rem;
+}
+.piece-link svg{width:1.2rem;height:1.2rem;display:block}
 
 /* Things you can build */
 .ideas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;list-style:none;margin:0;padding:0}
@@ -265,6 +306,38 @@ section[id]{scroll-margin-top:4.5rem}
 .trust-card .icon{width:1.35rem;height:1.35rem;color:var(--green);margin-bottom:.65rem;display:block}
 .trust-card h3{font-size:.98rem;margin-bottom:.32rem}
 .trust-card p{font-size:.89rem;color:var(--muted);line-height:1.48;margin:0}
+.trust-card .trust-note{
+  margin-top:.65rem;padding:.5rem .62rem;border-radius:8px;
+  background:var(--surface-2);border:1px solid var(--line);
+  font-size:.76rem;color:var(--faint);line-height:1.42;
+}
+.trust-card .trust-note strong{color:var(--muted);font-weight:680}
+.oss-strip{
+  margin-top:1.15rem;padding:.95rem 1.15rem;border-radius:var(--radius-sm);
+  background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow-sm);
+  display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+}
+.oss-left{display:flex;align-items:center;gap:.85rem;min-width:0;flex:1 1 20rem}
+.oss-mark{
+  display:grid;place-items:center;flex:none;
+  width:2.35rem;height:2.35rem;border-radius:10px;
+  background:var(--surface-2);border:1px solid var(--line);color:var(--muted);
+}
+.oss-mark svg{width:1.18rem;height:1.18rem;display:block}
+.oss-copy{min-width:0}
+.oss-copy strong{display:block;font-size:.94rem;color:var(--ink);line-height:1.3}
+.oss-copy p{margin:.12rem 0 0;font-size:.86rem;color:var(--muted);line-height:1.42}
+.oss-copy code{white-space:nowrap}
+.oss-link{
+  display:inline-flex;align-items:center;gap:.45rem;flex:none;
+  padding:.48rem .88rem;border-radius:999px;
+  background:var(--surface-2);border:1px solid var(--line-strong);
+  color:var(--ink);font:640 .84rem/1 var(--mono);text-decoration:none;
+  transition:border-color .15s,background .15s,color .15s;
+}
+.oss-link svg{width:.95rem;height:.95rem;display:block;color:var(--muted);transition:color .15s}
+.oss-link:hover{border-color:var(--green);background:var(--green-soft);color:var(--green)}
+.oss-link:hover svg{color:var(--green)}
 
 /* For agents & developers dark band */
 .agents-band{
@@ -299,8 +372,12 @@ section[id]{scroll-margin-top:4.5rem}
   display:flex;align-items:flex-start;gap:1rem;
 }
 .namesake img{width:40px;height:40px;border-radius:10px;flex:none;margin-top:.1rem}
-.namesake p{margin:0;color:var(--muted);font-size:.95rem;max-width:50rem}
-.namesake strong{color:var(--ink)}
+.namesake-copy{min-width:0;max-width:50rem}
+.namesake-copy strong.namesake-lead{display:block;color:var(--ink);font-size:.97rem;margin-bottom:.35rem}
+.namesake-list{list-style:none;margin:0;padding:0;display:grid;gap:.3rem}
+.namesake-list li{position:relative;padding-left:1.25rem;color:var(--muted);font-size:.94rem;line-height:1.48}
+.namesake-list li::before{content:"—";position:absolute;left:0;color:var(--green);font-weight:700}
+.namesake-list strong{color:var(--ink)}
 
 @media(max-width:960px){
   .hero-grid{grid-template-columns:1fr;text-align:left}
@@ -317,6 +394,8 @@ section[id]{scroll-margin-top:4.5rem}
   .timeline li:last-child{padding-bottom:0}
   .step-num{margin:0}
   .timeline p{max-width:none}
+  .pieces-flow{grid-template-columns:1fr;gap:.45rem}
+  .piece-link svg{transform:rotate(90deg)}
 }
 @media(max-width:620px){
   .hero{border-radius:1.25rem}
@@ -391,7 +470,7 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
     <div class="hero-grid">
       <div class="hero-art">${brandLogo}</div>
       <div class="hero-copy">
-        <span class="hero-pill"><span class="live-dot" aria-hidden="true"></span><span${c("home.hero.pill", h.hero.pill)}>${txt(h.hero.pill)}</span></span>
+        ${h.hero.pill.trim() ? `<span class="hero-pill"><span class="live-dot" aria-hidden="true"></span><span${c("home.hero.pill", h.hero.pill)}>${txt(h.hero.pill)}</span></span>` : ""}
         <h1 id="hero-title"${c("home.hero.title", h.hero.title)}>${txt(h.hero.title)}</h1>
         <p class="lead"${c("home.hero.lead", h.hero.lead)}>${txt(h.hero.lead)}</p>
         <p class="sub"${c("home.hero.sub", h.hero.sub)}>${txt(h.hero.sub)}</p>
@@ -482,7 +561,28 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
     <ol class="timeline">
       ${h.how.steps.map((step, i) => `<li><span class="step-num" aria-hidden="true">${i + 1}</span><div><h3${c(`home.how.steps.${i}.title`, step.title)}>${txt(step.title)}</h3><p${c(`home.how.steps.${i}.body`, step.body)}>${txt(step.body)}</p></div></li>`).join("")}
     </ol>
-    <p class="how-note"><span${c("home.how.note", h.how.note)}>${txt(h.how.note)}</span> Stuck on a step? <a href="${base}/docs/TROUBLESHOOTING.md">Setup help</a> names the exact next action.</p>
+    <div class="pieces-card" aria-labelledby="pieces-title">
+      <div class="pieces-head">
+        <span id="pieces-title" class="pieces-head-title"${c("home.how.piecesTitle", h.how.piecesTitle)}>${txt(h.how.piecesTitle)}</span>
+        <span class="pieces-head-help">Stuck on a step? <a href="${base}/docs/TROUBLESHOOTING.md">Setup help →</a></span>
+      </div>
+      <div class="pieces-flow">
+        ${h.how.pieces.map((piece, i) => {
+          const role = i === 0 ? "devices" : i === 1 ? "host" : "agent";
+          const arrow = i < h.how.pieces.length - 1
+            ? `<div class="piece-link" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16m0 0-3.5-3.5M20 9l-3.5 3.5"/><path d="M20 15H4m0 0 3.5-3.5M4 15l3.5 3.5"/></svg></div>`
+            : "";
+          return `<div class="piece" data-role="${role}">
+            <div class="piece-top">
+              <span class="piece-ico">${icon(piece.icon)}</span>
+              <span class="piece-badge"${c(`home.how.pieces.${i}.badge`, piece.badge)}>${txt(piece.badge)}</span>
+            </div>
+            <h3${c(`home.how.pieces.${i}.title`, piece.title)}>${txt(piece.title)}</h3>
+            <p${c(`home.how.pieces.${i}.body`, piece.body)}>${txt(piece.body)}</p>
+          </div>${arrow}`;
+        }).join("")}
+      </div>
+    </div>
   </section>
 
   <section id="ideas" class="section" aria-labelledby="ideas-title">
@@ -512,9 +612,18 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
       </div>
     </div>
     <div class="trust-grid">
-      ${h.access.items.map((item, i) => `<div class="trust-card">${icon(item.icon)}<h3${c(`home.access.items.${i}.title`, item.title)}>${txt(item.title)}</h3><p${c(`home.access.items.${i}.body`, item.body)}>${txt(item.body)}</p></div>`).join("")}
+      ${h.access.items.map((item, i) => `<div class="trust-card">${icon(item.icon)}<h3${c(`home.access.items.${i}.title`, item.title)}>${txt(item.title)}</h3><p${c(`home.access.items.${i}.body`, item.body)}>${txt(item.body)}</p>${"note" in item && item.note ? `<p class="trust-note"${c(`home.access.items.${i}.note`, item.note)}>${txt(item.note)}</p>` : ""}</div>`).join("")}
     </div>
-    <p class="how-note"><span${c("home.access.openSourceNote", h.access.openSourceNote)}>${txt(h.access.openSourceNote)}</span> <a href="https://github.com/werg/tendriller">View source on GitHub</a>.</p>
+    <div class="oss-strip">
+      <div class="oss-left">
+        <span class="oss-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></span>
+        <div class="oss-copy">
+          <strong${c("home.access.openSourceTitle", h.access.openSourceTitle)}>${txt(h.access.openSourceTitle)}</strong>
+          <p${c("home.access.openSourceNote", h.access.openSourceNote)}>${txt(h.access.openSourceNote)}</p>
+        </div>
+      </div>
+      <a class="oss-link" href="https://github.com/werg/tendriller"><span>werg/tendriller</span> ${icon("arrow")}</a>
+    </div>
   </section>
 
   <section class="agents-band" aria-labelledby="agents-title">
@@ -528,7 +637,12 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
 
   <aside class="namesake" aria-label="About the name">
     <img src="/_tendril/brand/icon-64.png" alt="" width="40" height="40">
-    <p><strong${c("home.namesake.lead", h.namesake.lead)}>${txt(h.namesake.lead)}</strong> <span${c("home.namesake.body", h.namesake.body)}>${txt(h.namesake.body)}</span></p>
+    <div class="namesake-copy">
+      <strong class="namesake-lead"${c("home.namesake.lead", h.namesake.lead)}>${txt(h.namesake.lead)}</strong>
+      <ul class="namesake-list">
+        ${h.namesake.points.map((pt, i) => `<li><span${c(`home.namesake.points.${i}`, pt)}>${txt(pt)}</span></li>`).join("")}
+      </ul>
+    </div>
   </aside>`;
 
   const script = `<script>

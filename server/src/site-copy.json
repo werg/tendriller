@@ -1,28 +1,28 @@
 {
   "home": {
     "hero": {
-      "pill": "A live dashboard page you can talk to",
+      "pill": "",
       "title": "A face for your agent",
-      "lead": "A private dashboard page your agent can launch and reshape live as your requests change. Talk to it, share device sensors, store real shared database state, and invite others in.",
-      "sub": "It’s like giving your agent **eyes, ears, and a form of expression** — on your phone, laptop, or tablet.",
+      "lead": "Your agent launches and reshapes a live page with your input. Talk to it, share page interactions, device sensors and data on your phone, laptop or tablet.",
+      "sub": "Like giving your agent **eyes, ears, and a form of expression**.",
       "ctaPrimary": "Try it with your agent",
       "ctaAgent": "Agent instructions",
       "ctaCookbooks": "Cookbooks",
-      "ribbonLabel": "Live browser bridge",
+      "ribbonLabel": "A live page you can talk to",
       "ribbon": [
         "End-to-end encrypted",
-        "Shared SQL database",
-        "Invite others",
-        "Talk-to-page voice",
+        "Shared SQL DB",
+        "Multi-User",
+        "Talk-to-Page",
         "Camera & sensors",
         "Open source"
       ]
     },
     "start": {
-      "eyebrow": "Works with the agent you already use",
-      "title": "Point it at {host}. Tell it what you want.",
-      "p1": "Take your **Claude Code**, **Codex**, **Meta Muse**, **Instinct**, **OpenAI Dots**, **Claude Duet**, **GrokBot**, **OpenClaw**, or **Hermes** — point it at **{host}**, describe the page you want, and give it the email to tie it to.",
-      "p2": "It hands back a private URL. Open it from your phone, laptop, or tablet, sign in with **GitHub** or **Google**, and you’re connected. Invite family or teammates anytime with a private link.",
+      "eyebrow": "For your existing agent",
+      "title": "Point it at {host} and tell it what you want.",
+      "p1": "**Claude Code**, **Codex**, **Meta Muse**, **Instinct**, **OpenAI Dots**, **Claude Duet**, **GrokBot**, **OpenClaw**, or **Hermes** can build and tweak your idea, staying connected while you use it.",
+      "p2": "They hand back a private URL tied to your email. Open from **any device**, not just the agent machine: your phone, laptop, or tablet, sign in with **GitHub** or **Google**. Invite others with a private link.",
       "promptLabel": "Try saying this",
       "promptHint": "Swap in your own email and idea",
       "prompts": [
@@ -40,15 +40,24 @@
         }
       ],
       "replyStrip": [
-        { "title": "1. Agent launches", "body": "Creates & signs a live page" },
-        { "title": "2. Returns a URL", "body": "Private link tied to your email" },
-        { "title": "3. Sign in & invite", "body": "GitHub or Google on any device" }
+        {
+          "title": "1. Agent launches",
+          "body": "Creates & signs a live page"
+        },
+        {
+          "title": "2. Returns a URL",
+          "body": "Private link tied to your email"
+        },
+        {
+          "title": "3. Sign in & invite",
+          "body": "GitHub or Google on any device"
+        }
       ],
       "platformsLead": "Pick your harness for a quick start — click a platform for the human guide, or `.md` for the AI-friendly page."
     },
     "pillars": {
       "eyebrow": "Beyond the chat box",
-      "title": "A dashboard you can talk to — that changes with your requests.",
+      "title": "A dashboard you can talk to and change",
       "lead": "Chat threads are great for words, not for looking inside your fridge, querying a shared database across phones, or inviting your team into a live view that adapts on the fly.",
       "items": [
         {
@@ -56,58 +65,156 @@
           "warm": true,
           "title": "Talk to it, reshape it live",
           "body": "Ask by voice or text and watch your agent evolve the page itself — adding charts, rearranging buttons, showing annotated diagrams, or reading next steps aloud as your work shifts.",
-          "tags": ["Live UI changes", "Voice & wake word", "Diagrams", "Custom controls"]
+          "tags": [
+            "Live UI changes",
+            "Voice & wake word",
+            "Diagrams",
+            "Custom controls"
+          ]
         },
         {
           "icon": "eye",
           "warm": false,
           "title": "Eyes & ears on your terms",
           "body": "Let your agent see through your phone camera, hear voice notes, track GPS and motion, view a shared screen, or read connected USB, Serial, Bluetooth, and MIDI hardware — only when you allow it.",
-          "tags": ["Camera", "Mic", "GPS & motion", "Screen share", "USB / BLE"]
+          "tags": [
+            "Camera",
+            "Mic",
+            "GPS & motion",
+            "Screen share",
+            "USB / BLE"
+          ]
         },
         {
           "icon": "database",
           "warm": false,
           "title": "Real shared database state",
           "body": "Not ephemeral chat memory — a genuine local-first SQL and event database (Chronolog) synced peer-to-peer across your devices and your agent, so reads and edits keep working even offline.",
-          "tags": ["Shared SQL", "Local-first", "Peer sync", "Offline-ready"]
+          "tags": [
+            "Shared SQL",
+            "Local-first",
+            "Peer sync",
+            "Offline-ready"
+          ]
         },
         {
           "icon": "users",
           "warm": true,
           "title": "Invite others in",
           "body": "Share a private guest invite link — open or locked to a specific email — or a display-only link. Collaborators sign in via GitHub or Google and share the same live dashboard, database, and agent.",
-          "tags": ["Guest invites", "Multi-device", "Display links", "Home Screen"]
+          "tags": [
+            "Guest invites",
+            "Multi-device",
+            "Display links",
+            "Home Screen"
+          ]
         }
       ]
     },
     "how": {
       "eyebrow": "How it works",
-      "title": "From one message to a live connected app.",
-      "lead": "No servers to provision, no app-store review, no auth boilerplate to wire up. Your agent builds the page; you own the keys and invite whoever you want.",
+      "title": "Batteries included and minimal",
+      "lead": "No server provisioning, app-store review, or auth boilerplate. Your agent builds the logic.",
       "steps": [
-        { "title": "Point your agent here", "body": "Give your agent your idea, **{host}**, and the email you’ll use to sign in." },
-        { "title": "It builds & publishes", "body": "Your agent sets up the shared database, builds the browser UI, and publishes a signed release." },
-        { "title": "Open & sign in", "body": "Tap the URL on your phone, laptop, or tablet and log in with GitHub or Google." },
-        { "title": "Talk, invite & evolve", "body": "Share sensors, invite others, and ask your agent to reshape the dashboard anytime." }
+        {
+          "title": "Point your agent here",
+          "body": "Give your agent your idea, **{host}**, and the email you’ll use to sign in."
+        },
+        {
+          "title": "It builds & publishes",
+          "body": "Your agent sets up the shared database, builds the browser UI, and publishes a signed release."
+        },
+        {
+          "title": "Open & sign in",
+          "body": "Tap the URL on your phone, laptop, or tablet and log in with GitHub or Google."
+        },
+        {
+          "title": "Talk, invite & evolve",
+          "body": "Share sensors, invite others, and ask your agent to reshape the dashboard anytime."
+        }
       ],
-      "note": "**How the pieces fit:** Shared data belongs to your app’s **Chronolog** session, saved locally so ordinary reads and edits keep working even offline. Tendriller hosts the signed page and access controls; live agent reactions run whenever your agent’s connected process is active."
+      "piecesTitle": "How the pieces fit",
+      "pieces": [
+        {
+          "icon": "database",
+          "badge": "Local & E2EE",
+          "title": "Your devices (Chronolog)",
+          "body": "Shared data belongs to your app’s **Chronolog** session, stored locally and encrypted end-to-end — ordinary reads and edits keep working even offline."
+        },
+        {
+          "icon": "shield",
+          "badge": "Zero-knowledge host",
+          "title": "Tendriller",
+          "body": "Hosts the signed page, handles sign-in, invites, and peer introductions — with no access to your plaintext data or encryption keys."
+        },
+        {
+          "icon": "bot",
+          "badge": "Live peer",
+          "title": "Your agent",
+          "body": "Connects whenever its local process is active to react to your requests, run native tools, and publish live changes to your page."
+        }
+      ]
     },
     "ideas": {
-      "eyebrow": "What you can make",
-      "title": "Whatever fits the moment.",
-      "lead": "Spin up a quick helper for an afternoon repair or a permanent shared dashboard your family or team keeps on their Home Screen.",
+      "eyebrow": "You could have",
+      "title": "The many fabulous faces of an agent",
+      "lead": "Here are a few ideas:",
       "cta": "Explore cookbooks",
       "items": [
-        { "icon": "utensils", "cat": "Camera · Voice · Invite", "title": "Kitchen companion", "body": "Look inside the fridge with your phone, share a live shopping database with your household, and follow spoken recipe steps hands-free." },
-        { "icon": "database", "cat": "Shared SQL · Team", "title": "Living team tracker", "body": "Invite teammates into a shared SQL dashboard for tasks, inventory, or budgets — and ask your agent to add new views and charts live." },
-        { "icon": "wrench", "cat": "Camera · Diagrams", "title": "Hands-on repair helper", "body": "Point your phone at a bike, car, or wiring job while your agent highlights parts, shows diagrams, and walks through next steps." },
-        { "icon": "map", "cat": "GPS · Photos · Voice", "title": "Shared field notebook", "body": "Collect photos, location pins, and voice memos on a walk while your agent organizes everyone’s observations into a live map and log." },
-        { "icon": "compass", "cat": "Location · Motion", "title": "Outdoor & sports companion", "body": "Build your own custom deck for sailing, cycling, geocaching, or trail checklists driven by live GPS and motion sensors." },
-        { "icon": "cpu", "cat": "BLE · USB · Serial · MIDI", "title": "Workshop instrument", "body": "Connect a Bluetooth, Serial, USB, or MIDI device straight from the browser and let your agent chart and interpret live readings." },
-        { "icon": "devices", "cat": "Phone + Laptop", "title": "Multi-device workspace", "body": "Use your phone as a handheld camera or barcode scanner while your computer displays the full interactive office dashboard." },
-        { "icon": "pen", "cat": "Live canvas · Invite", "title": "Collaborative sketchpad", "body": "Draw, annotate, and vote on ideas with invited guests while your agent reshapes the controls, palettes, and layout in real time." },
-        { "icon": "monitor", "cat": "Screen · Switch", "title": "Screen & accessibility copilot", "body": "Share a window for guided troubleshooting, or wire up a gamepad or assistive switch to trigger custom page actions." }
+        {
+          "icon": "utensils",
+          "cat": "Camera · Voice · Invite",
+          "title": "Kitchen companion",
+          "body": "Look inside the fridge with your phone, share a live shopping database with your household, and follow spoken recipe steps hands-free."
+        },
+        {
+          "icon": "database",
+          "cat": "Shared SQL · Team",
+          "title": "Living team tracker",
+          "body": "Invite teammates into a shared SQL dashboard for tasks, inventory, or budgets — and ask your agent to add new views and charts live."
+        },
+        {
+          "icon": "wrench",
+          "cat": "Camera · Diagrams",
+          "title": "Hands-on repair helper",
+          "body": "Point your phone at a bike, car, or wiring job while your agent highlights parts, shows diagrams, and walks through next steps."
+        },
+        {
+          "icon": "map",
+          "cat": "GPS · Photos · Voice",
+          "title": "Shared field notebook",
+          "body": "Collect photos, location pins, and voice memos on a walk while your agent organizes everyone’s observations into a live map and log."
+        },
+        {
+          "icon": "compass",
+          "cat": "Location · Motion",
+          "title": "Outdoor & sports companion",
+          "body": "Build your own custom deck for sailing, cycling, geocaching, or trail checklists driven by live GPS and motion sensors."
+        },
+        {
+          "icon": "cpu",
+          "cat": "BLE · USB · Serial · MIDI",
+          "title": "Workshop instrument",
+          "body": "Connect a Bluetooth, Serial, USB, or MIDI device straight from the browser and let your agent chart and interpret live readings."
+        },
+        {
+          "icon": "devices",
+          "cat": "Phone + Laptop",
+          "title": "Multi-device workspace",
+          "body": "Use your phone as a handheld camera or barcode scanner while your computer displays the full interactive office dashboard."
+        },
+        {
+          "icon": "pen",
+          "cat": "Live canvas · Invite",
+          "title": "Collaborative sketchpad",
+          "body": "Draw, annotate, and vote on ideas with invited guests while your agent reshapes the controls, palettes, and layout in real time."
+        },
+        {
+          "icon": "monitor",
+          "cat": "Screen · Switch",
+          "title": "Screen & accessibility copilot",
+          "body": "Share a window for guided troubleshooting, or wire up a gamepad or assistive switch to trigger custom page actions."
+        }
       ]
     },
     "access": {
@@ -115,29 +222,74 @@
       "title": "Private by default. Always on your terms.",
       "lead": "Giving your agent a face — and inviting others in — shouldn’t mean handing over your accounts or leaving a mic open behind your back.",
       "items": [
-        { "icon": "shield", "title": "End-to-end encrypted", "body": "All application data, shared database records, and live peer streams are encrypted end-to-end with keys that stay on your devices. Tendriller has zero insight into your content — even when relaying traffic." },
-        { "icon": "lock", "title": "GitHub or Google sign-in", "body": "Your page is private by default and gated by OAuth login. Invited guests sign in with their own account; your agent never sees your credentials." },
-        { "icon": "key", "title": "Revocable agent & guest access", "body": "Agents hold separate scoped keys and guest invites can be locked to an email or revoked anytime from your dashboard." },
-        { "icon": "sliders", "title": "Device-level sensor prompts", "body": "Camera, microphone, location, screen, and hardware access are always requested explicitly on the device where you open the page." }
+        {
+          "icon": "shield",
+          "title": "End-to-end encrypted",
+          "body": "All application data is encrypted end-to-end with keys that stay on your devices. Tendriller has zero insight into your content — even when relaying traffic.",
+          "note": "**Exception**: The hosted MCP server encrypts for you but doesn't store the key. **Mostly not needed.**"
+        },
+        {
+          "icon": "lock",
+          "title": "GitHub or Google sign-in",
+          "body": "Your page is private by default and gated by OAuth login. Invited guests sign in with their own account; your agent never sees your credentials."
+        },
+        {
+          "icon": "key",
+          "title": "Revocable agent & guest access",
+          "body": "Agents hold separate scoped keys and guest invites can be locked to an email or revoked anytime from your dashboard."
+        },
+        {
+          "icon": "sliders",
+          "title": "Device-level sensor prompts",
+          "body": "Camera, microphone, location, screen, and hardware access are always requested explicitly on the device where you open the page."
+        }
       ],
-      "openSourceNote": "**Open source & self-hostable:** Don’t want to trust our hosted server? Every piece of Tendriller is open source on GitHub — inspect the code, run your own instance locally with `npm run dev`, or deploy it on your own Cloudflare account."
+      "openSourceTitle": "Open source & self-hostable",
+      "openSourceNote": "Inspect it, run it locally, or in your own Cloudflare (or compatible)."
     },
     "agentsBand": {
       "eyebrow": "For agents & builders",
       "title": "Machine-readable from the first request.",
       "lead": "Sending an agent here directly? Every guide, platform brief, capability catalog, and discovery endpoint is served as clean Markdown or JSON at this origin.",
       "items": [
-        { "href": "/docs/BUILD_AN_APP.md", "title": "Agent instructions", "body": "Complete walkthrough from page creation to shared SQL/event state, browser enrollment, and signed publication." },
-        { "href": "/docs/CAPABILITIES.md", "title": "Capability map", "body": "Importable UI views, SQL helpers, camera, voice, sensors, and reviewed AI input modules." },
-        { "href": "/agent.md", "title": "Agent quick reference", "body": "Concise agent workflow, data contract, and browser-first delivery rules." },
-        { "href": "/llms.txt", "title": "Documentation index", "body": "Ordered reading list covering architecture, sensors, SQL, invites, and MCP integration." },
-        { "href": "/.well-known/tendriller.json", "title": "Service discovery", "body": "Structured JSON endpoints, readiness checks, and the starter download archive." },
-        { "href": "/agents.md", "title": "Platform guides", "body": "Per-harness Markdown quickstarts for Claude Code, Codex, Meta Muse, OpenClaw, Hermes, and more." }
+        {
+          "href": "/docs/BUILD_AN_APP.md",
+          "title": "Agent instructions",
+          "body": "Complete walkthrough from page creation to shared SQL/event state, browser enrollment, and signed publication."
+        },
+        {
+          "href": "/docs/CAPABILITIES.md",
+          "title": "Capability map",
+          "body": "Importable UI views, SQL helpers, camera, voice, sensors, and reviewed AI input modules."
+        },
+        {
+          "href": "/agent.md",
+          "title": "Agent quick reference",
+          "body": "Concise agent workflow, data contract, and browser-first delivery rules."
+        },
+        {
+          "href": "/llms.txt",
+          "title": "Documentation index",
+          "body": "Ordered reading list covering architecture, sensors, SQL, invites, and MCP integration."
+        },
+        {
+          "href": "/.well-known/tendriller.json",
+          "title": "Service discovery",
+          "body": "Structured JSON endpoints, readiness checks, and the starter download archive."
+        },
+        {
+          "href": "/agents.md",
+          "title": "Platform guides",
+          "body": "Per-harness Markdown quickstarts for Claude Code, Codex, Meta Muse, OpenClaw, Hermes, and more."
+        }
       ]
     },
     "namesake": {
       "lead": "Why Tendriller?",
-      "body": "An agent can extend its tendrils into other devices’ interfaces and sensors. Tendriller makes the opening for each new connection, like a drill."
+      "points": [
+        "An agent can extend its **tendrils** into other devices’ interfaces and sensors.",
+        "Tendriller makes the opening for each new connection, like a **drill**."
+      ]
     }
   },
   "platforms": {

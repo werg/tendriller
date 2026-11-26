@@ -1,5 +1,5 @@
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
-import { bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
+import { admitBrowserSession, bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
 import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
@@ -21,14 +21,27 @@ serveBrowserOwner({
       },
       async openSession({ signal, openDirectConnection }) {
         const device = await openBrowserDevice({ name: profileId, create: true });
-        let session, participation;
+        let session, participation, admission;
         try {
-          const { authority, peers } = await bootstrapBrowser({ configuration, device, signal });
+          const { authority, peers, wrapKey } = await bootstrapBrowser({ configuration, device, signal });
           session = await createApplicationSession({ device, definition, authority });
-          participation = participateApplication(session, { peers, openDirectConnection });
+          admission = admitBrowserSession(session, { peers, wrapKey });
+          participation = participateApplication(session, {
+            peers,
+            openDirectConnection,
+            onNotification: () => void admission.refresh(),
+          });
           Object.defineProperty(session, 'participation', { value: participation });
-          return { session, async close() { await participation.close(); } };
+          return {
+            session,
+            extensions: admission.extensions,
+            async close() {
+              admission.close();
+              await participation.close();
+            },
+          };
         } catch (error) {
+          admission?.close();
           if (session) await session.close();
           else await device.close();
           throw error;

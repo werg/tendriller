@@ -218,3 +218,31 @@ it('retires both endpoints when asynchronous host authorization fails', async ()
   expect((await second.closed).code).toBe(1013);
   expect(second.connection.stats.receivedDescriptions).toBe(0);
 });
+
+it('delivers invitations to the replacement listener even while the previous socket is still half-open', async () => {
+  const { createPeerInvitationListener, PEER_INVITATION_PROTOCOL } = await import('../../contract/invitations.mjs');
+  const h = await create({ listener: false });
+  const peerA = 'a'.repeat(64), peerB = 'b'.repeat(64);
+  const invHeaders = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL };
+  const r1 = await req(`${h.page_url}_tendril/peers/invitations?peerId=${peerA}`, { headers: invHeaders });
+  expect(r1.status).toBe(101);
+  const ws1 = r1.webSocket!;
+  (ws1 as unknown as { accept(opts?: { allowHalfOpen?: boolean }): void }).accept({ allowHalfOpen: true });
+  const r2 = await req(`${h.page_url}_tendril/peers/invitations?peerId=${peerA}`, { headers: invHeaders });
+  expect(r2.status).toBe(101);
+  const ws2 = r2.webSocket!;
+  const listener2 = createPeerInvitationListener(ws2, peerA);
+  ws2.accept();
+  await listener2.ready;
+  const inviteRes = await api(h, 'POST', 'peers/invite', { peerId: peerA, channel: 'join:after-reload', requesterPeerId: peerB });
+  expect(inviteRes.status).toBe(200);
+  const iter = listener2.invitations[Symbol.asyncIterator]();
+  const next = await Promise.race([
+    iter.next(),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('INVITATION_DELIVERED_TO_STALE_SOCKET')), 1500)),
+  ]);
+  expect(next.done).toBe(false);
+  expect(next.value).toEqual({ channel: 'join:after-reload', requesterPeerId: peerB });
+  listener2.close();
+  ws1.close();
+});
