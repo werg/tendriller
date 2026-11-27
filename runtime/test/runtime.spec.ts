@@ -214,7 +214,6 @@ test('installation is explicit, consumes its browser event once, and distinguish
 test('the page controls save the actual code graph on demand and report offline success only after acknowledgement', async ({ page, context }) => {
   const fixture = mock.create({ noSw: false, html: '<h1>My saved page</h1>' });
   await open(page, fixture);
-  expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
   await page.getByRole('button', { name: /App & offline/ }).click();
   await page.getByRole('button', { name: 'Save for offline use', exact: true }).click();

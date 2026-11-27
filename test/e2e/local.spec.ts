@@ -139,8 +139,8 @@ test('nested live documents containing _publications stay live and pinned docume
     expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
     await publishFiles(handle, files('nested three'));
     await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable)).toBe(true);
-    await expect(page.getByRole('link', { name: 'Open update', exact: true })).toHaveAttribute('href', live);
-    await page.getByRole('link', { name: 'Open update', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Update now', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Update now', exact: true }).click();
     await expect(page.locator('#release')).toHaveText('nested three'); expect(page.url()).toBe(live);
     await page.goto(pinned); await expect(page.locator('#release')).toHaveText('nested one');
     await page.evaluate(() => (window as any).tendril.publication.update());
@@ -207,20 +207,24 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     expect(rendered.width).toBeGreaterThan(0);
     expect(rendered.height).toBe(rendered.width);
     // Android installs ignore SVG icons. The owner's page draws the emoji into
-    // 512px PNGs once; the manifest then lists them first.
+    // 512px and 192px PNGs once; the manifest then lists cookieless PNGs first.
     await expect.poll(async () => {
       const current = await cdp.send('Page.getAppManifest');
       return current.errors.length === 0 ? JSON.parse(current.data!).icons.map((icon: { type: string; purpose: string; sizes: string }) => `${icon.type} ${icon.purpose} ${icon.sizes}`) : current.errors;
-    }, { timeout: 15_000 }).toEqual(['image/png any 512x512', 'image/png maskable 512x512', 'image/svg+xml any any', 'image/svg+xml maskable any']);
-    const emojiIcons = JSON.parse((await cdp.send('Page.getAppManifest')).data!).icons as { src: string }[];
-    expect(emojiIcons.slice(2)).toEqual([{ src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }, maskableIcon]);
-    for (const icon of emojiIcons.slice(0, 2)) {
+    }, { timeout: 15_000 }).toEqual(['image/png any 512x512', 'image/png maskable 512x512', 'image/png any 192x192', 'image/svg+xml any any', 'image/svg+xml maskable any']);
+    const emojiIcons = JSON.parse((await cdp.send('Page.getAppManifest')).data!).icons as { src: string; sizes: string; type: string; purpose: string }[];
+    expect(emojiIcons.slice(3)).toEqual([
+      { src: expect.stringMatching(/^\/_tendril\/icon-blob\/.*\/icon\.svg$/), sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+      { src: expect.stringMatching(/^\/_tendril\/icon-blob\/.*\/icon-maskable\.svg$/), sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
+    ]);
+    for (const [idx, expectedPx] of [[0, 512], [1, 512], [2, 192]] as const) {
+      const icon = emojiIcons[idx]!;
       const size = await page.evaluate(async url => {
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await fetch(url, { cache: 'no-store', credentials: 'omit' });
         const image = new Image(); image.src = URL.createObjectURL(await response.blob()); await image.decode();
         return { type: response.headers.get('Content-Type'), width: image.naturalWidth, height: image.naturalHeight };
       }, icon.src);
-      expect(size).toEqual({ type: 'image/png', width: 512, height: 512 });
+      expect(size).toEqual({ type: 'image/png', width: expectedPx, height: expectedPx });
     }
     // iOS reads apple-touch-icon, not the manifest: the opaque drawn PNG.
     await page.reload();
@@ -255,7 +259,7 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     await page.goto(new URL(manifest.start_url, result.url).href);
     await expect(page.getByRole('heading', { name: 'Latest version', exact: true })).toBeVisible();
 
-    // Each signed raster must pass Chromium's icon evaluator on its own.
+    // Each signed raster must pass Chromium's icon evaluator on its own via cookieless icon-blob.
     for (const format of ['png', 'webp']) {
       const customIcon = new URL(`custom.${format}`, page.url()).href;
       expect((await agent(handle, '', 'PATCH', { icon: customIcon })).status).toBe(200);
@@ -263,10 +267,13 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       await expect(favicon).toHaveAttribute('href', customIcon);
       await expect(favicon).toHaveAttribute('type', `image/${format}`);
       const branded = await cdp.send('Page.getAppManifest');
-      // The published icon's real size, so Android uses it instead of drawing a letter.
-      expect(JSON.parse(branded.data!).icons).toEqual([
-        { src: customIcon, sizes: '192x192', type: `image/${format}`, purpose: 'any' },
+      // The published icon's real size, served cookieless so Android WebAPK / Firefox installers fetch it cleanly.
+      const brandedIcons = JSON.parse(branded.data!).icons as { src: string; sizes: string; type: string; purpose: string }[];
+      expect(brandedIcons).toEqual([
+        { src: expect.stringMatching(/^\/_tendril\/icon-blob\/.*\/authored$/), sizes: '192x192', type: `image/${format}`, purpose: 'any' },
       ]);
+      const cookielessStatus = await page.evaluate(async url => (await fetch(url, { credentials: 'omit', cache: 'no-store' })).status, brandedIcons[0]!.src);
+      expect(cookielessStatus).toBe(200);
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
       // iOS can use PNG; non-PNG custom favicons omit the generic Tendriller apple-touch-icon
@@ -409,7 +416,7 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       import { bootstrapBrowser } from './docs/tutorial/shared/helpers/browser-bootstrap.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
       import { createSigningIdentity, exportSigningIdentity, importSigningIdentity, decodeRecord } from '@chronolog/authority';
-      import { decodeLogGenesis } from '@chronolog/peer-session';
+      import { createWrapKeyPair, decodeLogGenesis } from '@chronolog/peer-session';
       const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view', identityKey=profileId+':identity', storeKey=profileId+':store:';
       const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);
@@ -418,6 +425,7 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       const saved=localStorage.getItem(identityKey);
       const identity=saved?await importSigningIdentity(JSON.parse(saved)):await createSigningIdentity();
       if(!saved)localStorage.setItem(identityKey,JSON.stringify(await exportSigningIdentity(identity)));
+      const wrapKey=await createWrapKeyPair();
       const store={
         async get(key){const value=localStorage.getItem(storeKey+key);return value===null?null:Uint8Array.from(atob(value),c=>c.charCodeAt(0));},
         async put(key,bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000));localStorage.setItem(storeKey+key,btoa(s));},
@@ -426,7 +434,7 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       input.addEventListener('input',()=>view.writeDraft(input.value,'draft'));
       document.querySelector('button').onclick=async()=>{
         try{
-          await bootstrapBrowser({configuration,device:{identity,store},imports:{},topics:{},signal:AbortSignal.timeout(20_000)});
+          await bootstrapBrowser({configuration,device:{identity,wrapKey,store},imports:{},topics:{},signal:AbortSignal.timeout(20_000)});
         }
         catch{document.querySelector('#enrollment').textContent='Initialization unavailable; original genesis retained';}
       };
@@ -471,8 +479,8 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
     await expect(page.getByRole('textbox')).toHaveValue(before.draft);expect(page.url()).toBe(pinned);
     expect(await page.evaluate(()=>(window as any).fixture.snapshot())).toEqual(before);
     expect(requests.slice(quietBaseline)).toEqual([]);expect(sentFrames).toBe(0);
-    const update=page.getByRole('link',{name:'Open update',exact:true});
-    await expect(update).toHaveAttribute('href',localPageUrl(handle));
+    const update=page.getByRole('button',{name:'Update now',exact:true});
+    await expect(update).toBeVisible();
     await update.click();await expect(page.getByRole('heading',{name:'Repaired v2'})).toBeVisible();
     await expect(page.getByRole('textbox')).toHaveValue(before.draft);
     // The resumed document keeps the same device and original genesis; no update retries initialization or replaces it.

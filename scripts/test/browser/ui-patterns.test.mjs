@@ -80,7 +80,7 @@ test('connection colors inherit before mounting and remain readable across state
           });
           assert.equal(await card.locator('.tc-spinner').isVisible(), false);
           assert.equal(await action.isVisible(), true);
-          assert.equal(await card.locator('details').evaluate(element => getComputedStyle(element).color), rgb(expected.muted));
+          assert.equal(await card.locator('.tc-code').evaluate(element => getComputedStyle(element).color), rgb(expected.muted));
           assert.equal(await card.evaluate(element => getComputedStyle(element).backgroundColor), rgb(expected.bg));
           assert.equal(await action.evaluate(element => getComputedStyle(element).backgroundColor), rgb(expected.accent));
           assert.equal(await action.evaluate(element => getComputedStyle(element).color), rgb(expected['accent-fg']));
