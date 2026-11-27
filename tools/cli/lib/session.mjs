@@ -200,9 +200,9 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       if (options.operation === undefined) throw error;
       // An explicitly retained identity can still retry with the complete original bytes.
     }
-    const currentFiles = currentHead?.release?.files ?? currentHead?.publication?.payload?.files ?? [];
-    const currentId = currentHead?.opId ?? currentHead?.publication?.id ?? null;
-    const currentRevision = currentHead?.revision ?? currentHead?.publication?.payload?.revision ?? -1;
+    const currentFiles = currentHead?.release?.files ?? [];
+    const currentId = currentHead?.opId ?? null;
+    const currentRevision = currentHead?.revision ?? -1;
     const knownHashes = new Set(currentFiles.map(file => `${file.hash}:${file.size}`));
     const operationId = options.operation ?? (() => {
       const digest = createHash('sha256').update(JSON.stringify({
@@ -238,11 +238,12 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       } catch { /* Never fail a committed publish if blob retention is unavailable. */ }
       return receipt;
     } catch (error) {
-      const receiptId = error.receipt?.opId ?? error.receipt?.publication?.id ?? null;
-      const publicationId = publication?.opId ?? publication?.id ?? null;
+      const receiptId = error.receipt?.opId ?? null;
+      const publicationId = error.publicationId ?? publication?.opId ?? receiptId ?? null;
       const committed = error.outcome === 'committed' && receiptId !== null && (publicationId === null || receiptId === publicationId);
-      error.publication = { operationId: publication?.payload?.operationId ?? operationId,
-        ...(publication?.payload?.operationId && publication.payload.operationId !== operationId ? { localOperationId: operationId } : {}),
+      const effectiveOperationId = error.operationId ?? publication?.operationId ?? operationId;
+      error.publication = { operationId: effectiveOperationId,
+        ...(effectiveOperationId !== operationId ? { localOperationId: operationId } : {}),
         publicationId,
         outcome: committed ? 'committed' : publication ? 'unknown' : 'not_submitted',
         phase: error.phase ?? (publication ? 'submission' : 'preparation'),

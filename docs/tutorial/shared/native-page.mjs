@@ -35,14 +35,14 @@ export function publicationControl(context, definition) {
         return saved.op;
       }
       const metadata = await context.host.peers.application();
-      const targetChainId = metadata.genesis
+      const targetLogId = metadata.genesis
         ? bytesToHex(genesisLogId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
         : metadata.selection.id;
       const previous = await context.host.peers.publication();
       const { signOperationCore } = await import('@chronolog/peer-session/kernel');
       const signed = await signOperationCore({
         version: 1,
-        logId: hexToBytes(targetChainId),
+        logId: hexToBytes(targetLogId),
         author: hexToBytes(context.signer.publicKey),
         operationId,
         authorTimestampMs: BigInt(Date.now()),

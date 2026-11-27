@@ -21,18 +21,20 @@ test('publish skips already-published asset hashes, derives deterministic operat
     const control = {
       async publication() {
         return {
-          publication: {
-            id: 'pub-prev-3',
-            payload: {
-              revision: 3,
-              files: [{ path: 'app.mjs', hash: appHash, size: Buffer.byteLength(appMjs), type: 'text/javascript; charset=utf-8' }],
-            },
+          opId: 'pub-prev-3',
+          revision: 3,
+          version: 4,
+          release: {
+            revision: 3,
+            opId: 'pub-prev-3',
+            files: [{ path: 'app.mjs', hash: appHash, size: Buffer.byteLength(appMjs), type: 'text/javascript; charset=utf-8' }],
           },
+          finalized: false,
         };
       },
       async preparePublication(input) {
         prepared.push(input);
-        return { id: 'pub-next-4', operationId: input.operationId, payload: input };
+        return { opId: 'pub-next-4', operationId: input.operationId, record: '00' };
       },
       async publish(pub, assets) {
         calls.push({ pub, assets });
@@ -67,7 +69,7 @@ test('automatic publication identity never treats a failed head read as an empty
     const unavailable = Object.assign(Error('Head unavailable'), { code: 'TIMEOUT' });
     const control = {
       publication: async () => { throw unavailable; },
-      preparePublication: async input => { prepared++; return { id: 'signed', payload: input }; },
+      preparePublication: async input => { prepared++; return { opId: 'signed', operationId: input.operationId, record: '00' }; },
       publish: async (_publication, assets) => ({ uploaded: assets.length }),
     };
     await assert.rejects(runSessionCommand({ session: {}, control }, 'publish', [dir], {}), error => error === unavailable);

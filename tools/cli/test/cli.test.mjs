@@ -51,7 +51,7 @@ test('CLI reports a completed publication even when local ownership cleanup fail
   const root = await mkdtemp(join(tmpdir(), 'tendril-published-')), path = join(root, 'session.mjs');
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, 'index.html'), '<main>published</main>');
-  await writeFile(path, `export async function attach(){return {session:{},control:{preparePublication:async()=>({id:'signed',payload:{operationId:'original'}}),publish:async publication=>({publication,version:1})},detach(){throw Error('local cleanup failed')}}}`);
+  await writeFile(path, `export async function attach(){return {session:{},control:{preparePublication:async()=>({opId:'signed',operationId:'original',record:'00'}),publish:async publication=>({opId:publication.opId,revision:0,version:1,release:{revision:0,opId:publication.opId},finalized:false})},detach(){throw Error('local cleanup failed')}}}`);
   await assert.rejects(run(process.execPath, [runner, '--fixture', path, '--page', 'notes', 'publish', root, '--operation', 'original']), error => {
     const result = JSON.parse(error.stderr);
     return error.stdout === '' && result.publication.outcome === 'committed' && result.publication.operationId === 'original'

@@ -14,7 +14,7 @@
 > Chronolog `docs/CRDT_CONTRACT.md`.
 
 
-**Repositories:** `werg/tendriller`, `werg/chronolog-db`, `werg/tendriller-contrib`  
+**Repositories:** `werg/tendriller`, `werg/chronolog`, `werg/tendriller-contrib`  
 **Specification Date:** 21 November 2026  
 **Architecture Alignment:** Built as one piece around **`chronolog-db` (`@chronolog/peer-session`) as the central pipe**, keeping Tendriller's Worker host application-neutral (zero `node:*` imports) and basic `@tendriller/runtime` / `@tendriller/tools` decoupled from `@chronolog/*`.
 
@@ -41,7 +41,7 @@ Automate all routine locking, attachment, recovery, and coordination so ordinary
 
 Repository state references inherit static inspection at:
 - `werg/tendriller` @ `d5cb056ebc38431d485d1ca73a24e5574ba583ee`
-- `werg/chronolog-db` @ `9eee773ab557da91ff4b54dd66727d761cc7246d`
+- `werg/chronolog` @ `9eee773ab557da91ff4b54dd66727d761cc7246d`
 - `werg/tendriller-contrib` @ `851a11bf0c764a47b73e7ab4007768de9bdb4c1a`
 
 Throughout this plan, **Current Baseline**, **Mandatory Deliverable**, and **Live Qualification Target** are marked distinctly. Every static assumption is converted into an executable contract and automated test—nothing remains an unverified claim at release.

@@ -4,8 +4,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reviewInstallArguments, verifyInstalledReviewPackages } from '../review/packages.mjs';
+import { CORE_RELEASE } from '../../contract/index.mjs';
 
-const composition = { build: { coreRelease: '0.3.0-rc.17', runtimeId: 'f'.repeat(64) },
+const composition = { build: { coreRelease: CORE_RELEASE, runtimeId: 'f'.repeat(64) },
   packagePaths: { sdk: '/dist/sdk.tgz', tools: '/dist/tools.tgz', authority: '/dist/authority.tgz', session: '/dist/session.tgz' },
   session: { sourceCommit: 'c'.repeat(40), sourceTree: 'd'.repeat(40) } };
 
@@ -36,7 +37,7 @@ function installed(t, overrides = {}) {
 test('installed authority and session must both come from the qualified clean Chronolog checkpoint', t => {
   assert.deepEqual(verifyInstalledReviewPackages(installed(t), composition), {
     authority: { source: 'c'.repeat(40), sourceTree: 'd'.repeat(40) }, 'peer-session': { source: 'c'.repeat(40), sourceTree: 'd'.repeat(40) },
-    tools: { version: '0.3.0-rc.17', runtime: 'f'.repeat(64) } });
+    tools: { version: CORE_RELEASE, runtime: 'f'.repeat(64) } });
   assert.throws(() => verifyInstalledReviewPackages(installed(t, { authority: { source: 'e'.repeat(40) } }), composition), /authority source differs/);
   assert.throws(() => verifyInstalledReviewPackages(installed(t, { 'peer-session': { sourceTree: 'e'.repeat(40) } }), composition), /peer-session source tree differs/);
   assert.throws(() => verifyInstalledReviewPackages(installed(t, { authority: { dirty: true } }), composition), /authority must come from a clean checkpoint/);

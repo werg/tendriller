@@ -449,10 +449,10 @@ export async function main(argv, { attach } = {}) {
       if (!(error instanceof Error) || !Object.isExtensible(error)) error = new Error('Session watch failed', { cause: error });
       error.watch ??= completedResult ?? { mode: watchOptions.events ? 'events' : 'changes', cursor: watchOptions.cursor ?? null, revision: null };
     }
-    if (cmd === 'publish' && completedResult?.publication?.id && Number.isSafeInteger(completedResult.version)) {
-      error.publication = { operationId: flags.operation, publicationId: completedResult.publication.id,
+    if (cmd === 'publish' && completedResult?.opId && Number.isSafeInteger(completedResult.version)) {
+      error.publication = { operationId: flags.operation, publicationId: completedResult.opId,
         outcome: 'committed', phase: 'cleanup',
-        receipt: { publicationId: completedResult.publication.id, version: completedResult.version },
+        receipt: { publicationId: completedResult.opId, version: completedResult.version },
         nextAction: 'Publication completed before this local failure. Preserve the same operation and device; inspect publication after reopening instead of creating a replacement release.' };
     }
     throw error;

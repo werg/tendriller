@@ -42,6 +42,7 @@ import { probeCapabilities, detectProxyEnvironment } from '../../contract/transp
 import { acquireAtomicLock, resolveUnixSocketPath, resolveWindowsPipePath } from '../../session/ipc.mjs';
 import { connectOrStartNativeSession } from '../../session/native.mjs';
 import { buildCompositionV2, COMPOSITION_V2_PROFILES } from '../release-composition.mjs';
+import { CORE_RELEASE } from '../../contract/index.mjs';
 import { exportSourceHandoff } from '../../tools/cli/lib/handoff.mjs';
 import { createServerlessHostAdapter } from '../../contract/serverless.mjs';
 import { handleStdioMcpMessage } from '../../tools/cli/lib/mcp-stdio.mjs';
@@ -144,7 +145,7 @@ test('standalone zero-dependency bootstrapper probes, extracts nondestructively,
 test('composition v2 supports all four explicit profiles including relay-only', () => {
   assert.deepEqual(Object.keys(COMPOSITION_V2_PROFILES).sort(), ['events-full', 'events-relay-only', 'sql-full', 'sql-portable-relay-only']);
   const comp = buildCompositionV2({
-    version: '0.3.0-rc.17',
+    version: CORE_RELEASE,
     contract: 3,
     runtime: 'a'.repeat(64),
     core: { repository: 'werg/tendriller', source: 'b'.repeat(40), sourceTree: 'c'.repeat(40), dirty: false },

@@ -88,7 +88,7 @@ function buildAuthorityTopic(authority, identity, wrapKey) {
           admission: null,
         },
       },
-      privateChainDefault: true,
+      privateLogDefault: true,
     };
   }
   if (authority.mode === 'open') {
@@ -104,7 +104,7 @@ function buildAuthorityTopic(authority, identity, wrapKey) {
           admission: null,
         },
       },
-      privateChainDefault: false,
+      privateLogDefault: false,
     };
   }
   throw failure('AUTHORITY_MODE_INVALID', 'Choose authority mode attested, multisig, or open.');
@@ -128,7 +128,7 @@ export async function createPageGenesis({
   const resolvedTopics = builtAuthority && !(topics && Object.hasOwn(topics, '$permissions'))
     ? { ...(topics ?? {}), $permissions: builtAuthority.topic }
     : topics;
-  const resolvedPrivateChain = privateLog ?? builtAuthority?.privateChainDefault ?? true;
+  const resolvedPrivateLog = privateLog ?? builtAuthority?.privateLogDefault ?? true;
   const customPerms = Boolean(resolvedTopics && Object.hasOwn(resolvedTopics, '$permissions'));
   const hostAttested = admission !== null && !customPerms;
   if (hostAttested && !HEX.test(hostKey ?? '')) {
@@ -145,7 +145,7 @@ export async function createPageGenesis({
       publisher: true,
       finalizer: true,
     },
-    privateLog: resolvedPrivateChain,
+    privateLog: resolvedPrivateLog,
     ...(hostAttested ? { hostPublicKey: hostKey } : {}),
     imports,
     topics: resolvedTopics,

@@ -925,9 +925,9 @@ async function initializeGenesis(
     throw new HttpError(403, 'owner_required');
   }
 
-  // Host-attested admission is OPT-IN: enforce hostKey & admissionAccounts when the chain
+  // Host-attested admission is OPT-IN: enforce hostKey & admissionAccounts when the log
   // declares an admission policy, while allowing non-host-attested authority models (admission: null)
-  // such as multisig or open-write chains without host coupling!
+  // such as multisig or open-write logs without host coupling!
   const admission = state.permissions.admission;
   if (admission !== null) {
     const hostKey = hostAttestationKey(t.env);

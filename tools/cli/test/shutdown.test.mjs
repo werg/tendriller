@@ -49,8 +49,8 @@ export async function attach({ signal, page }) {
       await new Promise((resolve,reject) => { if(signal.aborted) reject(signal.reason); else signal.addEventListener('abort',()=>reject(signal.reason),{once:true}); });
     }
   }, control: {
-    preparePublication:async ({operationId})=>{await record({prepare:operationId});return {id:'signed-publication'};},
-    publish:async ()=>{await record({publish:'signed-publication'});if(process.env.COMMITTED)return {publication:{id:'signed-publication'},version:7};throw lost();}
+    preparePublication:async ({operationId})=>{await record({prepare:operationId});return {opId:'signed-publication',operationId,record:'00'};},
+    publish:async ()=>{await record({publish:'signed-publication'});if(process.env.COMMITTED)return {opId:'signed-publication',revision:6,version:7,finalized:false};throw lost();}
   }, async detach() {
     await delay(60); socket.close(1000);
     await writeFile(${JSON.stringify(cleanup)}, JSON.stringify({finished:true,readyState:socket.readyState}));
