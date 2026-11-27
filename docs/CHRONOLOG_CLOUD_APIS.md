@@ -132,6 +132,19 @@ policy choices, all governed by Chronolog:
 | Admission cutover | Once activation is acknowledged, new work uses the new release; work already admitted under the old release may finish under the declared policy. |
 | Strict effect cutover | Stop new old-version admissions, drain or reconcile old in-flight effects, then activate the next release and reject stale execution authority. |
 
+The basic cutover contract is a policy check. Before accepting each interaction,
+read the accepted Chronolog policy, selected release, and activation from one
+coherent view. Reject an interaction if that state no longer permits its actor,
+operation, or requested version. Do not silently execute the request on a newer
+version. If the executor cannot establish the required finality, dependencies,
+deployment readiness, or freshness, refuse execution as unavailable rather than
+authorize from an old cache. The executor acknowledges when a finalized change
+has been installed; that acknowledgment defines the service's cutover boundary.
+
+This admission rule does not require serializing every invocation or draining
+external effects. Those are stronger optional contracts. Long-running jobs that
+perform later protected interactions must pass the rule again at those boundaries.
+
 Historical execution always uses **current authorization**. An old code version
 must not restore an old membership list, expired connection grant, or revoked
 role. Enforce authorization in the current trusted gateway/broker outside the
@@ -263,18 +276,71 @@ effectiveness at the executing service's acknowledgment and fence subsequent
 work; leases bound exposure during disconnection. For strict monotonic deployment
 or irreversible ordered effects, choose a stable finalized activation/intent
 policy and refuse execution when its freshness cannot be established. Finality
-stabilizes the selected history under its trust model; it does not discover
+must stabilize the selected history under its trust model; it does not discover
 offline operations. The host's current standard permission summary is not a
 finalized permission view.
+
+### Reuse and harden Chronolog's existing finality
+
+Chronolog already provides a `$finality` schedule, checkpoint signing and
+verification, policy handoff checks, and coherent
+[`readView({ view: 'final' })`](https://github.com/werg/chronolog/blob/9df55f0358482a71308cf3b1f235429d66b39a3b/packages/peer-session/src/session.ts)
+reads. Its policies include no finality, a single `signed-frontier` signer, a
+`fixed-validator` threshold, and a `blockchain-anchor` verification hook. The
+threshold verifier is not a complete distributed finalizer service, and the
+blockchain hook needs an external verifier. A final-view label alone is not proof
+that an active policy has supplied a usable checkpoint.
+
+The current finality domain is the entire log. `policyScopeId` identifies a
+scheduled finalizer policy, not an independently finalizable topic. Closing a
+page log also excludes previously unseen offline application operations at or
+before its closed frontier. An API-access topic in that same log does not avoid
+this tradeoff. If ordinary page editing must keep its existing offline semantics,
+use an explicitly bound Chronolog control log for API policy/releases, or extend
+Chronolog with independent finality domains and their cross-topic dependency
+rules. Such a control log is itself the governed authority, not a mirrored server
+ACL. Its binding and any changes to it require explicit trusted governance.
+
+Tendriller already has an opt-in
+[`notarizeBlindFrontier`](../server/src/authority.ts) implementation. A page must
+select the host's signer in its own `$finality` schedule. This is a useful initial
+trust model for hosted execution: the host certifies inclusion/closure without
+choosing Chronolog's canonical order or acquiring private application keys.
+
+**Strict closed-history semantics still need hardening at the pinned version.**
+The shared [`verifyFinalityV2`](https://github.com/werg/chronolog/blob/9df55f0358482a71308cf3b1f235429d66b39a3b/packages/authority/src/finality-v2.ts)
+unions included IDs from later checkpoints and reports certain equivocations
+without rejecting them itself. A signed checkpoint closing time 100 with A at
+time 50 can be followed by one closing time 200 with A plus a previously omitted
+B at time 60. The current verifier changes B from excluded to included and
+reports no equivocation. This was reproduced against the installed pinned
+package. The blind notary's collection path also adds late stored operations
+without excluding that previously closed time range. The session's own checkpoint
+producer filters known excluded operations, but that producer behavior does not
+protect consumers from a received checkpoint that backfills closed history.
+
+Before claiming irreversible API cutover, enforce the closure invariant in
+vanilla Chronolog's verifier and all checkpoint producers: once a frontier is
+closed, a later checkpoint cannot add, drop, or change an inclusion within that
+closed range. Qualify this across policy handoffs, restart, and conflicting
+checkpoints. The executor must reject conflicting evidence, retain its accepted
+checkpoint across recovery, verify the required materialization dependencies,
+and prevent an old valid checkpoint from rolling back installed authority.
+Fresh synchronization or a bounded lease remains necessary to detect that newer
+finalized policy exists. This extends existing machinery; it does not require
+introducing a new ordering authority or selecting a blockchain for the product.
 
 ## Implementation sequence
 
 1. Define and test a reusable vanilla Chronolog API definition/access/release
    model, with explicit actor, resource, time, revision, and finality semantics.
-   Harden scoped admission and governance before relying on the built-in scopes.
+   Harden scoped admission/governance and closed-frontier verification before
+   relying on built-in scopes or irreversible finalized activation.
 2. Build an admitted participant/controller over ordinary application topics,
    retaining code and state completely enough to recover while peers are offline.
-   Support current-only and explicitly allowed historical releases.
+   Choose whole-log finality deliberately, or bind a separate Chronolog control
+   log when page editing must remain provisional/offline. Support current-only
+   and explicitly allowed historical releases.
 3. Add staged deployment, readiness receipts, idempotent reconciliation, and
    invocation/effect fencing; test concurrent promotions, rollback, stale workers,
    delayed revocations, and uncertain provider outcomes without weakening gates.
