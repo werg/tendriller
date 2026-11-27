@@ -307,7 +307,11 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
   const release = () => {
     stop(); ++loadEpoch; loading = null; model?.dispose(); model = null;
     report("idle", enabled ? "Neural voice will reload from cache for the next reply." : "Using the browser voice.");
-    if (context) void context.close().catch(() => {});
+    if (context) {
+      const closing = context;
+      context = null;
+      void closing.close().catch(() => {});
+    }
   };
   window.addEventListener("pagehide", release);
   return api;

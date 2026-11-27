@@ -29,6 +29,7 @@ if [[ "$voice_ci_ready" != "true" ]]; then
 fi
 
 voice_ci_sink=tendriller-ci
+pactl unload-module module-suspend-on-idle >/dev/null 2>&1 || true
 if ! pactl list short sinks | awk -v sink="$voice_ci_sink" '$2 == sink { found = 1 } END { exit !found }'; then
   pactl load-module module-null-sink sink_name="$voice_ci_sink" rate=48000 channels=2
 fi

@@ -90,7 +90,13 @@ jobs:
       # Cache hits are still SHA-256 verified; an unavailable download fails the
       # job instead of turning a missing real-model check into a passing skip.
       - run: node scripts/e2e-speech-assets.mjs
-      - run: npx playwright install --with-deps chromium firefox
+      - name: Install Playwright browsers and Linux audio output
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list* /etc/apt/sources.list.d/microsoft-prod.sources*
+          npx playwright install --with-deps chromium firefox
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
+          bash scripts/start-ci-audio.sh
       - name: Verify real bundled voice generation (TTS) in Chromium and Firefox
         run: npm run build && npm run test:tts
       - name: Verify real pinned voice recognition (ASR) and wake word in Chromium and Firefox

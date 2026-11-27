@@ -47,6 +47,7 @@ jobs:
         run: |
           SESSION_ARCHIVE="$PWD/dist/$(node -p "require('./dist/manifest.json').artifacts.find(a => a.role === 'session').file")"
           npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$SESSION_ARCHIVE"
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list* /etc/apt/sources.list.d/microsoft-prod.sources*
           node node_modules/@playwright/test/cli.js install --with-deps chromium
       - name: Qualify the exact browser SQL first-app kit (zero native build)
         working-directory: core

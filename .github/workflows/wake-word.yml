@@ -46,9 +46,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npx playwright install --with-deps chromium firefox webkit
-      - name: Start Linux audio output for real Web Audio tests
+      - name: Install Playwright browsers and Linux audio output
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list* /etc/apt/sources.list.d/microsoft-prod.sources*
+          npx playwright install --with-deps chromium firefox webkit
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
           bash scripts/start-ci-audio.sh

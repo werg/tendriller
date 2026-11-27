@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
-  testDir: ".", testMatch: "tts.spec.ts", workers: 2, timeout: 45_000,
+  testDir: ".", testMatch: "tts.spec.ts", fullyParallel: false, workers: 1, timeout: 45_000,
   outputDir: "../../../test-results/tts",
   use: { headless: true, trace: "retain-on-failure", screenshot: "only-on-failure" },
   projects: [
@@ -17,7 +17,15 @@ export default defineConfig({
     },
     {
       name: "firefox",
-      use: { ...devices["Desktop Firefox"] },
+      use: {
+        ...devices["Desktop Firefox"],
+        launchOptions: {
+          firefoxUserPrefs: {
+            "media.autoplay.default": 0,
+            "media.autoplay.blocking_policy": 0,
+          },
+        },
+      },
     },
   ],
 });

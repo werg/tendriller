@@ -53,6 +53,8 @@ async function open(page: Page) {
     AudioBufferSourceNode.prototype.start = function(...args: any[]) { w.starts++; return start.apply(this, args as any); };
     const stop = AudioBufferSourceNode.prototype.stop;
     AudioBufferSourceNode.prototype.stop = function(...args: any[]) { w.stops++; return stop.apply(this, args as any); };
+    const resume = AudioContext.prototype.resume;
+    AudioContext.prototype.resume = function(...args: any[]) { w.lastAudioContext = this; return resume.apply(this, args as any); };
   });
   await page.route("http://localhost:7789/**", route => {
     if (route.request().url().endsWith("/runtime/tts/index.js")) return route.fulfill({body:module, contentType:"text/javascript"});
@@ -163,6 +165,7 @@ test("autoplay rejection preserves a prepared model and recovers after interacti
 
 test("a stalled synthesis falls back instead of blocking later replies", async ({page}) => {
   await open(page); await page.evaluate(async () => (window as any).tts.enable());
+  await page.waitForFunction(() => (window as any).lastAudioContext?.state === 'running');
   await page.clock.install();
   await page.evaluate(() => { const w=window as any; w.tts.speak('stall'); w.tts.speak('next'); });
   await page.waitForFunction(() => !!(window as any).releaseStall);
