@@ -26,20 +26,21 @@ const pageAgent = object({
   is_primary: { type: 'boolean' },
   granted_at: integer,
 }, ['id', 'handle', 'bio', 'public_key', 'kind', 'is_primary'], true);
+const pageSubdomain = { type: 'string', minLength: 3, maxLength: 45, pattern: '^[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])$' };
 export const schemas = Object.freeze({
   agentRegistration: object({ owner: email, handle: agentHandle, bio: agentBio, publicKey, wrapKey: hexKey }, ['owner', 'handle', 'publicKey', 'wrapKey']),
   agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, handle: agentHandle, bio: agentBio, publicKey, wrapKey: hexKey }, ['code', 'handle', 'publicKey', 'wrapKey']),
   agentProfileUpdate: object({ handle: agentHandle, bio: agentBio }, []),
   agentCredential: object({ id: agentId, handle: agentHandle, bio: agentBio, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
     account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'handle', 'token'], true),
-  agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 }, mode: { enum: ['interactive', 'dashboard'] }, application }),
+  agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 }, mode: { enum: ['interactive', 'dashboard'] }, application, subdomain: pageSubdomain }),
   pageAgent,
   pageAgentRoster: object({
     primary_agent_id: nullable(string),
     agents: { type: 'array', maxItems: 64, items: { $ref: '#/$defs/pageAgent' } },
   }, ['primary_agent_id', 'agents'], true),
   // A listed page whose details are momentarily unavailable has null name, page_url and application.
-  agentPage: object({ id: pageId, name: nullable(string), page_url: nullable(string), scopes: { type: 'array', items: string, maxItems: 16 },
+  agentPage: object({ id: pageId, name: nullable(string), subdomain: nullable(pageSubdomain), page_url: nullable(string), bare_url: nullable(string), fallback_page_url: nullable(string), scopes: { type: 'array', items: string, maxItems: 16 },
     application: { anyOf: [application, { type: 'null' }] }, lifetime: string,
     primary_agent_id: nullable(string), is_primary: { type: 'boolean' },
     agents: { type: 'array', maxItems: 64, items: { $ref: '#/$defs/pageAgent' } } }, ['id', 'page_url', 'application'], true),

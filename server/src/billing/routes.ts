@@ -6,7 +6,8 @@ import type { Env } from "../env";
 import { errorResponse, HttpError, json, readBody, toErrorResponse } from "../http";
 import { publicBase } from "../urls";
 import { serviceSession } from "../accounts/auth";
-import { darkCss, icon, servicePage } from "../accounts/ui";
+import { darkCss, icon, renderShell, servicePage } from "../accounts/ui";
+import { copyAttrs, renderCopyText, SITE_COPY } from "../site-copy";
 import { requireWritesOpen } from "../service-state";
 import {
   billingConfigured,
@@ -288,27 +289,33 @@ function cell(main: string, sub?: string): string {
   return `<span class="cell-main">${escape(main)}</span>${sub ? `<span class="cell-sub">${escape(sub)}</span>` : ""}`;
 }
 
-/** Public `/pricing` page comparing Free, Pro, Team, and Self-Hosted transparently. */
-export async function pricingPage(req: Request, env: Env): Promise<Response> {
-  if (req.method !== "GET" && req.method !== "HEAD") return errorResponse(405, "method_not_allowed");
-  const session = env.ACCOUNTS ? await serviceSession(req, env).catch(() => null) : null;
-  const ent = session ? await getAccountEntitlements(env, session.accountId).catch(() => null) : null;
-  const checkoutLive = Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON);
+export function renderPricingPage(options: {
+  signedIn?: boolean;
+  currentPlan?: string | null;
+  checkoutLive?: boolean;
+  editable?: boolean;
+} = {}): { body: string; script: string; extraCss: string } {
+  const editable = Boolean(options.editable);
+  const signedIn = Boolean(options.signedIn);
+  const checkoutLive = Boolean(options.checkoutLive);
+  const p = SITE_COPY.pricing;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const txt = (t: string) => renderCopyText(t);
 
-  const planAction = (planId: "pro" | "team", label: string, primary: boolean) => {
-    if (ent?.plan === planId) {
+  const planAction = (planId: "pro" | "team", label: string, copyKey: string, primary: boolean) => {
+    if (options.currentPlan === planId) {
       return `<a class="button secondary block" href="/dashboard/billing">Current plan · Manage</a>`;
     }
-    if (!session) {
-      return `<a class="button${primary ? "" : " secondary"} block" href="/auth?return_to=${encodeURIComponent("/dashboard/billing")}">${escape(label)}</a>`;
+    if (!signedIn) {
+      return `<a class="button${primary ? "" : " secondary"} block" href="/auth?return_to=${encodeURIComponent("/dashboard/billing")}"><span${c(copyKey, label)}>${txt(label)}</span></a>`;
     }
     if (!checkoutLive) {
-      return `<a class="button${primary ? "" : " secondary"} block" href="/dashboard/billing">${escape(label)}</a>`;
+      return `<a class="button${primary ? "" : " secondary"} block" href="/dashboard/billing"><span${c(copyKey, label)}>${txt(label)}</span></a>`;
     }
     return `<form method="post" action="/dashboard/billing/checkout">
       <input type="hidden" name="plan" value="${planId}">
       <input type="hidden" name="interval" value="month" data-billing-interval>
-      <button type="submit" class="${primary ? "" : "secondary "}block">${escape(label)}</button>
+      <button type="submit" class="${primary ? "" : "secondary "}block"><span${c(copyKey, label)}>${txt(label)}</span></button>
     </form>`;
   };
 
@@ -318,16 +325,16 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
   const body = `<section class="hero dark pricing-hero">
     <div class="pricing-hero-grid">
       <div>
-        <span class="eyebrow">${icon("sparkles")} Get more out of Tendriller</span>
-        <h1>Grow with your agent</h1>
-        <p class="lead">Everything you need to get started is free. Super AI-pilled? You can go wild with bigger plans!</p>
+        <span class="eyebrow">${icon("sparkles")} <span${c("pricing.hero.eyebrow", p.hero.eyebrow)}>${txt(p.hero.eyebrow)}</span></span>
+        <h1${c("pricing.hero.title", p.hero.title)}>${txt(p.hero.title)}</h1>
+        <p class="lead"${c("pricing.hero.lead", p.hero.lead)}>${txt(p.hero.lead)}</p>
       </div>
       <div class="pricing-hero-controls">
         <div class="billing-toggle" role="group" aria-label="Billing interval">
-          <button type="button" id="interval-month" aria-pressed="true">Monthly</button>
-          <button type="button" id="interval-year" aria-pressed="false">Annual <span class="billing-save">Save ~30%</span></button>
+          <button type="button" id="interval-month" aria-pressed="true"><span${c("pricing.hero.monthlyLabel", p.hero.monthlyLabel)}>${txt(p.hero.monthlyLabel)}</span></button>
+          <button type="button" id="interval-year" aria-pressed="false"><span${c("pricing.hero.annualLabel", p.hero.annualLabel)}>${txt(p.hero.annualLabel)}</span> <span class="billing-save"${c("pricing.hero.annualSave", p.hero.annualSave)}>${txt(p.hero.annualSave)}</span></button>
         </div>
-        <a class="hero-selfhost-link" href="#self-host">${icon("terminal")} Prefer your own cloud? Self-host free</a>
+        <a class="hero-selfhost-link" href="#self-host">${icon("terminal")} <span${c("pricing.hero.selfHostLink", p.hero.selfHostLink)}>${txt(p.hero.selfHostLink)}</span></a>
       </div>
     </div>
   </section>
@@ -335,93 +342,78 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
   <section class="tier-grid" aria-label="Hosted plans">
     <article class="tier-card">
       <div class="tier-head">
-        <div><span class="eyebrow">Hobby</span><h2>Free</h2></div>
+        <div><span class="eyebrow"${c("pricing.tiers.free.eyebrow", p.tiers.free.eyebrow)}>${txt(p.tiers.free.eyebrow)}</span><h2${c("pricing.tiers.free.name", p.tiers.free.name)}>${txt(p.tiers.free.name)}</h2></div>
       </div>
       <div class="tier-price-wrap">
-        <div class="tier-price"><span class="tier-amount">$0</span><span class="tier-unit">/ mo</span></div>
-        <p class="tier-cadence">Free forever · no card required</p>
+        <div class="tier-price"><span class="tier-amount"${c("pricing.tiers.free.price", p.tiers.free.price)}>${txt(p.tiers.free.price)}</span><span class="tier-unit"${c("pricing.tiers.free.unit", p.tiers.free.unit)}>${txt(p.tiers.free.unit)}</span></div>
+        <p class="tier-cadence"${c("pricing.tiers.free.cadence", p.tiers.free.cadence)}>${txt(p.tiers.free.cadence)}</p>
       </div>
-      <p class="tier-desc">${escape(PLANS.free.tagline)}</p>
-      <div class="tier-cta">${session ? `<a class="button secondary block" href="/dashboard">Open dashboard</a>` : `<a class="button secondary block" href="/auth">Get started free</a>`}</div>
+      <p class="tier-desc"${c("pricing.tiers.free.tagline", p.tiers.free.tagline)}>${txt(p.tiers.free.tagline)}</p>
+      <div class="tier-cta">${signedIn ? `<a class="button secondary block" href="/dashboard"><span${c("pricing.tiers.free.ctaSignedIn", p.tiers.free.ctaSignedIn)}>${txt(p.tiers.free.ctaSignedIn)}</span></a>` : `<a class="button secondary block" href="/auth"><span${c("pricing.tiers.free.cta", p.tiers.free.cta)}>${txt(p.tiers.free.cta)}</span></a>`}</div>
       <ul class="tier-features">
-        <li>${icon("check")}<span><strong>20</strong> pages &amp; <strong>1 GB</strong> file storage</span></li>
-        <li>${icon("check")}<span><strong>5</strong> agents &amp; up to <strong>10</strong> guests per page</span></li>
-        <li>${icon("check")}<span><strong>Unlimited</strong> direct peer-to-peer sync &amp; <strong>2 GB/mo</strong> call relay trial</span></li>
-        <li>${icon("check")}<span>Hosted MCP on <strong>1</strong> page (<strong>250</strong> calls/mo)</span></li>
-        <li>${icon("check")}<span>Full offline mode &amp; zero vendor lock-in</span></li>
+        ${p.tiers.free.features.map((feat, i) => `<li>${icon("check")}<span${c(`pricing.tiers.free.features.${i}`, feat)}>${txt(feat)}</span></li>`).join("\n        ")}
       </ul>
     </article>
 
     <article class="tier-card featured">
       <div class="tier-head">
-        <div><span class="eyebrow">Recommended</span><h2>Pro</h2></div>
-        <span class="tier-popular">Most popular</span>
+        <div><span class="eyebrow"${c("pricing.tiers.pro.eyebrow", p.tiers.pro.eyebrow)}>${txt(p.tiers.pro.eyebrow)}</span><h2${c("pricing.tiers.pro.name", p.tiers.pro.name)}>${txt(p.tiers.pro.name)}</h2></div>
+        <span class="tier-popular"${c("pricing.tiers.pro.badge", p.tiers.pro.badge)}>${txt(p.tiers.pro.badge)}</span>
       </div>
       <div class="tier-price-wrap">
-        <div class="tier-price"><span class="tier-amount" data-price-pro>$12</span><span class="tier-unit">/ mo</span></div>
-        <p class="tier-cadence" data-cadence-pro>Billed monthly · or $100/yr (~30% off)</p>
+        <div class="tier-price"><span class="tier-amount" data-price-pro${c("pricing.tiers.pro.price", p.tiers.pro.price)}>${txt(p.tiers.pro.price)}</span><span class="tier-unit"${c("pricing.tiers.pro.unit", p.tiers.pro.unit)}>${txt(p.tiers.pro.unit)}</span></div>
+        <p class="tier-cadence" data-cadence-pro${c("pricing.tiers.pro.cadence", p.tiers.pro.cadence)}>${txt(p.tiers.pro.cadence)}</p>
       </div>
-      <p class="tier-desc">${escape(PLANS.pro.tagline)}</p>
-      <div class="tier-cta">${planAction("pro", "Upgrade to Pro", true)}</div>
+      <p class="tier-desc"${c("pricing.tiers.pro.tagline", p.tiers.pro.tagline)}>${txt(p.tiers.pro.tagline)}</p>
+      <div class="tier-cta">${planAction("pro", p.tiers.pro.cta, "pricing.tiers.pro.cta", true)}</div>
       <ul class="tier-features">
-        <li>${icon("check")}<span><strong>100</strong> pages &amp; <strong>20 GB</strong> file storage</span></li>
-        <li>${icon("check")}<span><strong>25</strong> agents &amp; up to <strong>50</strong> guests per page</span></li>
-        <li>${icon("check")}<span><strong>100 GB/mo</strong> group video calls (up to 12 people, 720p) &amp; priority relay</span></li>
-        <li>${icon("check")}<span>Hosted MCP on <strong>25</strong> pages (<strong>15,000</strong> calls/mo)</span></li>
-        <li>${icon("check")}<span><strong>Cloud-connected personal accounts</strong> &amp; optional pay-as-you-go</span></li>
+        ${p.tiers.pro.features.map((feat, i) => `<li>${icon("check")}<span${c(`pricing.tiers.pro.features.${i}`, feat)}>${txt(feat)}</span></li>`).join("\n        ")}
       </ul>
     </article>
 
     <article class="tier-card">
       <div class="tier-head">
-        <div><span class="eyebrow">Studio &amp; Orgs</span><h2>Team</h2></div>
+        <div><span class="eyebrow"${c("pricing.tiers.team.eyebrow", p.tiers.team.eyebrow)}>${txt(p.tiers.team.eyebrow)}</span><h2${c("pricing.tiers.team.name", p.tiers.team.name)}>${txt(p.tiers.team.name)}</h2></div>
       </div>
       <div class="tier-price-wrap">
-        <div class="tier-price"><span class="tier-amount" data-price-team>$39</span><span class="tier-unit">/ mo</span></div>
-        <p class="tier-cadence" data-cadence-team>Billed monthly · or $320/yr (~32% off)</p>
+        <div class="tier-price"><span class="tier-amount" data-price-team${c("pricing.tiers.team.price", p.tiers.team.price)}>${txt(p.tiers.team.price)}</span><span class="tier-unit"${c("pricing.tiers.team.unit", p.tiers.team.unit)}>${txt(p.tiers.team.unit)}</span></div>
+        <p class="tier-cadence" data-cadence-team${c("pricing.tiers.team.cadence", p.tiers.team.cadence)}>${txt(p.tiers.team.cadence)}</p>
       </div>
-      <p class="tier-desc">${escape(PLANS.team.tagline)}</p>
-      <div class="tier-cta">${planAction("team", "Upgrade to Team", false)}</div>
+      <p class="tier-desc"${c("pricing.tiers.team.tagline", p.tiers.team.tagline)}>${txt(p.tiers.team.tagline)}</p>
+      <div class="tier-cta">${planAction("team", p.tiers.team.cta, "pricing.tiers.team.cta", false)}</div>
       <ul class="tier-features">
-        <li>${icon("check")}<span><strong>1,000</strong> pages &amp; <strong>100 GB</strong> file storage</span></li>
-        <li>${icon("check")}<span><strong>100</strong> agents &amp; up to <strong>250</strong> guests per page</span></li>
-        <li>${icon("check")}<span><strong>500 GB/mo</strong> group video calls (up to 50 people, 1080p + screen share)</span></li>
-        <li>${icon("check")}<span>Hosted MCP on <strong>100</strong> pages (<strong>100,000</strong> calls/mo)</span></li>
-        <li>${icon("check")}<span><strong>Team sign-in</strong> (GitHub Org &amp; Google Workspace) &amp; custom page domains</span></li>
+        ${p.tiers.team.features.map((feat, i) => `<li>${icon("check")}<span${c(`pricing.tiers.team.features.${i}`, feat)}>${txt(feat)}</span></li>`).join("\n        ")}
       </ul>
     </article>
   </section>
 
   <section id="self-host" class="self-host-band" aria-labelledby="self-host-title">
     <div class="self-host-intro">
-      <span class="eyebrow">Open source · Zero lock-in</span>
+      <span class="eyebrow"${c("pricing.selfHost.eyebrow", p.selfHost.eyebrow)}>${txt(p.selfHost.eyebrow)}</span>
       <div class="self-host-title-row">
-        <h2 id="self-host-title">Self-Hosted</h2>
-        <span class="badge ok">$0 OSS</span>
+        <h2 id="self-host-title"${c("pricing.selfHost.title", p.selfHost.title)}>${txt(p.selfHost.title)}</h2>
+        <span class="badge ok"${c("pricing.selfHost.badge", p.selfHost.badge)}>${txt(p.selfHost.badge)}</span>
       </div>
-      <p>Run the exact same Tendriller engine on your own Cloudflare account with no platform limits.</p>
+      <p${c("pricing.selfHost.lead", p.selfHost.lead)}>${txt(p.selfHost.lead)}</p>
     </div>
     <ul class="self-host-points">
-      <li>${icon("check")}<span><strong>Unlimited</strong> pages, agents &amp; guests</span></li>
-      <li>${icon("check")}<span><strong>All Pro &amp; Team</strong> features unlocked</span></li>
-      <li>${icon("check")}<span><strong>1 TB/mo</strong> free video via Cloudflare</span></li>
-      <li>${icon("check")}<span><strong>Clean migration</strong> out anytime</span></li>
+      ${p.selfHost.points.map((pt, i) => `<li>${icon("check")}<span${c(`pricing.selfHost.points.${i}`, pt)}>${txt(pt)}</span></li>`).join("\n      ")}
     </ul>
     <div class="self-host-action">
-      <a class="button secondary" href="/self-host">${icon("terminal")} 5-minute self-host guide</a>
-      <span class="self-host-note">Typical Cloudflare cost: $0–$5/mo</span>
+      <a class="button secondary" href="/self-host">${icon("terminal")} <span${c("pricing.selfHost.cta", p.selfHost.cta)}>${txt(p.selfHost.cta)}</span></a>
+      <span class="self-host-note"${c("pricing.selfHost.note", p.selfHost.note)}>${txt(p.selfHost.note)}</span>
     </div>
   </section>
 
   <section id="compare" class="pricing-section" aria-labelledby="compare-title">
     <div class="pricing-section-head">
       <div>
-        <span class="eyebrow">Side-by-side</span>
-        <h2 id="compare-title">Compare all plans</h2>
+        <span class="eyebrow"${c("pricing.compare.eyebrow", p.compare.eyebrow)}>${txt(p.compare.eyebrow)}</span>
+        <h2 id="compare-title"${c("pricing.compare.title", p.compare.title)}>${txt(p.compare.title)}</h2>
       </div>
-      <p class="pricing-section-note">Every plan includes offline editing, direct peer-to-peer sync, and full data export.</p>
+      <p class="pricing-section-note"${c("pricing.compare.note", p.compare.note)}>${txt(p.compare.note)}</p>
     </div>
-    <p class="compare-scroll-hint">Swipe horizontally to compare all four plans →</p>
+    <p class="compare-scroll-hint"${c("pricing.compare.scrollHint", p.compare.scrollHint)}>${txt(p.compare.scrollHint)}</p>
     <div class="compare-wrap">
       <table class="compare-table">
         <thead>
@@ -451,6 +443,7 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
           ${compareRow("Synced state per page", [cell("50 MB"), cell("500 MB"), cell("2 GB"), cell("Unlimited")])}
 
           <tr class="cat-row"><th colspan="5">Identity, teams &amp; domains</th></tr>
+          ${compareRow("Named page subdomains", [no, cell("25 pages", "e.g. my-app.tendriller.dev"), cell("100 pages", "e.g. my-app.tendriller.dev"), cell("Unlimited")], "Replace generated subdomains with unique names")}
           ${compareRow("Cloud-connected personal accounts", [no, yes, yes, yes], "Works even when your laptop is asleep")}
           ${compareRow("Team OAuth tie-ins", [no, no, yes, yes], "GitHub Org & Google Workspace admission + auto-offboarding")}
           ${compareRow("Custom page domains", [no, no, cell("Included", "e.g. app.yourteam.com"), cell("Included")])}
@@ -465,32 +458,17 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
   <section class="pricing-section" aria-labelledby="guarantees-title">
     <div class="pricing-section-head">
       <div>
-        <span class="eyebrow">Our promise</span>
-        <h2 id="guarantees-title">Fairness guarantees</h2>
+        <span class="eyebrow"${c("pricing.guarantees.eyebrow", p.guarantees.eyebrow)}>${txt(p.guarantees.eyebrow)}</span>
+        <h2 id="guarantees-title"${c("pricing.guarantees.title", p.guarantees.title)}>${txt(p.guarantees.title)}</h2>
       </div>
-      <p class="pricing-section-note">${session ? `<a href="/dashboard/billing">Manage billing &amp; usage</a> · ` : ""}<a href="/pricing.md">Machine-readable pricing (.md) →</a></p>
+      <p class="pricing-section-note">${signedIn ? `<a href="/dashboard/billing">Manage billing &amp; usage</a> · ` : ""}<a href="/pricing.md">Machine-readable pricing (.md) →</a></p>
     </div>
     <div class="guarantees-grid">
-      <article class="guarantee-card">
-        <span class="g-ico">${icon("database")}</span>
-        <h3>Free forever for local work</h3>
-        <p>Offline reads and writes, direct peer-to-peer sync, running <code>tendril agent run</code> locally, and exporting your workspaces never require a paid plan.</p>
-      </article>
-      <article class="guarantee-card">
-        <span class="g-ico">${icon("shield")}</span>
-        <h3>Limits never lock or delete data</h3>
-        <p>Hit a limit or downgrade from Pro to Free — your existing pages stay accessible and editable offline. You only pause creating new pages above the cap.</p>
-      </article>
-      <article class="guarantee-card">
-        <span class="g-ico warm">${icon("sliders")}</span>
-        <h3>Zero surprise overage bills</h3>
-        <p>Pay-as-you-go is off by default. When enabled, a monthly safety spend cap (default $25, editable or removable anytime) keeps you in control. Billing and global tax are handled by Polar.sh.</p>
-      </article>
-      <article class="guarantee-card">
-        <span class="g-ico amber">${icon("terminal")}</span>
-        <h3>Leave anytime, cleanly</h3>
-        <p>Tendriller is open source. Export your workspace or <a href="/self-host">self-host on your own Cloudflare account</a> in five minutes using the exact same engine.</p>
-      </article>
+      ${p.guarantees.items.map((item, i) => `<article class="guarantee-card">
+        <span class="g-ico${item.tone ? ` ${item.tone}` : ""}">${icon(item.icon)}</span>
+        <h3${c(`pricing.guarantees.items.${i}.title`, item.title)}>${txt(item.title)}</h3>
+        <p${c(`pricing.guarantees.items.${i}.body`, item.body)}>${txt(item.body)}</p>
+      </article>`).join("\n      ")}
     </div>
   </section>`;
 
@@ -516,85 +494,120 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
     y?.addEventListener('click',()=>set('year'));
   })()</script>`;
 
+  return { body, script, extraCss: PRICING_CSS };
+}
+
+export function renderPricingPageHtml(options: {
+  signedIn?: boolean;
+  currentPlan?: string | null;
+  checkoutLive?: boolean;
+  editable?: boolean;
+} = {}): string {
+  const { body, script, extraCss } = renderPricingPage(options);
+  return renderShell({ title: "Pricing", body, script, extraCss, width: "wide" });
+}
+
+/** Public `/pricing` page comparing Free, Pro, Team, and Self-Hosted transparently. */
+export async function pricingPage(req: Request, env: Env): Promise<Response> {
+  if (req.method !== "GET" && req.method !== "HEAD") return errorResponse(405, "method_not_allowed");
+  const session = env.ACCOUNTS ? await serviceSession(req, env).catch(() => null) : null;
+  const ent = session ? await getAccountEntitlements(env, session.accountId).catch(() => null) : null;
+  const checkoutLive = Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON);
+  const { body, script, extraCss } = renderPricingPage({
+    signedIn: Boolean(session),
+    currentPlan: ent?.plan ?? null,
+    checkoutLive,
+  });
   const response = servicePage("Pricing", body, script, 200, {
     wide: true,
-    extraCss: PRICING_CSS,
+    extraCss,
     formAction: "'self' https://polar.sh https://*.polar.sh",
   });
   return req.method === "HEAD" ? new Response(null, response) : response;
+}
+
+export function renderSelfHostBody(origin: string, editable = false): string {
+  const host = new URL(origin).hostname;
+  const vars = { host, base: origin };
+  const s = SITE_COPY.selfHost;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const txt = (t: string) => renderCopyText(t, vars);
+  const preStyle = `margin:.4rem 0;padding:.75rem;border-radius:10px;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);overflow-x:auto;font-size:.82rem`;
+  const stepSnippets = [
+    `git clone https://github.com/werg/tendriller.git &amp;&amp; cd tendriller\nnpm ci &amp;&amp; npm run build`,
+    `PRODUCTION_PUBLIC_BASE=https://app.yourdomain.com \\\nPRODUCTION_PAGE_BASE_DOMAIN=pages.yourdomain.com \\\nnode scripts/provision.mjs production --name my-tendriller --fresh`,
+    `npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.my-tendriller.jsonc\nnpx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.my-tendriller.jsonc \\\n  --command "UPDATE service_state SET mode='open', account_page_cap=NULL, account_resident_cap=NULL, account_storage_cap=NULL WHERE id=1"`,
+    `npx wrangler deploy --config server/wrangler.my-tendriller.jsonc`,
+    "",
+  ];
+  return `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("terminal")} <span${c("selfHost.hero.eyebrow", s.hero.eyebrow)}>${txt(s.hero.eyebrow)}</span></span><h1${c("selfHost.hero.title", s.hero.title)}>${txt(s.hero.title)}</h1><p class="lead"${c("selfHost.hero.lead", s.hero.lead)}>${txt(s.hero.lead)}</p></div></div>
+    <div class="actions" style="margin-top:1rem"><a class="button" href="/docs/SELF_HOSTING.md">${icon("book")} <span${c("selfHost.hero.ctaDoc", s.hero.ctaDoc)}>${txt(s.hero.ctaDoc)}</span></a><a class="button secondary" href="/pricing"><span${c("selfHost.hero.ctaCompare", s.hero.ctaCompare)}>${txt(s.hero.ctaCompare)}</span></a></div></section>
+
+  <section class="card stack-sm">
+    <h2${c("selfHost.costs.title", s.costs.title)}>${txt(s.costs.title)}</h2>
+    <ul class="list">
+      ${s.costs.items.map((item, i) => `<li class="list-item"><div class="list-item-main"><div class="list-item-title"${c(`selfHost.costs.items.${i}.title`, item.title)}>${txt(item.title)}</div><p class="list-item-sub"${c(`selfHost.costs.items.${i}.body`, item.body)}>${txt(item.body)}</p></div></li>`).join("\n      ")}
+    </ul>
+  </section>
+
+  <section class="card stack-sm">
+    <h2${c("selfHost.quickstart.title", s.quickstart.title)}>${txt(s.quickstart.title)}</h2>
+    <ol class="steps">
+      ${s.quickstart.steps.map((step, i) => `<li><div style="min-width:0;flex:1"><span${c(`selfHost.quickstart.steps.${i}`, step)}>${txt(step)}</span>${stepSnippets[i] ? `<pre style="${preStyle}">${stepSnippets[i]}</pre>` : ""}</div></li>`).join("\n      ")}
+    </ol>
+  </section>
+
+  <section class="card stack-sm">
+    <h2${c("selfHost.comparison.title", s.comparison.title)}>${txt(s.comparison.title)}</h2>
+    <ul class="list">
+      ${s.comparison.items.map((item, i) => `<li class="list-item"><div class="list-item-main"><div class="list-item-title"${c(`selfHost.comparison.items.${i}.title`, item.title)}>${txt(item.title)}</div><p class="list-item-sub"${c(`selfHost.comparison.items.${i}.body`, item.body)}>${txt(item.body)}</p></div></li>`).join("\n      ")}
+    </ul>
+    <div class="actions"><a class="button" href="/dashboard/billing"><span${c("selfHost.comparison.ctaBilling", s.comparison.ctaBilling)}>${txt(s.comparison.ctaBilling)}</span></a><a class="button secondary" href="/dashboard"><span${c("selfHost.comparison.ctaDashboard", s.comparison.ctaDashboard)}>${txt(s.comparison.ctaDashboard)}</span></a></div>
+  </section>`;
+}
+
+export function renderSelfHostPageHtml(origin: string, options?: { editable?: boolean }): string {
+  return renderShell({
+    title: "Self-host Tendriller",
+    body: renderSelfHostBody(origin, Boolean(options?.editable)),
+    width: "medium",
+  });
 }
 
 /** Public `/self-host` page giving users a friendly, first-class self-hosting off-ramp. */
 export async function selfHostPage(req: Request, env: Env): Promise<Response> {
   if (req.method !== "GET" && req.method !== "HEAD") return errorResponse(405, "method_not_allowed");
   const origin = publicBase(env);
-  const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("terminal")} Own your infrastructure</span><h1>Run your own Tendriller on Cloudflare in 5 minutes</h1><p class="lead">Tendriller is open-source and runs on a single Cloudflare Worker + D1 + R2 + Durable Objects. When you self-host, every quota defaults to unlimited and you pay Cloudflare directly.</p></div></div>
-    <div class="actions" style="margin-top:1rem"><a class="button" href="/docs/SELF_HOSTING.md">${icon("book")} Full self-hosting doc</a><a class="button secondary" href="/pricing">Compare with hosted Pro</a></div></section>
-
-  <section class="card stack-sm">
-    <h2>What it costs on your own Cloudflare account</h2>
-    <ul class="list">
-      <li class="list-item"><div class="list-item-main"><div class="list-item-title">Cloudflare Workers Paid — $5 / month</div><p class="list-item-sub">Recommended for hosted MCP (QuickJS + DoltLite WASM needs &gt;10 ms CPU) and includes 10M Worker reqs, 1M DO reqs, 400k GB-s DO duration, 25B D1/DO reads, 50M writes, and 10 GB R2 storage with zero egress.</p></div></li>
-      <li class="list-item"><div class="list-item-main"><div class="list-item-title">Cloudflare Realtime SFU &amp; TURN — 1,000 GB / month free</div><p class="list-item-sub">Plug in your own <code>CF_REALTIME_APP_ID</code>, <code>CF_REALTIME_API_TOKEN</code>, <code>CF_TURN_KEY_ID</code>, and <code>CF_TURN_API_TOKEN</code> Worker secrets. Cloudflare includes 1 TB/mo free egress, then $0.05/GB.</p></div></li>
-    </ul>
-  </section>
-
-  <section class="card stack-sm">
-    <h2>Quickstart (5 minutes)</h2>
-    <ol class="steps">
-      <li><div style="min-width:0;flex:1">Clone Tendriller and install dependencies (Node 22.15+):<pre style="margin:.4rem 0;padding:.75rem;border-radius:10px;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);overflow-x:auto;font-size:.82rem">git clone https://github.com/werg/tendriller.git &amp;&amp; cd tendriller
-npm ci &amp;&amp; npm run build</pre></div></li>
-      <li><div style="min-width:0;flex:1">Provision fresh Worker, D1, R2, and domains with the built-in script:<pre style="margin:.4rem 0;padding:.75rem;border-radius:10px;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);overflow-x:auto;font-size:.82rem">PRODUCTION_PUBLIC_BASE=https://app.yourdomain.com \\
-PRODUCTION_PAGE_BASE_DOMAIN=pages.yourdomain.com \\
-node scripts/provision.mjs production --name my-tendriller --fresh</pre></div></li>
-      <li><div style="min-width:0;flex:1">Apply D1 migrations and set unlimited caps (<code>NULL</code>):<pre style="margin:.4rem 0;padding:.75rem;border-radius:10px;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);overflow-x:auto;font-size:.82rem">npx wrangler d1 migrations apply ACCOUNTS --remote --config server/wrangler.my-tendriller.jsonc
-npx wrangler d1 execute ACCOUNTS --remote --config server/wrangler.my-tendriller.jsonc \\
-  --command "UPDATE service_state SET mode='open', account_page_cap=NULL, account_resident_cap=NULL, account_storage_cap=NULL WHERE id=1"</pre></div></li>
-      <li><div style="min-width:0;flex:1">Add your secrets (<code>HOST_ATTESTATION_KEY</code>, GitHub/Google OAuth or <code>LOCAL_PASSWORD_HASH</code>, and optional <code>CF_REALTIME_*</code> / <code>CF_TURN_*</code>) and deploy:<pre style="margin:.4rem 0;padding:.75rem;border-radius:10px;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);overflow-x:auto;font-size:.82rem">npx wrangler deploy --config server/wrangler.my-tendriller.jsonc</pre></div></li>
-      <li><div style="min-width:0;flex:1">Move an existing workspace: export your account data from <a href="/dashboard/export">/dashboard/export</a>, point <code>tendriller.json</code> to your new service origin, and run <code>npm run deploy</code>.</div></li>
-    </ol>
-  </section>
-
-  <section class="card stack-sm">
-    <h2>Self-host vs. Hosted ${escape(new URL(origin).hostname)} — honest comparison</h2>
-    <ul class="list">
-      <li class="list-item"><div class="list-item-main"><div class="list-item-title">Choose Self-Hosted when…</div><p class="list-item-sub">You want unlimited quotas on your own Cloudflare account, custom retention policies, private infrastructure compliance, or you already manage Cloudflare zones and OAuth apps.</p></div></li>
-      <li class="list-item"><div class="list-item-main"><div class="list-item-title">Choose Hosted Pro ($12/mo) when…</div><p class="list-item-sub">You want instant zero-ops sign-in (GitHub, Google, ChatGPT/Claude MCP OAuth), managed wildcard TLS, automatic signed runtime updates, and instant TURN + SFU video without wiring up Cloudflare billing.</p></div></li>
-    </ul>
-    <div class="actions"><a class="button" href="/dashboard/billing">Open billing &amp; usage</a><a class="button secondary" href="/dashboard">Back to dashboard</a></div>
-  </section>`;
-
-  const response = servicePage("Self-host Tendriller", body, "", 200, { medium: true });
+  const response = servicePage("Self-host Tendriller", renderSelfHostBody(origin), "", 200, { medium: true });
   return req.method === "HEAD" ? new Response(null, response) : response;
 }
 
-async function renderBillingDashboard(req: Request, env: Env, url: URL, accountId: string, email: string | null): Promise<Response> {
-  const db = env.ACCOUNTS;
-  const [ent, pageStats, agentStats, mcpPageStats, storageStats] = await Promise.all([
-    getAccountEntitlements(env, accountId),
-    db.prepare(`SELECT
-      COUNT(*) AS pages,
-      SUM(CASE WHEN lifetime = 'resident' THEN 1 ELSE 0 END) AS residents
-      FROM tendrils WHERE owner_account = ? AND state = 'active'`).bind(accountId)
-      .first<{ pages: number; residents: number | null }>(),
-    db.prepare("SELECT COUNT(*) AS n FROM agents WHERE account_id = ? AND revoked_at IS NULL")
-      .bind(accountId).first<{ n: number }>(),
-    db.prepare("SELECT COUNT(DISTINCT page_id) AS n FROM mcp_connections WHERE account_id = ?")
-      .bind(accountId).first<{ n: number }>(),
-    db.prepare("SELECT reserved FROM accounts WHERE id = ?")
-      .bind(accountId).first<{ reserved: number }>(),
-  ]);
+export interface BillingDashboardView {
+  accountId: string;
+  email: string | null;
+  ent: Awaited<ReturnType<typeof getAccountEntitlements>>;
+  pagesUsed: number;
+  residentsUsed: number;
+  agentsUsed: number;
+  mcpPagesUsed: number;
+  subdomainsUsed?: number;
+  storageUsed: number;
+  checkoutLive: boolean;
+  portalLive: boolean;
+  checkoutSuccess?: boolean;
+  saved?: boolean;
+  editable?: boolean;
+}
 
-  const pagesUsed = pageStats?.pages ?? 0;
-  const residentsUsed = pageStats?.residents ?? 0;
-  const agentsUsed = agentStats?.n ?? 0;
-  const mcpPagesUsed = mcpPageStats?.n ?? 0;
-  const storageUsed = storageStats?.reserved ?? 0;
+export function renderBillingDashboardContent(view: BillingDashboardView): { body: string; script: string } {
+  const { ent, pagesUsed, residentsUsed, agentsUsed, mcpPagesUsed, subdomainsUsed = 0, storageUsed, checkoutLive, portalLive, accountId, email } = view;
+  const editable = Boolean(view.editable);
+  const b = SITE_COPY.billing;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const txt = (t: string) => renderCopyText(t);
 
   const spec = planSpec(ent.plan);
   const sub = ent.subscription;
-  const checkoutLive = Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON);
-  const portalLive = Boolean(env.POLAR_ACCESS_TOKEN && (sub?.customerId || sub?.subscriptionId));
 
   const statusBadge = ent.unlimitedHost
     ? `<span class="badge ok">Self-Hosted · Unlimited</span>`
@@ -605,10 +618,10 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
         : `<span class="badge ok">${escape(spec.name)} plan</span>`;
 
   const alerts: string[] = [];
-  if (url.searchParams.get("checkout") === "success") {
+  if (view.checkoutSuccess) {
     alerts.push(`<p class="notice" role="status">${icon("check")}<span>Checkout completed! Your updated plan entitlements apply automatically as soon as Polar confirms your subscription.</span></p>`);
   }
-  if (url.searchParams.get("saved") === "1") {
+  if (view.saved) {
     alerts.push(`<p class="notice" role="status">${icon("check")}<span>Pay-as-you-go preferences saved.</span></p>`);
   }
   if (ent.inGracePeriod && sub?.graceUntil) {
@@ -624,6 +637,7 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
     meterRow("Pages", String(pagesUsed), ent.quotas.pages === null ? "Unlimited" : String(ent.quotas.pages), ratio(pagesUsed, ent.quotas.pages)),
     meterRow("App & file storage", fmtBytes(storageUsed), ent.quotas.storageBytes === null ? "Unlimited" : fmtBytes(ent.quotas.storageBytes), ratio(storageUsed, ent.quotas.storageBytes)),
     meterRow("Agents", String(agentsUsed), ent.quotas.agents === null ? "Unlimited" : String(ent.quotas.agents), ratio(agentsUsed, ent.quotas.agents)),
+    meterRow("Named page subdomains", String(subdomainsUsed), ent.quotas.customSubdomains === null ? "Unlimited" : ent.quotas.customSubdomains === 0 ? "Pro & Team" : String(ent.quotas.customSubdomains), ent.quotas.customSubdomains === 0 ? null : ratio(subdomainsUsed, ent.quotas.customSubdomains), `Replace generated page subdomains with memorable names in <a href="/dashboard/domains#subdomains">Domains</a>.`),
     meterRow("Hosted MCP opted-in pages", String(mcpPagesUsed), ent.quotas.mcpPages === null ? "Unlimited" : String(ent.quotas.mcpPages), ratio(mcpPagesUsed, ent.quotas.mcpPages)),
     meterRow("Hosted MCP calls (this month)", ent.usage.mcpCalls.toLocaleString("en-US"), ent.quotas.mcpCallsPerMonth === null ? "Unlimited" : ent.quotas.mcpCallsPerMonth.toLocaleString("en-US"), ratio(ent.usage.mcpCalls, ent.quotas.mcpCallsPerMonth), `Resets ${resetDate} UTC · local <code>tendril agent run</code> is always unlimited.`),
     meterRow("Host relay active time (this month)", fmtHours(ent.usage.relayMs), ent.quotas.relayMsPerMonth === null ? "Unlimited" : fmtHours(ent.quotas.relayMsPerMonth), ratio(ent.usage.relayMs, ent.quotas.relayMsPerMonth), `Resets ${resetDate} UTC · direct peer-to-peer sync uses 0 host relay time.`),
@@ -635,19 +649,19 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
     ? ""
     : ent.quotas.paygAllowed
       ? `<section class="card stack-sm" id="payg">
-          <div class="card-head"><div><span class="eyebrow">Metered overage</span><h2>Pay-as-you-go toggle</h2><p>Stay connected smoothly if you exceed your included ${fmtBytes(ent.quotas.mediaBytesPerMonth ?? 0)} media or ${(ent.quotas.mcpCallsPerMonth ?? 0).toLocaleString("en-US")} hosted MCP calls (${fmtDollars(ent.quotas.paygMediaCentsPerGb)}/GB media · ${fmtDollars(ent.quotas.paygMcpCentsPer10k)}/10k MCP calls).</p></div><span class="badge ${ent.paygEnabled ? "ok" : ""}">${ent.paygEnabled ? "Enabled" : "Off"}</span></div>
+          <div class="card-head"><div><span class="eyebrow"${c("billing.payg.eyebrow", b.payg.eyebrow)}>${txt(b.payg.eyebrow)}</span><h2${c("billing.payg.title", b.payg.title)}>${txt(b.payg.title)}</h2><p>Stay connected smoothly if you exceed your included ${fmtBytes(ent.quotas.mediaBytesPerMonth ?? 0)} media or ${(ent.quotas.mcpCallsPerMonth ?? 0).toLocaleString("en-US")} hosted MCP calls (${fmtDollars(ent.quotas.paygMediaCentsPerGb)}/GB media · ${fmtDollars(ent.quotas.paygMcpCentsPer10k)}/10k MCP calls).</p></div><span class="badge ${ent.paygEnabled ? "ok" : ""}">${ent.paygEnabled ? "Enabled" : "Off"}</span></div>
           <form method="post" action="/dashboard/billing/payg" class="stack-sm">
-            <label class="check-item"><input type="checkbox" name="payg_enabled" value="1"${ent.paygEnabled ? " checked" : ""}><span class="check-copy"><span class="check-title">Enable pay-as-you-go overage</span><span class="check-desc">When off, usage stops cleanly at your included allowance (falling back to P2P/local sync) with zero extra charges.</span></span></label>
+            <label class="check-item"><input type="checkbox" name="payg_enabled" value="1"${ent.paygEnabled ? " checked" : ""}><span class="check-copy"><span class="check-title"${c("billing.payg.checkboxTitle", b.payg.checkboxTitle)}>${txt(b.payg.checkboxTitle)}</span><span class="check-desc"${c("billing.payg.checkboxDesc", b.payg.checkboxDesc)}>${txt(b.payg.checkboxDesc)}</span></span></label>
             <div class="field-row">
               <div class="field"><label class="field-label" for="spend-cap-usd">Monthly safety spend cap (USD)</label><input id="spend-cap-usd" name="spend_cap_usd" type="number" min="1" max="10000" step="1" value="${escape(spendCapDollars || String(DEFAULT_PAYG_SPEND_CAP_CENTS / 100))}" placeholder="25"${ent.paygSpendCapCents === null ? " disabled" : ""}></div>
-              <div class="field" style="justify-content:flex-end"><label class="check-item" style="margin-top:1.35rem"><input type="checkbox" id="uncapped-payg" name="uncapped" value="1"${ent.paygSpendCapCents === null ? " checked" : ""}><span class="check-copy"><span class="check-title">No spend cap (uncapped)</span><span class="check-desc">Disable the monthly spend cap completely.</span></span></label></div>
+              <div class="field" style="justify-content:flex-end"><label class="check-item" style="margin-top:1.35rem"><input type="checkbox" id="uncapped-payg" name="uncapped" value="1"${ent.paygSpendCapCents === null ? " checked" : ""}><span class="check-copy"><span class="check-title"${c("billing.payg.uncappedTitle", b.payg.uncappedTitle)}>${txt(b.payg.uncappedTitle)}</span><span class="check-desc"${c("billing.payg.uncappedDesc", b.payg.uncappedDesc)}>${txt(b.payg.uncappedDesc)}</span></span></label></div>
             </div>
             <p class="fine">Estimated accrued overage this month: <strong>${fmtDollars(ent.overage.totalCents)}</strong>${ent.paygSpendCapCents !== null ? ` · current cap ${fmtDollars(ent.paygSpendCapCents)}/mo` : " · uncapped"}.</p>
             <div class="actions"><button type="submit" class="sm">Save overage settings</button></div>
           </form>
         </section>`
       : `<section class="card stack-sm" id="payg">
-          <div class="card-head"><div><span class="eyebrow">Metered overage</span><h2>Pay-as-you-go overage</h2><p>Available on Pro ($0.10/GB media · $2/10k MCP calls) and Team ($0.08/GB · $1.50/10k) with an optional monthly spend cap.</p></div><span class="badge">Pro &amp; Team</span></div>
+          <div class="card-head"><div><span class="eyebrow"${c("billing.payg.eyebrow", b.payg.eyebrow)}>${txt(b.payg.eyebrow)}</span><h2${c("billing.payg.titleFree", b.payg.titleFree)}>${txt(b.payg.titleFree)}</h2><p${c("billing.payg.leadFree", b.payg.leadFree)}>${txt(b.payg.leadFree)}</p></div><span class="badge">Pro &amp; Team</span></div>
         </section>`;
 
   const curInterval = sub?.billingInterval ?? "month";
@@ -656,40 +670,42 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
   const isTeamMonth = ent.plan === "team" && curInterval === "month";
   const isTeamYear = ent.plan === "team" && curInterval === "year";
   const upgradeSection = ent.unlimitedHost ? "" : `<section class="card stack-sm">
-    <div class="card-head"><div><span class="eyebrow">Plans</span><h2>Upgrade or switch plan</h2><p>Checkout, invoices, and global tax handling are powered by Polar.sh (Merchant of Record).</p></div><a class="button ghost sm" href="/pricing">Compare all plans</a></div>
+    <div class="card-head"><div><span class="eyebrow"${c("billing.plans.eyebrow", b.plans.eyebrow)}>${txt(b.plans.eyebrow)}</span><h2${c("billing.plans.title", b.plans.title)}>${txt(b.plans.title)}</h2><p${c("billing.plans.lead", b.plans.lead)}>${txt(b.plans.lead)}</p></div><a class="button ghost sm" href="/pricing">Compare all plans</a></div>
     ${checkoutLive ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
-      <div class="card stack-sm"><h3>Pro — $12/mo or $100/yr</h3><p class="muted" style="font-size:.86rem">100 pages · 20 GB storage · 100 GB group video · 15k hosted MCP calls/mo · cloud-connected personal OAuth.</p>
+      <div class="card stack-sm"><h3${c("billing.plans.proTitle", b.plans.proTitle)}>${txt(b.plans.proTitle)}</h3><p class="muted" style="font-size:.86rem"${c("billing.plans.proSummary", b.plans.proSummary)}>${txt(b.plans.proSummary)}</p>
         <div class="actions tight">
           <form method="post" action="/dashboard/billing/checkout"><input type="hidden" name="plan" value="pro"><input type="hidden" name="interval" value="month"><button type="submit" class="sm"${isProMonth ? " disabled" : ""}>${isProMonth ? "Current (Pro Monthly)" : "Pro Monthly"}</button></form>
           <form method="post" action="/dashboard/billing/checkout"><input type="hidden" name="plan" value="pro"><input type="hidden" name="interval" value="year"><button type="submit" class="secondary sm"${isProYear ? " disabled" : ""}>${isProYear ? "Current (Pro Annual)" : "Pro Annual ($100)"}</button></form>
         </div>
       </div>
-      <div class="card stack-sm"><h3>Team — $39/mo or $320/yr</h3><p class="muted" style="font-size:.86rem">1,000 pages · 100 GB storage · 500 GB group video · 100k hosted MCP calls/mo · Team OAuth tie-ins · custom domains.</p>
+      <div class="card stack-sm"><h3${c("billing.plans.teamTitle", b.plans.teamTitle)}>${txt(b.plans.teamTitle)}</h3><p class="muted" style="font-size:.86rem"${c("billing.plans.teamSummary", b.plans.teamSummary)}>${txt(b.plans.teamSummary)}</p>
         <div class="actions tight">
           <form method="post" action="/dashboard/billing/checkout"><input type="hidden" name="plan" value="team"><input type="hidden" name="interval" value="month"><button type="submit" class="sm"${isTeamMonth ? " disabled" : ""}>${isTeamMonth ? "Current (Team Monthly)" : "Team Monthly"}</button></form>
           <form method="post" action="/dashboard/billing/checkout"><input type="hidden" name="plan" value="team"><input type="hidden" name="interval" value="year"><button type="submit" class="secondary sm"${isTeamYear ? " disabled" : ""}>${isTeamYear ? "Current (Team Annual)" : "Team Annual ($320)"}</button></form>
         </div>
       </div>
-    </div>` : `<p class="notice">${icon("sparkles")}<span>Hosted checkout is not yet enabled on this deployment. You can review <a href="/pricing">planned tiers</a> or <a href="/self-host">self-host on your own Cloudflare account</a> with unlimited quotas.</span></p>`}
+    </div>` : `<p class="notice">${icon("sparkles")}<span${c("billing.plans.checkoutDisabled", b.plans.checkoutDisabled)}>${txt(b.plans.checkoutDisabled)}</span></p>`}
     <div class="actions">
       ${portalLive ? `<form method="post" action="/dashboard/billing/portal"><button type="submit" class="secondary sm">${icon("external")} Manage subscription &amp; invoices (Polar Portal)</button></form>` : ""}
       <a class="button ghost sm" href="/self-host">${icon("terminal")} Prefer unlimited? Self-host on Cloudflare</a>
     </div>
   </section>`;
 
+  const subAllowed = ent.unlimitedHost || ent.quotas.customSubdomains === null || ent.quotas.customSubdomains > 0;
   const capabilityBadges = [
     `<span class="badge ${ent.quotas.sfuEnabled ? "ok" : ""}">${ent.quotas.sfuEnabled ? `SFU up to ${ent.quotas.sfuMaxPeers} peers (${ent.quotas.sfuMaxHeight}p)` : "TURN trial (no SFU)"}</span>`,
     `<span class="badge ${ent.quotas.hostBrokeredOAuth ? "ok" : ""}">${ent.quotas.hostBrokeredOAuth ? "Host-brokered personal OAuth" : "Personal OAuth (Pro+)"}</span>`,
     `<span class="badge ${ent.quotas.teamOrgOAuth ? "ok" : ""}">${ent.quotas.teamOrgOAuth ? "Team OAuth tie-ins" : "Team OAuth tie-ins (Team)"}</span>`,
+    `<a class="badge ${subAllowed ? "ok" : ""}" href="/dashboard/domains#subdomains" style="text-decoration:none">${subAllowed ? "Named subdomains · Manage" : "Named subdomains (Pro+)"}</a>`,
     `<a class="badge ${ent.quotas.customDomain ? "ok" : ""}" href="/dashboard/domains" style="text-decoration:none">${ent.quotas.customDomain ? "Custom page domains · Manage" : "Custom domains (Team)"}</a>`,
   ].join("");
 
   const body = `<a class="back-link" href="/dashboard">← Back to dashboard</a>
-    <section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Plan &amp; usage</span><h1>Billing &amp; quotas</h1><p class="lead">${escape(email ?? accountId)} · ${escape(spec.tagline)}</p></div><div class="actions tight">${statusBadge}</div></div>
+    <section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} <span${c("billing.hero.eyebrow", b.hero.eyebrow)}>${txt(b.hero.eyebrow)}</span></span><h1${c("billing.hero.title", b.hero.title)}>${txt(b.hero.title)}</h1><p class="lead">${escape(email ?? accountId)} · ${escape(spec.tagline)}</p></div><div class="actions tight">${statusBadge}</div></div>
       <div class="actions tight" style="margin-top:.85rem;flex-wrap:wrap">${capabilityBadges}</div>
     </section>
     ${alerts.join("")}
-    <section class="card stack-sm"><div class="card-head"><div><span class="eyebrow">Current usage</span><h2>Account &amp; monthly allowances</h2></div><span class="badge">Period ${escape(ent.usage.period)}</span></div><div class="list">${metersHtml}</div></section>
+    <section class="card stack-sm"><div class="card-head"><div><span class="eyebrow"${c("billing.usage.eyebrow", b.usage.eyebrow)}>${txt(b.usage.eyebrow)}</span><h2${c("billing.usage.title", b.usage.title)}>${txt(b.usage.title)}</h2></div><span class="badge">Period ${escape(ent.usage.period)}</span></div><div class="list">${metersHtml}</div></section>
     ${paygCard}
     ${upgradeSection}`;
 
@@ -697,6 +713,49 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
     const uncapped=document.getElementById('uncapped-payg'), cap=document.getElementById('spend-cap-usd');
     if(uncapped && cap){ uncapped.addEventListener('change',()=>{ cap.disabled=uncapped.checked; }); }
   })()</script>`;
+
+  return { body, script };
+}
+
+export function renderBillingDashboardHtml(view: BillingDashboardView): string {
+  const { body, script } = renderBillingDashboardContent(view);
+  return renderShell({ title: "Billing & quotas", body, script, width: "wide" });
+}
+
+async function renderBillingDashboard(req: Request, env: Env, url: URL, accountId: string, email: string | null): Promise<Response> {
+  const db = env.ACCOUNTS;
+  const [ent, pageStats, agentStats, mcpPageStats, subdomainStats, storageStats] = await Promise.all([
+    getAccountEntitlements(env, accountId),
+    db.prepare(`SELECT
+      COUNT(*) AS pages,
+      SUM(CASE WHEN lifetime = 'resident' THEN 1 ELSE 0 END) AS residents
+      FROM tendrils WHERE owner_account = ? AND state = 'active'`).bind(accountId)
+      .first<{ pages: number; residents: number | null }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM agents WHERE account_id = ? AND revoked_at IS NULL")
+      .bind(accountId).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(DISTINCT page_id) AS n FROM mcp_connections WHERE account_id = ?")
+      .bind(accountId).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM page_subdomains WHERE account_id = ?")
+      .bind(accountId).first<{ n: number }>().catch(() => null),
+    db.prepare("SELECT reserved FROM accounts WHERE id = ?")
+      .bind(accountId).first<{ reserved: number }>(),
+  ]);
+
+  const { body, script } = renderBillingDashboardContent({
+    accountId,
+    email,
+    ent,
+    pagesUsed: pageStats?.pages ?? 0,
+    residentsUsed: pageStats?.residents ?? 0,
+    agentsUsed: agentStats?.n ?? 0,
+    mcpPagesUsed: mcpPageStats?.n ?? 0,
+    subdomainsUsed: subdomainStats?.n ?? 0,
+    storageUsed: storageStats?.reserved ?? 0,
+    checkoutLive: Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON),
+    portalLive: Boolean(env.POLAR_ACCESS_TOKEN && (ent.subscription?.customerId || ent.subscription?.subscriptionId)),
+    checkoutSuccess: url.searchParams.get("checkout") === "success",
+    saved: url.searchParams.get("saved") === "1",
+  });
 
   return servicePage("Billing & quotas", body, script, 200, {
     wide: true,

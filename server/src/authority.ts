@@ -18,8 +18,8 @@ import {
   type FinalityCheckpoint, type FinalityPolicyV2, type Signed,
 } from '@chronolog/authority';
 import {
-  computeCasHash, ContentAddressedStore, decodeCasNode, decodeLogGenesis, decodeSignedOperation,
-  genesisLogId, hashCasNode, isControlTopic, MemoryBytesStore, seedStandardModules, TopicKernel,
+  computeCasHash, ContentAddressedStore, decodeCasNode, decodeEncryptedEnvelope, decodeLogGenesis, decodeSignedOperation,
+  encryptedEnvelopeDigest, genesisLogId, hashCasNode, isControlTopic, MemoryBytesStore, seedStandardModules, TopicKernel,
   verifySignedOperation, type LogGenesis, type KernelOperationInput, type SignedOperation,
 } from '@chronolog/peer-session/kernel';
 import {
@@ -34,7 +34,9 @@ import { notifyDiscoveryWatchers } from './discovery';
 import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
 import { selectedApplication } from './application';
 import { HttpError, json, readJson } from './http';
-import { pageUrl } from './urls';
+import { pageHostForLabel, pageUrl } from './urls';
+import { isActiveCustomDomainForPage } from './custom-domains';
+import { isActiveSubdomainForPage } from './subdomains';
 import type { Tendril } from './tendril';
 
 const CONFIG = 'application_configuration';
@@ -45,6 +47,11 @@ const MAX_PUBLIC_CAS_NODES = 1024;
 const MAX_PUBLIC_CAS_BYTES = 512 * 1024;
 const MAX_PUBLIC_CAS_TOTAL = 8 * 1024 * 1024;
 const MAX_CHECKPOINTS = 256;
+const MAX_MAILBOX_ITEMS = 4096;
+const MAX_MAILBOX_ITEM_BYTES = 256 * 1024;
+const MAX_MAILBOX_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_MAILBOX_CAS_ITEMS = 2048;
+const MAX_MAILBOX_CAS_TOTAL_BYTES = 16 * 1024 * 1024;
 
 export const ENROLLMENT_REQUEST_DOMAIN = 'chronolog/enrollment-request/v2';
 
@@ -112,6 +119,7 @@ export interface MaterializedControlState {
     readonly publishers: ReadonlySet<string>;
     readonly openReaders: boolean;
     readonly openWriters: boolean;
+    readonly blockedAuthors: ReadonlySet<string>;
     readonly admission: ControlAdmissionPolicy | null;
   };
   readonly keys: {
@@ -325,6 +333,7 @@ export async function replayBlindHostControl(input: {
         const writers = parseKeyList(s.writers);
         const admins = parseKeyList(s.administrators);
         const pubs = parseKeyList(s.publishers);
+        const blocked = parseKeyList(s.blockedAuthors);
         const admission = (s.admission !== null && typeof s.admission === 'object' && !Array.isArray(s.admission))
           ? s.admission as ControlAdmissionPolicy
           : null;
@@ -336,22 +345,25 @@ export async function replayBlindHostControl(input: {
           publishers: pubs.keys,
           openReaders: s.openReaders === true || readers.open,
           openWriters: s.openWriters === true || writers.open,
+          blockedAuthors: blocked.keys,
           admission,
         };
       }
-      const [rRaw, wRaw, aRaw, pRaw, mRaw, admRaw] = await Promise.all([
+      const [rRaw, wRaw, aRaw, pRaw, mRaw, admRaw, blkRaw] = await Promise.all([
         k.query('$permissions', { list: 'readers' }).catch(() => null),
         k.query('$permissions', { list: 'writers' }).catch(() => null),
         k.query('$permissions', { list: 'administrators' }).catch(() => null),
         k.query('$permissions', { list: 'publishers' }).catch(() => null),
         k.query('$permissions', { list: 'members' }).catch(() => null),
         k.query('$permissions', { admission: true }).catch(() => null),
+        k.query('$permissions', { list: 'blockedAuthors' }).catch(() => null),
       ]);
       if (Array.isArray(rRaw) || Array.isArray(wRaw) || Array.isArray(aRaw)) {
         const readers = parseKeyList(rRaw);
         const writers = parseKeyList(wRaw);
         const admins = parseKeyList(aRaw);
         const pubs = parseKeyList(pRaw);
+        const blocked = parseKeyList(blkRaw);
         const admission = (admRaw !== null && typeof admRaw === 'object' && !Array.isArray(admRaw))
           ? admRaw as ControlAdmissionPolicy
           : null;
@@ -363,6 +375,7 @@ export async function replayBlindHostControl(input: {
           publishers: pubs.keys,
           openReaders: readers.open,
           openWriters: writers.open,
+          blockedAuthors: blocked.keys,
           admission,
         };
       }
@@ -380,6 +393,7 @@ export async function replayBlindHostControl(input: {
       publishers: new Set(members.filter(m => m.publisher || m.administrator).map(m => m.publicKey)),
       openReaders: false,
       openWriters: false,
+      blockedAuthors: new Set(),
       admission: raw?.admission ?? null,
     };
   };
@@ -489,6 +503,12 @@ export function reconcileHostEffects(t: Tendril, state: MaterializedControlState
     t.db.set('v2_known_readers', mergedKnown);
   }
 
+  for (const pk of state.permissions.blockedAuthors) revokedKeys.add(pk);
+  if (state.permissions.blockedAuthors.size > 0) {
+    for (const pk of state.permissions.blockedAuthors) {
+      t.db.run('DELETE FROM v2_mailbox_ops WHERE author = ?', pk);
+    }
+  }
   if (revokedKeys.size > 0) {
     for (const ws of t.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as { peerId?: string; remotePeerId?: string } | null;
@@ -518,6 +538,15 @@ export function reconcileHostEffects(t: Tendril, state: MaterializedControlState
 
 export async function applicationMetadata(t: Tendril): Promise<HostApplication> {
   const state = await readControlState(t);
+  const currentVersion = t.db.get<number>('current', 0);
+  let seededVersion: { version: number; entry: string; files: ControlReleaseFile[] } | null = null;
+  if (currentVersion > 0 && !t.db.get<boolean>('v2_publications_managed', false)) {
+    const vRow = t.db.one<{ entry: string }>('SELECT entry FROM versions WHERE version = ?', currentVersion);
+    if (vRow) {
+      const files = t.db.all<ControlReleaseFile>('SELECT path, hash, size, type FROM version_files WHERE version = ? ORDER BY path', currentVersion);
+      if (files.length > 0) seededVersion = { version: currentVersion, entry: vRow.entry, files };
+    }
+  }
   return {
     selection: selectedApplication(t),
     configuration: t.db.get<HostAppConfig | null>(CONFIG, null),
@@ -528,6 +557,7 @@ export async function applicationMetadata(t: Tendril): Promise<HostApplication> 
     closedThroughMs: state?.closedThroughMs !== null && state?.closedThroughMs !== undefined ? state.closedThroughMs.toString() : null,
     hostAttestationKey: hostAttestationKey(t.env),
     admissionAccounts: await admissionAccounts(t),
+    ...(seededVersion ? { seededVersion } : {}),
   };
 }
 
@@ -759,27 +789,206 @@ export async function syncControlState(
   };
 }
 
-const ENROLLMENT_FIELDS = ['action', 'publicKey', 'proof', 'invite', 'genesis', 'casNodes', 'publicOps', 'checkpoints', 'knownOpIds', 'knownCasHashes'];
+const ENROLLMENT_FIELDS = [
+  'action', 'publicKey', 'proof', 'invite', 'genesis', 'casNodes', 'publicOps',
+  'checkpoints', 'knownOpIds', 'knownCasHashes', 'encryptedEnvelopes', 'knownEnvelopeDigests',
+];
 
 /**
- * Host-side admission & public-control sync.
- * The host verifies key proofs, signs host attestations (evidence only), and merges
- * member-signed v2 public-control operations into its blind `TopicKernel`.
+ * Blind Store-and-Forward Mailbox for async peer-to-peer catch-up:
+ * - On private logs: stores ONLY opaque AEAD-encrypted envelopes + CAS nodes (zero keys, zero plaintext).
+ * - On public logs (`privateLog: false`): stores Ed25519-verified public app ops + CAS nodes so anonymous
+ *   visitors hydrate even when the creator is offline, while enforcing `openWriters` and `blockedAuthors`.
+ */
+async function syncMailbox(t: Tendril, principal: Principal, input: Record<string, any>) {
+  const state = await readControlState(t);
+  if (!state) throw new HttpError(409, 'application_uninitialized', 'Application genesis has not been initialized');
+  const logId = state.logId;
+  const now = t.now();
+
+  const canWrite = (author: string): boolean => {
+    if (state.permissions.blockedAuthors.has(author)) return false;
+    return state.permissions.openWriters || state.permissions.writers.has(author) || state.permissions.administrators.has(author);
+  };
+
+  // Validate incoming encrypted envelopes (private logs only, 100% blind)
+  const rawEnvs = Array.isArray(input.encryptedEnvelopes) ? input.encryptedEnvelopes : [];
+  if (rawEnvs.length > 128) throw new HttpError(400, 'too_many_envelopes');
+  const existingEnvDigests = new Set(t.db.all<{ digest: string }>('SELECT digest FROM v2_mailbox_envelopes').map(r => r.digest));
+  const existingEnvBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(raw)), 0) AS total FROM v2_mailbox_envelopes')?.total ?? 0;
+  const newEnvs: Array<{ digest: string; epoch: number; author: string; raw: Uint8Array }> = [];
+  let addedEnvBytes = 0;
+
+  if (state.genesis.privateLog) {
+    for (const item of rawEnvs) {
+      const raw = authorityRecordBytes(item, MAX_MAILBOX_ITEM_BYTES);
+      let env;
+      try { env = decodeEncryptedEnvelope(raw); }
+      catch { throw new HttpError(400, 'mailbox_envelope_invalid'); }
+      if (bytesToHex(env.logId) !== logId) throw new HttpError(400, 'mailbox_log_mismatch');
+      const author = bytesToHex(env.author);
+      if (!canWrite(author)) continue;
+      const digest = bytesToHex(encryptedEnvelopeDigest(raw));
+      if (existingEnvDigests.has(digest) || newEnvs.some(e => e.digest === digest)) continue;
+      if (existingEnvDigests.size + newEnvs.length >= MAX_MAILBOX_ITEMS) break;
+      if (existingEnvBytes + addedEnvBytes + raw.byteLength > MAX_MAILBOX_TOTAL_BYTES) break;
+      newEnvs.push({ digest, epoch: env.epoch, author, raw });
+      addedEnvBytes += raw.byteLength;
+    }
+  }
+
+  // Validate incoming public application ops (public logs only, Ed25519-verified, blockedAuthors rejected)
+  const rawOps = Array.isArray(input.publicOps) ? input.publicOps : [];
+  if (rawOps.length > 128) throw new HttpError(400, 'too_many_operations');
+  const existingOpIds = new Set(t.db.all<{ op_id: string }>('SELECT op_id FROM v2_mailbox_ops').map(r => r.op_id));
+  const existingOpBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(raw)), 0) AS total FROM v2_mailbox_ops')?.total ?? 0;
+  const newOps: Array<{ opId: string; author: string; authorTs: number; raw: Uint8Array }> = [];
+  let addedOpBytes = 0;
+
+  if (!state.genesis.privateLog) {
+    for (const item of rawOps) {
+      const raw = authorityRecordBytes(item, MAX_MAILBOX_ITEM_BYTES);
+      let signed;
+      try { signed = decodeSignedOperation(raw); }
+      catch { throw new HttpError(400, 'mailbox_operation_invalid'); }
+      const verified = await verifySignedOperation(signed).catch(() => null);
+      if (!verified) throw new HttpError(400, 'mailbox_signature_invalid');
+      if (bytesToHex(verified.core.logId) !== logId || verified.core.visibility !== 'public') continue;
+      if (verified.core.updates.some(u => isControlTopic(u.topic))) continue;
+      const author = bytesToHex(verified.core.author);
+      if (!canWrite(author)) continue;
+      const opId = bytesToHex(verified.opId);
+      if (existingOpIds.has(opId) || newOps.some(o => o.opId === opId)) continue;
+      if (existingOpIds.size + newOps.length >= MAX_MAILBOX_ITEMS) break;
+      if (existingOpBytes + addedOpBytes + raw.byteLength > MAX_MAILBOX_TOTAL_BYTES) break;
+      newOps.push({ opId, author, authorTs: Number(verified.core.authorTimestampMs), raw });
+      addedOpBytes += raw.byteLength;
+    }
+  }
+
+  // Validate incoming CAS nodes (public or private partition, hash-verified)
+  const rawCas = Array.isArray(input.casNodes) ? input.casNodes : [];
+  if (rawCas.length > 128) throw new HttpError(400, 'too_many_cas_nodes');
+  const existingCasHashes = new Set(t.db.all<{ hash: string }>('SELECT hash FROM v2_mailbox_cas').map(r => r.hash));
+  const existingCasBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(bytes)), 0) AS total FROM v2_mailbox_cas')?.total ?? 0;
+  const newCas: Array<{ hash: string; partition: 'public' | 'private'; bytes: Uint8Array }> = [];
+  let addedCasBytes = 0;
+
+  for (const item of rawCas) {
+    if (!item || typeof item !== 'object' || !hex(item.hash) || typeof item.bytes !== 'string' || !/^(?:[0-9a-f]{2})*$/.test(item.bytes)) {
+      throw new HttpError(400, 'mailbox_cas_invalid');
+    }
+    const partition: 'public' | 'private' = item.partition === 'private' ? 'private' : 'public';
+    if (partition === 'private' && !state.genesis.privateLog) continue;
+    if (item.bytes.length > MAX_PUBLIC_CAS_BYTES * 2) throw new HttpError(413, 'mailbox_cas_too_large');
+    const bytes = item.bytes.length === 0 ? new Uint8Array(0) : Uint8Array.from(item.bytes.match(/../g)!, b => parseInt(b, 16));
+    if (hashCasNode(bytes) !== item.hash && computeCasHash(bytes, []) !== item.hash) {
+      throw new HttpError(400, 'mailbox_cas_hash_mismatch');
+    }
+    if (existingCasHashes.has(item.hash) || newCas.some(c => c.hash === item.hash)) continue;
+    if (existingCasHashes.size + newCas.length >= MAX_MAILBOX_CAS_ITEMS) break;
+    if (existingCasBytes + addedCasBytes + bytes.byteLength > MAX_MAILBOX_CAS_TOTAL_BYTES) break;
+    newCas.push({ hash: item.hash, partition, bytes });
+    addedCasBytes += bytes.byteLength;
+  }
+
+  if (newEnvs.length > 0 || newOps.length > 0 || newCas.length > 0) {
+    await freshAuthorityAccess(t, principal);
+    t.transaction(() => {
+      for (const e of newEnvs) {
+        const copy = new Uint8Array(e.raw.byteLength); copy.set(e.raw);
+        t.db.run('INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
+          e.digest, e.epoch, e.author, copy.buffer, now);
+      }
+      for (const o of newOps) {
+        const copy = new Uint8Array(o.raw.byteLength); copy.set(o.raw);
+        t.db.run('INSERT OR IGNORE INTO v2_mailbox_ops(op_id, author, author_ts, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
+          o.opId, o.author, o.authorTs, copy.buffer, now);
+      }
+      for (const c of newCas) {
+        const copy = new Uint8Array(c.bytes.byteLength); copy.set(c.bytes);
+        t.db.run('INSERT OR IGNORE INTO v2_mailbox_cas(hash, partition, bytes, stored_at) VALUES(?, ?, ?, ?)',
+          c.hash, c.partition, copy.buffer, now);
+      }
+      notifyDiscoveryWatchers(t);
+    });
+  }
+
+  const knownDigests = new Set<string>(Array.isArray(input.knownEnvelopeDigests) ? input.knownEnvelopeDigests.filter((x): x is string => typeof x === 'string') : []);
+  const knownOps = new Set<string>(Array.isArray(input.knownOpIds) ? input.knownOpIds.filter((x): x is string => typeof x === 'string') : []);
+  const knownCas = new Set<string>(Array.isArray(input.knownCasHashes) ? input.knownCasHashes.filter((x): x is string => typeof x === 'string') : []);
+
+  const encryptedEnvelopes = state.genesis.privateLog
+    ? t.db.all<{ digest: string; raw: ArrayBuffer }>('SELECT digest, raw FROM v2_mailbox_envelopes ORDER BY stored_at ASC')
+        .filter(r => !knownDigests.has(r.digest))
+        .slice(0, 512)
+        .map(r => authorityRecord(new Uint8Array(r.raw)))
+    : [];
+
+  const publicOps = !state.genesis.privateLog
+    ? t.db.all<{ op_id: string; author: string; raw: ArrayBuffer }>('SELECT op_id, author, raw FROM v2_mailbox_ops ORDER BY author_ts ASC, op_id ASC')
+        .filter(r => !knownOps.has(r.op_id) && !state.permissions.blockedAuthors.has(r.author))
+        .slice(0, 512)
+        .map(r => authorityRecord(new Uint8Array(r.raw)))
+    : [];
+
+  const casNodes = t.db.all<{ hash: string; partition: string; bytes: ArrayBuffer }>('SELECT hash, partition, bytes FROM v2_mailbox_cas ORDER BY stored_at ASC')
+    .filter(r => !knownCas.has(r.hash))
+    .slice(0, 512)
+    .map(r => ({
+      hash: r.hash,
+      partition: (r.partition === 'private' ? 'private' : 'public') as 'public' | 'private',
+      bytes: bytesToHex(new Uint8Array(r.bytes)),
+    }));
+
+  return {
+    logId,
+    privateLog: state.genesis.privateLog,
+    encryptedEnvelopes,
+    publicOps,
+    casNodes,
+    addedEnvelopes: newEnvs.length,
+    addedOps: newOps.length,
+    addedCasNodes: newCas.length,
+  };
+}
+
+/**
+ * Host-side admission, public-control sync & blind store-and-forward mailbox.
+ * The host verifies key proofs, signs host attestations (evidence only), merges
+ * member-signed v2 public-control operations into its blind `TopicKernel`, and
+ * relays opaque encrypted envelopes or verified public ops for offline peers.
  */
 export async function handleEnrollment(t: Tendril, req: Request, principal: Principal): Promise<Response> {
   if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+  const isOpenPublicInitialized = t.db.get(GENESIS_KEY, null) !== null && t.db.get<boolean>('v2_open_readers', false);
   if (principal.kind === 'page') {
-    if (!principal.accountId || principal.role === 'display') throw new HttpError(403, 'browser_account_required');
-    const served = req.headers.get('x-tendril-origin'), pageHost = new URL(pageUrl(t.env, t.tid, 'a'.repeat(26))).hostname;
-    let servedHost: string | null = null; try { servedHost = served ? new URL(served).hostname : null; } catch {}
-    if (!served || servedHost !== pageHost || req.headers.get('Origin') !== served) throw new HttpError(403, 'enrollment_origin_forbidden');
+    if ((!principal.accountId && !isOpenPublicInitialized) || principal.role === 'display') {
+      throw new HttpError(403, 'browser_account_required');
+    }
+    const served = req.headers.get('x-tendril-origin');
+    const pageHost = new URL(pageUrl(t.env, t.tid, 'a'.repeat(26))).hostname.toLowerCase();
+    let servedHost: string | null = null; try { servedHost = served ? new URL(served).hostname.toLowerCase() : null; } catch {}
+    let originAllowed = Boolean(served && servedHost && servedHost === pageHost);
+    if (!originAllowed && served && servedHost) {
+      const activeSub = t.activeSubdomain();
+      if (activeSub && servedHost === pageHostForLabel(t.env, activeSub) && await isActiveSubdomainForPage(t.env, servedHost, t.tid)) {
+        originAllowed = true;
+      } else if (await isActiveCustomDomainForPage(t.env, servedHost, t.tid)) {
+        originAllowed = true;
+      }
+    }
+    if (!served || !originAllowed || req.headers.get('Origin') !== served) throw new HttpError(403, 'enrollment_origin_forbidden');
   }
   const input = object(await readJson(req, 4 * 1024 * 1024), ENROLLMENT_FIELDS);
+  if (principal.kind === 'page' && !principal.accountId && input.action !== 'sync' && input.action !== 'mailbox') {
+    throw new HttpError(403, 'browser_account_required');
+  }
   try {
     return await withAuthorityMutation(t, async () => {
       await freshAuthorityAccess(t, principal);
       const accountId = authorityAccount(t, principal), applicationId = activeLogId(t);
-      const browserOnly = () => { if (principal.kind !== 'page') throw new HttpError(403, 'browser_account_required'); };
+      const browserOnly = () => { if (principal.kind !== 'page' || !principal.accountId) throw new HttpError(403, 'browser_account_required'); };
       const fields = (...allowed: string[]) => {
         if (Object.keys(input).some(key => key !== 'action' && !allowed.includes(key))) throw new HttpError(400, 'bad_request');
       };
@@ -846,6 +1055,11 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
         fields('publicOps', 'casNodes', 'checkpoints', 'knownOpIds', 'knownCasHashes');
         const synced = await syncControlState(t, principal, input);
         return json({ ...await applicationMetadata(t), ...synced });
+      }
+
+      if (input.action === 'mailbox') {
+        fields('encryptedEnvelopes', 'publicOps', 'casNodes', 'knownEnvelopeDigests', 'knownOpIds', 'knownCasHashes');
+        return json(await syncMailbox(t, principal, input));
       }
 
       if (input.action === 'admissions') {

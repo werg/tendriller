@@ -69,6 +69,7 @@ async function fixture(t) {
     ['dist/engine/migrations/0005_billing_and_tiers.sql', Buffer.from('SELECT 1;')],
     ['dist/engine/migrations/0006_oauth_connections_and_groups.sql', Buffer.from('SELECT 1;')],
     ['dist/engine/migrations/0007_custom_domains.sql', Buffer.from('SELECT 1;')],
+    ['dist/engine/migrations/0008_custom_subdomains.sql', Buffer.from('SELECT 1;')],
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
     ['server/src/runtime-release.json', json({ id: 'a'.repeat(64) })],
   ]);

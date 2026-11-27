@@ -151,6 +151,12 @@
             "id"
           ],
           "additionalProperties": false
+        },
+        "subdomain": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 45,
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])$"
         }
       },
       "required": [],
@@ -243,7 +249,40 @@
             }
           ]
         },
+        "subdomain": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 45,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "page_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bare_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fallback_page_url": {
           "anyOf": [
             {
               "type": "string"

@@ -8,10 +8,18 @@ import { errorResponse, HttpError, json, readBody, toErrorResponse } from "./htt
 import { PAGE_KEY_RE, TENDRIL_ID_RE } from "./ids";
 import { brandBase, brandMark } from "./brand";
 import { serviceSession } from "./accounts/auth";
-import { icon, servicePage } from "./accounts/ui";
+import { icon, renderShell, servicePage } from "./accounts/ui";
+import { copyAttrs, renderCopyText, SITE_COPY } from "./site-copy";
 import { getAccountEntitlements } from "./billing/entitlements";
 import { requireWritesOpen } from "./service-state";
-import { publicBase, type PageRoute } from "./urls";
+import { barePageUrl, publicBase, type PageRoute } from "./urls";
+import {
+  checkSubdomainAvailability,
+  listAccountSubdomains,
+  setPageSubdomain,
+  subdomainPlanAllowed,
+  type PageSubdomainRow,
+} from "./subdomains";
 
 export interface CustomDomainRow {
   hostname: string;
@@ -242,32 +250,94 @@ function parseFormOrJson(req: Request, raw: string): { isJson: boolean; params: 
   }
 }
 
-async function renderDomainsPage(env: Env, url: URL, accountId: string): Promise<Response> {
-  const [ent, domainsRes, pagesRes] = await Promise.all([
-    getAccountEntitlements(env, accountId),
-    env.ACCOUNTS.prepare(
-      "SELECT hostname, account_id, tendril_id, status, cf_hostname_id, verification_txt_name, verification_txt_value, ssl_status, last_error, created_at, verified_at, updated_at FROM custom_domains WHERE account_id = ? ORDER BY created_at DESC",
-    ).bind(accountId).all<CustomDomainRow>(),
-    env.ACCOUNTS.prepare(
-      "SELECT id, created_at FROM tendrils WHERE owner_account = ? AND state = 'active' ORDER BY created_at DESC",
-    ).bind(accountId).all<{ id: string; created_at: number }>(),
-  ]);
+export interface CustomDomainsView {
+  allowed: boolean;
+  fallbackTarget: string;
+  pageBaseDomain: string;
+  domains: CustomDomainRow[];
+  availablePages: Array<{ id: string }>;
+  subdomains?: PageSubdomainRow[];
+  subdomainAllowed?: boolean;
+  subdomainLimit?: number | null;
+  allPages?: Array<{ id: string; subdomain?: string | null }>;
+  flash?: string | null;
+  errMsg?: string | null;
+  editable?: boolean;
+}
 
-  const allowed = ent.unlimitedHost || ent.quotas.customDomain;
-  const fallbackTarget = fallbackOriginHost(env);
-  const boundPageIds = new Set(domainsRes.results.map((d) => d.tendril_id));
-  const availablePages = pagesRes.results.filter((p) => !boundPageIds.has(p.id));
+export function renderCustomDomainsBody(view: CustomDomainsView): string {
+  const editable = Boolean(view.editable);
+  const dCopy = SITE_COPY.domains;
+  const vars = { pageDomain: view.pageBaseDomain, fallbackTarget: view.fallbackTarget };
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const txt = (t: string) => renderCopyText(t, vars);
 
   const alerts: string[] = [];
-  const flash = url.searchParams.get("status");
-  if (flash === "added") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Custom domain added. Point your DNS records below, then click <strong>Verify DNS</strong>.</span></p>`);
-  if (flash === "verified") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Custom domain verified and active!</span></p>`);
-  if (flash === "pending") alerts.push(`<p class="notice warn" role="status">${icon("clock")}<span>DNS verification is still pending. Check your CNAME and TXT records and try again in a minute.</span></p>`);
-  if (flash === "removed") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Custom domain removed.</span></p>`);
-  const errMsg = url.searchParams.get("error");
-  if (errMsg) alerts.push(`<p class="notice danger" role="alert">${icon("x")}<span>${escape(errMsg)}</span></p>`);
+  if (view.flash === "added") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Custom domain added. Point your DNS records below, then click <strong>Verify DNS</strong>.</span></p>`);
+  if (view.flash === "verified") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Custom domain verified and active!</span></p>`);
+  if (view.flash === "pending") alerts.push(`<p class="notice warn" role="status">${icon("clock")}<span>DNS verification is still pending. Check your CNAME and TXT records and try again in a minute.</span></p>`);
+  if (view.flash === "removed") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Custom domain removed.</span></p>`);
+  if (view.flash === "subdomain_saved") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Named subdomain saved! Your page is now live at its new address (the original generated link continues working as a fallback).</span></p>`);
+  if (view.flash === "subdomain_reassigned") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Named subdomain moved atomically to the selected page! The previous page stays accessible at its generated address.</span></p>`);
+  if (view.flash === "subdomain_swapped") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Named subdomains swapped atomically between both pages!</span></p>`);
+  if (view.flash === "subdomain_removed") alerts.push(`<p class="notice" role="status">${icon("check")}<span>Named subdomain removed. Your page remains accessible at its generated address.</span></p>`);
+  if (view.errMsg) alerts.push(`<p class="notice danger" role="alert">${icon("x")}<span>${escape(view.errMsg)}</span></p>`);
 
-  const domainRows = domainsRes.results.map((d) => {
+  const subdomains = view.subdomains ?? [];
+  const subAllowed = Boolean(view.subdomainAllowed);
+  const subLimit = view.subdomainLimit ?? null;
+  const subPages: Array<{ id: string; subdomain?: string | null }> = view.allPages ?? view.availablePages;
+  const subQuotaLabel = subLimit === null ? `${subdomains.length} used · Unlimited` : `${subdomains.length} / ${subLimit}`;
+  const subRows = subdomains.map((s) => {
+    const fullHost = `${s.subdomain}.${view.pageBaseDomain}`;
+    const href = `https://${fullHost}/`;
+    const badge = subAllowed
+      ? `<span class="badge ok">Active</span>`
+      : `<span class="badge warn">Paused · upgrade to resume</span>`;
+    const otherPages = subPages.filter((p) => p.id !== s.tendril_id);
+    const reassignForm = subAllowed && otherPages.length > 0
+      ? `<form class="inline-form" method="post" action="/dashboard/domains/subdomains" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin-top:.45rem">
+          <input type="hidden" name="subdomain" value="${escape(s.subdomain)}">
+          <input type="hidden" name="reassign" value="1">
+          <input type="hidden" name="swap" value="1">
+          <label class="sr-only" for="move-${escape(s.subdomain)}">Move ${escape(s.subdomain)} to another page</label>
+          <select id="move-${escape(s.subdomain)}" name="tendril_id" style="width:auto;min-height:2rem;padding:.25rem .55rem;font-size:.82rem">${otherPages.map((p) => `<option value="${escape(p.id)}">${escape(p.id)}${p.subdomain ? ` (swap with ${escape(p.subdomain)})` : ""}</option>`).join("")}</select>
+          <button class="secondary sm" type="submit">Move / swap page</button>
+        </form>`
+      : "";
+    return `<li class="list-item" style="align-items:flex-start">
+      <div class="list-item-main">
+        <div class="list-item-title">${icon("link")} <a href="${escape(href)}" target="_blank" rel="noopener"><code>${escape(fullHost)}</code></a> ${badge}</div>
+        <p class="list-item-sub">Bound to page <code>${escape(s.tendril_id)}</code> · Fallback <code>${escape(s.tendril_id)}.${escape(view.pageBaseDomain)}</code> still works.</p>
+        ${reassignForm}
+      </div>
+      <div class="actions tight">
+        <form class="inline-form" method="post" action="/dashboard/domains/subdomains/delete"><input type="hidden" name="tendril_id" value="${escape(s.tendril_id)}"><button class="danger sm" type="submit">Remove</button></form>
+      </div>
+    </li>`;
+  }).join("");
+
+  const subdomainSection = subAllowed
+    ? `<section class="card stack-sm" id="subdomains">
+        <div class="card-head"><div><span class="eyebrow">Named subdomains</span><h2>Replace random subdomains with unique names</h2><p>Give any existing page a memorable address like <code>my-app.${escape(view.pageBaseDomain)}</code>. Public pages and signed-in owners can open the bare domain directly; the original generated link keeps working as a fallback.</p></div><span class="badge ok">${escape(subQuotaLabel)}</span></div>
+        ${subPages.length > 0
+          ? `<form method="post" action="/dashboard/domains/subdomains" class="stack-sm">
+              <div class="field-row">
+                <div class="field"><label class="field-label" for="sub-page">Page</label><select id="sub-page" name="tendril_id" required>${subPages.map((p) => `<option value="${escape(p.id)}">${escape(p.id)}${p.subdomain ? ` (${escape(p.subdomain)})` : ""}</option>`).join("")}</select></div>
+                <div class="field"><label class="field-label" for="sub-name">Unique subdomain name</label><input id="sub-name" name="subdomain" type="text" required minlength="3" maxlength="45" pattern="[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])" placeholder="my-app" autocomplete="off"><span class="field-hint">Becomes <code>&lt;name&gt;.${escape(view.pageBaseDomain)}</code> (3–45 lowercase letters, numbers, or single hyphens).</span></div>
+              </div>
+              <div class="actions tight"><button type="submit" class="sm">${icon("plus")} Save named subdomain</button></div>
+            </form>`
+          : `<p class="empty">Create a page first to assign a named subdomain.</p>`}
+        ${subRows ? `<ul class="list">${subRows}</ul>` : `<p class="empty">No named subdomains assigned yet.</p>`}
+      </section>`
+    : `<section class="card stack-sm" id="subdomains">
+        <div class="card-head"><div><span class="eyebrow">Pro &amp; Team feature</span><h2>Named page subdomains</h2><p>Replace random page subdomains with memorable unique names like <code>my-app.${escape(view.pageBaseDomain)}</code> (25 on Pro, 100 on Team, unlimited when self-hosting).</p></div><span class="badge">Pro, Team &amp; Self-Hosted</span></div>
+        <div class="actions tight"><a class="button sm" href="/dashboard/billing">${icon("sparkles")} Upgrade to Pro — $12/mo</a><a class="button secondary sm" href="/pricing">Compare plans</a><a class="button ghost sm" href="/self-host">Self-host free</a></div>
+        ${subRows ? `<ul class="list" style="margin-top:.5rem">${subRows}</ul>` : ""}
+      </section>`;
+
+  const domainRows = view.domains.map((d) => {
     const badge = d.status === "active"
       ? `<span class="badge ok">Active</span>`
       : d.status === "error"
@@ -275,7 +345,7 @@ async function renderDomainsPage(env: Env, url: URL, accountId: string): Promise
         : `<span class="badge warn">Pending DNS</span>`;
     const dnsHelp = d.status !== "active"
       ? `<div class="stack-sm" style="margin-top:.55rem;padding:.7rem .85rem;border-radius:10px;background:var(--surface-2);border:1px solid var(--line);font-size:.82rem">
-          <div><strong>1. CNAME record:</strong> <code>${escape(d.hostname)}</code> → <code>${escape(fallbackTarget)}</code></div>
+          <div><strong>1. CNAME record:</strong> <code>${escape(d.hostname)}</code> → <code>${escape(view.fallbackTarget)}</code></div>
           ${d.verification_txt_name && d.verification_txt_value ? `<div><strong>2. TXT record:</strong> <code>${escape(d.verification_txt_name)}</code> = <code>${escape(d.verification_txt_value)}</code></div>` : ""}
           ${d.last_error ? `<div style="color:var(--danger)">Last check: ${escape(d.last_error)}</div>` : ""}
         </div>`
@@ -292,33 +362,72 @@ async function renderDomainsPage(env: Env, url: URL, accountId: string): Promise
     </li>`;
   }).join("");
 
-  const addSection = allowed
+  const addSection = view.allowed
     ? `<section class="card stack-sm">
-        <div class="card-head"><div><span class="eyebrow">Connect a hostname</span><h2>Add a custom page domain</h2><p>Give any page its own branded domain (for example, <code>tracker.yourteam.com</code>). Your existing <code>*.${escape(env.PAGE_BASE_DOMAIN || "tendriller.dev")}</code> link keeps working too.</p></div></div>
-        ${availablePages.length > 0
+        <div class="card-head"><div><span class="eyebrow"${c("domains.add.eyebrow", dCopy.add.eyebrow)}>${txt(dCopy.add.eyebrow)}</span><h2${c("domains.add.title", dCopy.add.title)}>${txt(dCopy.add.title)}</h2><p${c("domains.add.lead", dCopy.add.lead)}>${txt(dCopy.add.lead)}</p></div></div>
+        ${view.availablePages.length > 0
           ? `<form method="post" action="/dashboard/domains" class="stack-sm">
               <div class="field-row">
-                <div class="field"><label class="field-label" for="domain-page">Page</label><select id="domain-page" name="tendril_id" required>${availablePages.map((p) => `<option value="${escape(p.id)}">${escape(p.id)}</option>`).join("")}</select></div>
+                <div class="field"><label class="field-label" for="domain-page">Page</label><select id="domain-page" name="tendril_id" required>${view.availablePages.map((p) => `<option value="${escape(p.id)}">${escape(p.id)}</option>`).join("")}</select></div>
                 <div class="field"><label class="field-label" for="domain-host">Custom hostname</label><input id="domain-host" name="hostname" type="text" required maxlength="253" placeholder="tracker.yourteam.com" autocomplete="off"></div>
               </div>
-              <p class="fine">After adding, point a <code>CNAME</code> record to <code>${escape(fallbackTarget)}</code> and add the ownership <code>TXT</code> record.</p>
+              <p class="fine"${c("domains.add.dnsHint", dCopy.add.dnsHint)}>${txt(dCopy.add.dnsHint)}</p>
               <div class="actions tight"><button type="submit" class="sm">${icon("plus")} Add custom domain</button></div>
             </form>`
-          : `<p class="empty">Create a page first (or remove an existing domain binding) to connect a custom hostname.</p>`}
+          : `<p class="empty"${c("domains.add.emptyPages", dCopy.add.emptyPages)}>${txt(dCopy.add.emptyPages)}</p>`}
       </section>`
     : `<section class="card stack-sm">
-        <div class="card-head"><div><span class="eyebrow">Team feature</span><h2>Custom page domains</h2><p>Serve your Tendriller pages on your own domain (e.g. <code>tracker.yourteam.com</code>) with automatic TLS on the <strong>Team</strong> plan or when self-hosting.</p></div><span class="badge">Team &amp; Self-Hosted</span></div>
+        <div class="card-head"><div><span class="eyebrow"${c("domains.upsell.eyebrow", dCopy.upsell.eyebrow)}>${txt(dCopy.upsell.eyebrow)}</span><h2${c("domains.upsell.title", dCopy.upsell.title)}>${txt(dCopy.upsell.title)}</h2><p${c("domains.upsell.lead", dCopy.upsell.lead)}>${txt(dCopy.upsell.lead)}</p></div><span class="badge">Team &amp; Self-Hosted</span></div>
         <div class="actions tight"><a class="button sm" href="/dashboard/billing">${icon("sparkles")} Upgrade to Team — $39/mo</a><a class="button secondary sm" href="/pricing">Compare plans</a><a class="button ghost sm" href="/self-host">Self-host free</a></div>
       </section>`;
 
-  const body = `<a class="back-link" href="/dashboard">← Back to dashboard</a>
-    <section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("link")} Branded origins</span><h1>Custom domains</h1><p class="lead">Serve individual pages on your own domain while preserving per-page origin isolation and signed OAuth access.</p></div></div></section>
+  return `<a class="back-link" href="/dashboard">← Back to dashboard</a>
+    <section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("link")} <span${c("domains.hero.eyebrow", dCopy.hero.eyebrow)}>${txt(dCopy.hero.eyebrow)}</span></span><h1${c("domains.hero.title", dCopy.hero.title)}>${txt(dCopy.hero.title)}</h1><p class="lead"${c("domains.hero.lead", dCopy.hero.lead)}>${txt(dCopy.hero.lead)}</p></div></div></section>
     ${alerts.join("")}
+    ${subdomainSection}
     ${addSection}
     <section class="card stack-sm">
-      <div class="card-head"><div><span class="eyebrow">Configured</span><h2>Your custom domains</h2></div><span class="badge">${domainsRes.results.length}</span></div>
-      ${domainRows ? `<ul class="list">${domainRows}</ul>` : `<p class="empty">No custom domains connected yet.</p>`}
+      <div class="card-head"><div><span class="eyebrow"${c("domains.list.eyebrow", dCopy.list.eyebrow)}>${txt(dCopy.list.eyebrow)}</span><h2${c("domains.list.title", dCopy.list.title)}>${txt(dCopy.list.title)}</h2></div><span class="badge">${view.domains.length}</span></div>
+      ${domainRows ? `<ul class="list">${domainRows}</ul>` : `<p class="empty"${c("domains.list.empty", dCopy.list.empty)}>${txt(dCopy.list.empty)}</p>`}
     </section>`;
+}
+
+export function renderCustomDomainsHtml(view: CustomDomainsView): string {
+  return renderShell({
+    title: "Custom domains",
+    body: renderCustomDomainsBody(view),
+    width: "medium",
+    brand: brandMark(brandBase, "/?home=1"),
+  });
+}
+
+async function renderDomainsPage(env: Env, url: URL, accountId: string): Promise<Response> {
+  const [ent, domainsRes, subdomains, pagesRes] = await Promise.all([
+    getAccountEntitlements(env, accountId),
+    env.ACCOUNTS.prepare(
+      "SELECT hostname, account_id, tendril_id, status, cf_hostname_id, verification_txt_name, verification_txt_value, ssl_status, last_error, created_at, verified_at, updated_at FROM custom_domains WHERE account_id = ? ORDER BY created_at DESC",
+    ).bind(accountId).all<CustomDomainRow>(),
+    listAccountSubdomains(env, accountId),
+    env.ACCOUNTS.prepare(
+      "SELECT id, created_at FROM tendrils WHERE owner_account = ? AND state = 'active' ORDER BY created_at DESC",
+    ).bind(accountId).all<{ id: string; created_at: number }>(),
+  ]);
+
+  const boundPageIds = new Set(domainsRes.results.map((d) => d.tendril_id));
+  const subByPage = new Map(subdomains.map((s) => [s.tendril_id, s.subdomain]));
+  const body = renderCustomDomainsBody({
+    allowed: ent.unlimitedHost || ent.quotas.customDomain,
+    fallbackTarget: fallbackOriginHost(env),
+    pageBaseDomain: env.PAGE_BASE_DOMAIN || "tendriller.dev",
+    domains: domainsRes.results,
+    availablePages: pagesRes.results.filter((p) => !boundPageIds.has(p.id)),
+    subdomains,
+    subdomainAllowed: subdomainPlanAllowed(ent),
+    subdomainLimit: ent.unlimitedHost ? null : ent.quotas.customSubdomains,
+    allPages: pagesRes.results.map((p) => ({ id: p.id, subdomain: subByPage.get(p.id) ?? null })),
+    flash: url.searchParams.get("status"),
+    errMsg: url.searchParams.get("error"),
+  });
 
   return servicePage("Custom domains", body, "", 200, {
     medium: true,
@@ -342,12 +451,69 @@ export async function routeCustomDomains(req: Request, env: Env, url: URL): Prom
   try {
     if (url.pathname === "/dashboard/domains" && req.method === "GET") {
       if (wantsJson) {
-        const rows = await env.ACCOUNTS.prepare(
-          "SELECT hostname, tendril_id, status, verification_txt_name, verification_txt_value, ssl_status, last_error, created_at, verified_at FROM custom_domains WHERE account_id = ? ORDER BY created_at DESC",
-        ).bind(session.accountId).all();
-        return json({ domains: rows.results, fallback_origin: fallbackOriginHost(env) });
+        const [ent, rows, subdomains] = await Promise.all([
+          getAccountEntitlements(env, session.accountId),
+          env.ACCOUNTS.prepare(
+            "SELECT hostname, tendril_id, status, verification_txt_name, verification_txt_value, ssl_status, last_error, created_at, verified_at FROM custom_domains WHERE account_id = ? ORDER BY created_at DESC",
+          ).bind(session.accountId).all(),
+          listAccountSubdomains(env, session.accountId),
+        ]);
+        return json({
+          domains: rows.results,
+          subdomains: subdomains.map((s) => ({
+            subdomain: s.subdomain,
+            tendril_id: s.tendril_id,
+            bare_url: barePageUrl(env, s.tendril_id, s.subdomain),
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+          })),
+          subdomain_quota: {
+            allowed: subdomainPlanAllowed(ent),
+            used: subdomains.length,
+            limit: ent.unlimitedHost ? null : ent.quotas.customSubdomains,
+          },
+          fallback_origin: fallbackOriginHost(env),
+        });
       }
       return await renderDomainsPage(env, url, session.accountId);
+    }
+
+    if (url.pathname === "/dashboard/domains/subdomains/check" && req.method === "GET") {
+      const name = url.searchParams.get("name") ?? "";
+      const tendrilId = url.searchParams.get("tendril_id");
+      return json(await checkSubdomainAvailability(env, name, tendrilId && TENDRIL_ID_RE.test(tendrilId) ? tendrilId : null));
+    }
+
+    if (url.pathname === "/dashboard/domains/subdomains" && req.method === "POST") {
+      sameOrigin(req, env);
+      await requireWritesOpen(env);
+      const raw = new TextDecoder().decode(await readBody(req, 4096));
+      const { params } = parseFormOrJson(req, raw);
+      const tendrilId = String(params.tendril_id ?? "").trim();
+      const subRaw = params.subdomain === null ? null : String(params.subdomain ?? "").trim();
+      const reassign = params.reassign === true || params.reassign === "1" || params.reassign === "true";
+      const swap = params.swap === true || params.swap === "1" || params.swap === "true";
+      const result = await setPageSubdomain(env, session.accountId, tendrilId, subRaw, `owner:${session.accountId}`, { reassign, swap });
+      if (wantsJson) return json(result, 200);
+      const flash = !result.subdomain
+        ? "subdomain_removed"
+        : result.swapped_subdomain
+          ? "subdomain_swapped"
+          : result.previous_tendril_id
+            ? "subdomain_reassigned"
+            : "subdomain_saved";
+      return redirect(`/dashboard/domains?status=${flash}`, 303);
+    }
+
+    if (url.pathname === "/dashboard/domains/subdomains/delete" && req.method === "POST") {
+      sameOrigin(req, env);
+      await requireWritesOpen(env);
+      const raw = new TextDecoder().decode(await readBody(req, 4096));
+      const { params } = parseFormOrJson(req, raw);
+      const tendrilId = String(params.tendril_id ?? "").trim();
+      const result = await setPageSubdomain(env, session.accountId, tendrilId, null, `owner:${session.accountId}`);
+      if (wantsJson) return json(result, 200);
+      return redirect("/dashboard/domains?status=subdomain_removed", 303);
     }
 
     if (url.pathname === "/dashboard/domains" && req.method === "POST") {

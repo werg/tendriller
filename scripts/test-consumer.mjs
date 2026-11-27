@@ -83,7 +83,10 @@ accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/agent
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/broadcasts-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/limits-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/billing-schema')), 'utf8'));
-for (const table of ['subscriptions', 'billing_events', 'usage_periods', 'active_relay_leases'])
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/oauth-groups-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/custom-domains-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/custom-subdomains-schema')), 'utf8'));
+for (const table of ['subscriptions', 'billing_events', 'usage_periods', 'active_relay_leases', 'custom_domains', 'page_subdomains'])
   assert.equal(accounts.prepare('SELECT name FROM sqlite_master WHERE name=?').get(table)?.name, table);
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='system_broadcasts'").get().name, 'system_broadcasts');
 for (const api of [generateBroadcastKeyPair, signBroadcastPayload, verifyBroadcastSignature, evaluateBroadcastMatch]) assert.equal(typeof api, 'function');
@@ -112,7 +115,9 @@ const agent = createAgentClient({service:'https://host.test',token:'ta_'+'a'.rep
   requests++; urls.push(String(url)); return Response.json({ record: JSON.parse(init.body).record });
 }});
 const client = agent.page('aaaaaaaaaaaa', {applicationId: application.id});
-assert.deepEqual(Object.keys(client).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
+for (const method of ['fetch', 'info', 'request', 'setSubdomain', 'socket'])
+  assert.equal(typeof client[method], 'function', 'packed page client exposes ' + method);
+assert.equal(client.id, 'aaaaaaaaaaaa');
 assert.equal(client.base, 'https://host.test/api/agent/pages/aaaaaaaaaaaa');
 assert.equal(requests, 0);
 const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),

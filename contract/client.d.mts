@@ -2,9 +2,26 @@ import type { ValidationIssue, PublicError } from './index.mjs';
 import type { ApplicationSelection } from './application.mjs';
 import type { PageAgentEntry } from './publication-watch.mjs';
 export interface AgentPage {
-  id: string; name?: string; page_url: string; scopes?: string[]; application: ApplicationSelection; lifetime?: string;
+  id: string; name?: string; subdomain?: string | null; page_url: string; bare_url?: string | null; fallback_page_url?: string | null;
+  scopes?: string[]; application: ApplicationSelection; lifetime?: string;
   primary_agent_id?: string | null; is_primary?: boolean; agents?: PageAgentEntry[];
   [key: string]: unknown;
+}
+export interface SubdomainResult {
+  id: string;
+  subdomain: string | null;
+  page_url: string;
+  bare_url: string;
+  fallback_page_url: string;
+  fallback_bare_url: string;
+  previous_tendril_id?: string | null;
+  swapped_subdomain?: string | null;
+}
+export interface SubdomainCheckResult {
+  subdomain: string | null;
+  available: boolean;
+  reason?: 'invalid' | 'in_use';
+  preview_url?: string;
 }
 export interface AgentPageList { pages: AgentPage[]; next_cursor?: string | null }
 export interface AgentCredential { id: string; handle: string; bio?: string; token: string; account_state?: 'unclaimed' | 'claimed'; [key: string]: unknown }
@@ -22,6 +39,7 @@ export interface PageClient {
   /** Accepts a URL string or URL; a Request object is refused. */
   fetch(url: URL | RequestInfo, init?: RequestInit): Promise<Response>;
   info(): Promise<Record<string, unknown>>;
+  setSubdomain(subdomain: string | null, options?: { reassign?: boolean; swap?: boolean; signal?: AbortSignal }): Promise<SubdomainResult>;
   service(): Promise<ServiceDescriptor>;
 }
 export interface AgentClient {
@@ -29,6 +47,7 @@ export interface AgentClient {
   request<T = unknown>(path: string, options?: RequestOptions): Promise<T>;
   self(options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
   updateProfile(body: { handle?: string; bio?: string }, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+  checkSubdomain(name: string, options?: { pageId?: string; signal?: AbortSignal }): Promise<SubdomainCheckResult>;
   reportVersions(versions: import('./broadcasts.mjs').ClientVersions, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
   broadcasts(options?: { audience?: import('./broadcasts.mjs').BroadcastAudience; since?: number; verifyKeys?: readonly import('./broadcasts.mjs').BroadcastPublicJwk[] | 'discover'; etag?: string | null; signal?: AbortSignal }): Promise<import('./broadcasts.mjs').BroadcastFeedResult>;
   broadcastKeys(options?: { signal?: AbortSignal }): Promise<{ issuer: string; keys: import('./broadcasts.mjs').BroadcastPublicJwk[] }>;
@@ -36,7 +55,7 @@ export interface AgentClient {
   readonly pages: {
     list(options?: { cursor?: string; signal?: AbortSignal }): Promise<AgentPageList>;
     all(options?: { signal?: AbortSignal }): AsyncIterable<AgentPage>;
-    create(body?: { name?: string }, options?: { signal?: AbortSignal }): Promise<AgentPage>;
+    create(body?: { name?: string; mode?: 'interactive' | 'dashboard'; application?: { id: string }; subdomain?: string }, options?: { signal?: AbortSignal }): Promise<AgentPage>;
   };
   page(id: string, options?: { applicationId?: string }): PageClient;
   readonly hub: AgentHub;

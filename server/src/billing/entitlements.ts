@@ -20,7 +20,8 @@ export type QuotaKind =
   | "media_bytes"
   | "sfu"
   | "relay_concurrent"
-  | "relay_duration";
+  | "relay_duration"
+  | "custom_subdomains";
 
 export interface SubscriptionSummary {
   provider: string;
@@ -87,6 +88,7 @@ interface AccountRow {
   media_bytes_cap?: number | null;
   relay_ms_cap?: number | null;
   relay_concurrent_cap?: number | null;
+  subdomain_cap?: number | null;
   payg_enabled?: number | null;
   payg_spend_cap_cents?: number | null;
 }
@@ -136,7 +138,7 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
           .first<ServiceCapRow>().catch(() => null),
         env.ACCOUNTS.prepare(`SELECT plan, page_cap, resident_cap, storage_cap, agent_cap, guest_cap, version_retention_cap,
           mcp_page_cap, mcp_call_cap, mcp_store_cap, media_bytes_cap, relay_ms_cap, relay_concurrent_cap,
-          payg_enabled, payg_spend_cap_cents FROM accounts WHERE id = ?`)
+          subdomain_cap, payg_enabled, payg_spend_cap_cents FROM accounts WHERE id = ?`)
           .bind(accountId).first<AccountRow>().catch(() => null),
         env.ACCOUNTS.prepare(`SELECT provider, customer_id, subscription_id, plan_id, billing_interval, status,
           period_start, period_end, cancel_at_period_end, grace_until FROM subscriptions WHERE account_id = ?`)
@@ -207,6 +209,7 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
     mediaBytesPerMonth: pick(account?.media_bytes_cap, base.mediaBytesPerMonth),
     relayMsPerMonth: pick(account?.relay_ms_cap, base.relayMsPerMonth),
     relayConcurrentSessions: pick(account?.relay_concurrent_cap, base.relayConcurrentSessions),
+    customSubdomains: pick(account?.subdomain_cap, base.customSubdomains),
   };
 
   // If the account's plan has explicit non-free caps (e.g., pro/team), honor them even when service_state has Free defaults.
@@ -267,6 +270,7 @@ export async function applyPlanToAccount(env: Env, accountId: string, plan: Plan
     media_bytes_cap = ?,
     relay_ms_cap = ?,
     relay_concurrent_cap = ?,
+    subdomain_cap = ?,
     payg_enabled = CASE WHEN ? = 1 THEN payg_enabled ELSE 0 END
     WHERE id = ?`)
     .bind(
@@ -283,6 +287,7 @@ export async function applyPlanToAccount(env: Env, accountId: string, plan: Plan
       q.mediaBytesPerMonth,
       q.relayMsPerMonth,
       q.relayConcurrentSessions,
+      q.customSubdomains,
       q.paygAllowed ? 1 : 0,
       accountId,
     ).run();

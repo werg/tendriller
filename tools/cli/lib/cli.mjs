@@ -31,7 +31,8 @@ Workspace (one agent credential and signing key for many pages):
   workspace verify                                                                 Verify packages/, package-lock.json integrity & node_modules match composition.json
   workspace upgrade [--kit ARCHIVE_OR_DIR] [--check]                               Cleanly regenerate package-lock.json, run npm ci --ignore-scripts, and verify exact release archives
   workspace reenroll [--service URL] (--owner EMAIL | --code CODE | --credential FILE) [--handle H] [--bio B]  Re-enroll an existing workspace agent preserving signing/wrap keys and local data
-  page new <slug> [--name TITLE]        Create a page (granted to this agent) and its pages/<slug>/ folder
+  page new <slug> [--name TITLE] [--subdomain NAME] Create a page (granted to this agent) and its pages/<slug>/ folder
+  page subdomain <slug> <name|--clear> [--reassign] [--swap]  Set, rename, move/swap, or clear a page's named subdomain (paid plans)
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
   page devices <slug>                   Admitted devices/agents, pending sign-ins, invites and admission mode
@@ -69,10 +70,12 @@ Page application session (attaches to tendril agent run; --page <slug|id>):
   watch [--events [--cursor CURSOR] [--topics JSON] [--limit N]]   Without --page: every running page, cursors per page
   logs [--topics JSON] [--latest]
   signal <topic> <json> [--ttl MILLISECONDS]
-  topic <name> | sql <query|exec|migrate|rls|schema|tables> [json] [--topic sql] [--operation ID]
-  reducers [inspect|set <json>] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite <json>] [--operation ID]
-  finality status | finality close --through MS | finality submit <canonical-checkpoint-record>
-  definition | publication | publication-operation <id> | publication-recover <rev|opId> [dir] | publication-rollback <rev|opId> --operation ID
+  topic <name> | sql <query|exec|migrate|migrate-file|rls|schema|tables> [json|file.sql] [--topic sql] [--policies file.json] [--operation ID]
+  reducers [inspect|set <json>|publish <spec> <file.mjs> [--bind topic=spec[:export]]] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|multisig-propose|multisig-approve|multisig-cancel <json|id>] [--operation ID]
+  finality status | finality schedule --kind none|signed-frontier|fixed-validator [--signer PK] [--effective-after MS] --operation ID | finality close --through MS | finality submit <record>
+  blueprint export [out.json] [--title TEXT] [--no-schema]
+  definition | publication | publication-history | publication-operation <id> | publication-recover <rev|opId> [dir] | publication-rollback <rev|opId> --operation ID
+  content put <file> [--visibility public|private] [--no-dedup] [--type mime] | content get <hash|ref-json> [out]
   publish <directory> [--operation ID] [--entry index.html]
 
 --workspace DIR (or TENDRIL_WORKSPACE) selects the workspace; otherwise the nearest
@@ -84,17 +87,17 @@ Chronolog owns signing, exact retry and durable identity. Finality is optional;
 a timed out waiter preserves its original stored proposal and author timestamp.`;
 
 const sessionCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'query', 'command', 'command-batch', 'operation', 'retry',
-  'events', 'watch', 'logs', 'signal', 'topic', 'sql', 'reducers', 'permissions', 'finality',
-  'definition', 'publication', 'publication-operation', 'publication-recover', 'publication-rollback', 'publish']);
+  'events', 'watch', 'logs', 'signal', 'topic', 'sql', 'reducers', 'permissions', 'finality', 'blueprint', 'content',
+  'definition', 'publication', 'publication-history', 'publication-operation', 'publication-recover', 'publication-rollback', 'publish']);
 const hostCommands = new Set(['info', 'meta', 'release', 'link', 'notify', 'activity', 'remove']);
 const flagsByCommand = {
   self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'author-time', 'wait'],
   'command-batch': ['wait'], operation: [],
   retry: ['wait'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
   logs: ['topics', 'latest'],
-  signal: ['ttl'], topic: [], sql: ['topic', 'operation', 'author-time', 'wait'],
-  reducers: ['operation', 'author-time', 'wait'], permissions: ['operation', 'author-time', 'wait'],
-  finality: ['through'], definition: [], publication: [], 'publication-operation': [],
+  signal: ['ttl'], topic: [], sql: ['topic', 'policies', 'operation', 'author-time', 'wait'],
+  reducers: ['bind', 'operation', 'author-time', 'wait'], permissions: ['operation', 'author-time', 'wait'],
+  finality: ['through', 'kind', 'signer', 'validators', 'threshold', 'effective-after', 'operation', 'author-time', 'wait'], blueprint: ['title', 'no-schema'], content: ['visibility', 'no-dedup', 'type'], definition: [], publication: [], 'publication-history': [], 'publication-operation': [],
   'publication-recover': [], 'publication-rollback': ['operation', 'author-time', 'wait'], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
@@ -105,8 +108,8 @@ const flagsByCommand = {
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
-  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], topic: [1, 1], sql: [1, 2], reducers: [0, 2], permissions: [0, 2],
-  finality: [1, 2], definition: [0, 0], publication: [0, 0],
+  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], topic: [1, 1], sql: [1, 2], reducers: [0, 3], permissions: [0, 2],
+  finality: [1, 2], blueprint: [1, 2], content: [2, 3], definition: [0, 0], publication: [0, 0], 'publication-history': [0, 0],
   'publication-operation': [1, 1], 'publication-recover': [1, 2], 'publication-rollback': [1, 1],
   publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], changelog: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], connection: [1, 2], 'mcp-stdio': [0, 0],
@@ -220,9 +223,21 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     const [action, slug, id] = args;
     if (action === 'list' && args.length === 1) return describeWorkspace(workspace, { signal });
     if (action === 'new' && args.length === 2) {
-      const page = await workspace.createPage(slug, { name: flags.name ?? slug }, { signal });
-      return { slug, id: page.id, name: page.name, page_url: page.page_url, application: page.application, source: page.source,
+      const page = await workspace.createPage(slug, { name: flags.name ?? slug, ...(flags.subdomain ? { subdomain: String(flags.subdomain).trim().toLowerCase() } : {}) }, { signal });
+      return { slug, id: page.id, name: page.name, ...(page.subdomain ? { subdomain: page.subdomain } : {}), page_url: page.page_url, ...(page.bare_url ? { bare_url: page.bare_url } : {}), application: page.application, source: page.source,
         next: `Write the page source in pages/${slug}/ (agent.mjs exports openPage), initialize it, publish, then give the owner page_url.` };
+    }
+    if (action === 'subdomain' && (args.length === 2 || args.length === 3)) {
+      if (flags.clear) {
+        return workspace.setPageSubdomain(slug, null, { signal });
+      }
+      const nextName = id ?? (typeof flags.name === 'string' ? flags.name : undefined);
+      if (!nextName) throw invalid('Use: tendril page subdomain <slug> <name> [--reassign] [--swap] or tendril page subdomain <slug> --clear');
+      return workspace.setPageSubdomain(slug, String(nextName).trim().toLowerCase(), {
+        reassign: Boolean(flags.reassign),
+        swap: Boolean(flags.swap),
+        signal,
+      });
     }
     if (action === 'grant' && args.length === 3) {
       const client = await workspace.client();
@@ -233,7 +248,7 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       return { slug, id: page.id, name: page.name, source: page.source };
     }
     if (['devices', 'approve', 'remove-device', 'mode', 'owner-grant', 'invite', 'revoke-invite', 'group'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
-    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|owner-grant|invite|revoke-invite|group; see --help');
+    throw invalid('Use page new|subdomain|grant|list|devices|approve|remove-device|mode|owner-grant|invite|revoke-invite|group; see --help');
   }
   if (command === 'agent') {
     if (args[0] === 'profile') {

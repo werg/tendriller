@@ -21,6 +21,7 @@ import { handlePageGroups } from "./groups/org-groups";
 import { publicBase } from "./urls";
 import { brandMark } from "./brand";
 import { renderShell } from "./accounts/ui";
+import { copyAttrs, renderCopyText, SITE_COPY } from "./site-copy";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
 import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons, resolveShortcuts } from "./pwa";
@@ -35,7 +36,9 @@ export function pageAccessDenied(status: 401 | 403): Response {
 }
 
 export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Response> {
+  const bare = req.headers.get("x-tendril-bare") === "1";
   const key = req.headers.get("x-tendril-key") ?? "";
+  const effectiveKey = bare ? undefined : key;
   const base = req.headers.get("x-tendril-base") ?? "/";
   const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
   // Before PSL acceptance sibling tendrils are same-site. Check the actual
@@ -50,10 +53,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
   const denyLocal = async () => pageAccessDenied(t.db.get<string | null>("owner_account", null)
     && await t.checkPagePolicy() === "page" ? 403 : 401);
-  const link = await t.linkForKey(key);
+  const link = bare ? t.mainLink() : await t.linkForKey(key);
   if (!link) return denyLocal();
   let access: Awaited<ReturnType<typeof authenticateLocalPage>>;
-  try { access = await authenticateLocalPage(t, req, link); }
+  try { access = await authenticateLocalPage(t, req, link, { bare }); }
   catch (error) {
     if (error instanceof HttpError && error.status === 401) return denyLocal();
     throw error;
@@ -64,17 +67,17 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (principal.role === "display") {
     await t.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
     if (t.db.get("disabled", false)) return pageAccessDenied(403);
-    if (!currentPrincipal(t, principal, key)) return pageAccessDenied(401);
+    if (!currentPrincipal(t, principal, effectiveKey)) return pageAccessDenied(401);
   }
   const policy = await t.checkPagePolicy(principal.accountId);
   if (policy === "page") return pageAccessDenied(403);
-  if (policy === "visitor" || !currentPrincipal(t, principal, key)) return pageAccessDenied(401);
+  if (policy === "visitor" || !currentPrincipal(t, principal, effectiveKey)) return pageAccessDenied(401);
   // Only an active account may charge the shared page and owner budgets.
   await admitPageTraffic(t.env, t.tid, t.db.get<string | null>("owner_account", null));
   if (writes && !(upgrade && rest === "_tendril/publication-ready")) await requireWritesOpen(t.env);
   // Guest suspension does not necessarily invalidate this object's SQL.
   const active = principal.role !== "guest" || !principal.accountId || await accountActive(t, principal.accountId);
-  if (!active || !currentPrincipal(t, principal, key)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
+  if (!active || !currentPrincipal(t, principal, effectiveKey)) return pageAccessDenied(t.db.get("disabled", false) ? 403 : 401);
   t.recordAccess();
 
   if (!rest.startsWith("_tendril/")) {
@@ -147,6 +150,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "report" && m === "GET") {
+    const r = SITE_COPY.report;
     const html = renderShell({
       title: "Report page",
       brand: brandMark(base + "_tendril/brand/", base),
@@ -154,7 +158,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       nav: `<a class="nav-link" href="${base}">Return to page</a>`,
       footer: "",
       themeToggle: false,
-      body: `<section class="card"><span class="eyebrow">Safety</span><h1>Report this page</h1><p class="lead">Tell us what is wrong with this page.</p><form method="post"><div class="field"><label class="field-label" for="report-reason">Details</label><textarea id="report-reason" name="reason" required maxlength="2000" placeholder="Describe the issue…"></textarea></div><div class="actions"><button type="submit">Send report</button></div></form></section>`,
+      body: `<section class="card"><span class="eyebrow">${renderCopyText(r.eyebrow)}</span><h1>${renderCopyText(r.pageTitle)}</h1><p class="lead">${renderCopyText(r.pageLead)}</p><form method="post"><div class="field"><label class="field-label" for="report-reason">Details</label><textarea id="report-reason" name="reason" required maxlength="2000" placeholder="Describe the issue…"></textarea></div><div class="actions"><button type="submit">Send report</button></div></form></section>`,
     });
     return new Response(html,
       { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin",
@@ -258,7 +262,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (sub === "agents/join" && m === "POST") {
     if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
     await requireWritesOpen(t.env);
-    if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
+    if (!currentPrincipal(t, principal, effectiveKey)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
     const created = await createJoinCode(t.env, principal.accountId);
     addActivity(t, { kind: "agent_join_code", summary: "Created a one-time agent join code", by: `owner:${principal.accountId}` });
     return json({
@@ -276,7 +280,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (b.agent_id !== null && typeof b.agent_id !== "string") {
       throw new HttpError(400, "bad_request", "Expected { agent_id: string | null }");
     }
-    if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
+    if (!currentPrincipal(t, principal, effectiveKey)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
     const roster = setPrimaryAgent(t, b.agent_id, `owner:${principal.accountId}`);
     return json(roster, 200, { "Cache-Control": "no-store" });
   }
@@ -285,7 +289,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     await requireWritesOpen(t.env);
     const b = await readJson(req, 4096);
     if (typeof b.agent !== "string" || typeof b.granted !== "boolean") throw new HttpError(400, "bad_request", "Expected { agent, granted }");
-    if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
+    if (!currentPrincipal(t, principal, effectiveKey)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
     if (b.granted) {
       const agent = (await listAccountAgents(t.env, principal.accountId)).find(row => row.id === b.agent);
       if (!agent) throw new HttpError(404, "not_found", "No such agent on your account");
@@ -313,7 +317,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const view = typeof b.view === "string" ? b.view.trim() || null : null;
     if (email !== null && b.role !== "guest") throw new HttpError(400, "bad_request", "Email restriction is only supported on guest invite links");
     const link = await t.createLink(b.role, label, expiresIn, false, () => {
-      if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized");
+      if (!currentPrincipal(t, principal, effectiveKey)) throw new HttpError(401, "unauthorized");
       const total = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links")?.n ?? 0;
       if (total >= 50) throw new HttpError(429, "link_limit", "At most 50 links are allowed per page");
     }, email, view);
@@ -361,7 +365,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ ok: true });
   }
 
-  if (sub === "publication-ready" && m === "GET" && upgrade) return watchPublication(t, req, principal, key);
+  if (sub === "publication-ready" && m === "GET" && upgrade) return watchPublication(t, req, principal, effectiveKey ?? link.key);
   if (sub === "publication-ready" && m === "HEAD") {
     return new Response(null, { status: servedVersion(t) > 0 ? 204 : 202, headers: { "Cache-Control": "no-store", "Tendril-Publication-Version": String(servedVersion(t)) } });
   }
@@ -372,6 +376,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       application: selectedApplication(t), id: t.tid, version: v, base,
       files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [],
       publication: publicationManifest(t, v, base),
+      visibility: {
+        open_readers: t.db.get<boolean>("v2_open_readers", false),
+        open_writers: t.db.get<boolean>("v2_open_writers", false),
+      },
       features: t.features(),
       ...(principal.role !== "display" ? { agents: pageAgents(t) } : {}),
     });

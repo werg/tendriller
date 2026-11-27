@@ -25,7 +25,7 @@ test('the fresh account baseline enforces reservations and account limits atomic
 test('the account schema holds OAuth, assistant and agent tables, and agent rows cascade with their account and page', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
   db.exec('PRAGMA foreign_keys = ON');
-  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql'])
+  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql', '0008_custom_subdomains.sql'])
     db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   for (const table of ['integration_oauth_access', 'integration_oauth_codes', 'integration_oauth_refresh',
     'integration_oauth_grants', 'integration_oauth_intents', 'mcp_connections', 'agents', 'agent_grants', 'agent_join_codes',
@@ -52,7 +52,7 @@ test('the account schema holds OAuth, assistant and agent tables, and agent rows
 test('configurable account limits default to production caps and allow unlimited NULL caps for localhost', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
   db.exec('PRAGMA foreign_keys = ON');
-  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql'])
+  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql', '0008_custom_subdomains.sql'])
     db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
   // Default unified page & resident cap is 20.
@@ -69,9 +69,11 @@ test('configurable account limits default to production caps and allow unlimited
   db.exec("UPDATE accounts SET plan='free', page_cap=20, resident_cap=20, storage_cap=1073741824 WHERE id='owner'");
   assert.throws(() => db.exec("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES('p00000000024','owner',1,'resident')"), /account_tendrils_full/);
   db.exec("UPDATE tendrils SET lifetime='ad_hoc' WHERE id='p00000000023'");
-  // Custom domain row cascades cleanly when a page is deleted.
+  // Custom domain & named subdomain rows cascade cleanly when a page is deleted.
   db.exec("INSERT INTO custom_domains(hostname,account_id,tendril_id,status,created_at,updated_at) VALUES('app.team.test','owner','p00000000001','active',1,1)");
+  db.exec("INSERT INTO page_subdomains(subdomain,account_id,tendril_id,created_at,updated_at) VALUES('my-team-app','owner','p00000000001',1,1)");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM custom_domains").get().n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM page_subdomains").get().n, 1);
   // Setting NULL removes caps (localhost dev mode).
   db.exec("UPDATE service_state SET account_page_cap=NULL, account_resident_cap=NULL, account_storage_cap=NULL WHERE id=1");
   for (let i = 24; i <= 28; i++) {
@@ -81,4 +83,5 @@ test('configurable account limits default to production caps and allow unlimited
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tendrils WHERE owner_account='owner' AND lifetime='resident'").get().n, 27);
   db.exec("DELETE FROM tendrils WHERE id='p00000000001'");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM custom_domains").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM page_subdomains").get().n, 0);
 });

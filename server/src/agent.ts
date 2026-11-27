@@ -18,6 +18,7 @@ import { onboardingDescriptor } from './onboarding';
 import { publicBase } from './urls';
 import { isEmojiIcon, validateShortcuts, type PageShortcut } from './pwa';
 import { sendPushNotification } from './push';
+import { setPageSubdomain } from './subdomains';
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -67,7 +68,9 @@ export function agentPageSummary(t: Tendril, agentId: string) {
   const grant = localAgentGrant(t, agentId);
   const roster = pageAgents(t);
   return {
-    id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
+    id: t.tid, name: t.db.get('name', 'Tendril'), subdomain: t.activeSubdomain(),
+    page_url: t.mainPageUrl(), bare_url: t.barePageUrl(), fallback_page_url: t.mainPageUrl({ fallback: true }),
+    lifetime: t.db.get('lifetime', 'ad_hoc'),
     application: { id: selectedApplication(t).id }, claimed: t.db.get<string | null>('owner_account', null) !== null,
     expires_at: t.expiresAt(), scopes: grant?.scopes ?? [], granted_by: grant?.granted_by ?? null,
     primary_agent_id: roster.primary_agent_id, is_primary: roster.primary_agent_id === agentId, agents: roster.agents,
@@ -79,7 +82,9 @@ async function tendrilInfo(t: Tendril, agentId?: string) {
     .bind(ownerId).first<{ provider: string; login: string }>() : null;
   const roster = pageAgents(t);
   return {
-    id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
+    id: t.tid, name: t.db.get('name', 'Tendril'), subdomain: t.activeSubdomain(),
+    page_url: t.mainPageUrl(), bare_url: t.barePageUrl(), fallback_page_url: t.mainPageUrl({ fallback: true }),
+    lifetime: t.db.get('lifetime', 'ad_hoc'),
     application: selectedApplication(t), configured: applicationPrepared(t),
     expires_at: t.expiresAt(), owner, owner_account_id: ownerId, version: pointers(t), meta: tendrilMeta(t),
     primary_agent_id: roster.primary_agent_id,
@@ -102,12 +107,40 @@ export function tendrilMeta(t: Tendril) {
 route('GET', /^$/, async (t, _req, _url, _by, _params, principal) => json({ ...await tendrilInfo(t, principal.agentId), scopes: principal.scopes }));
 route('GET', /^service$/, t => json(serviceDescriptor(t.env)));
 route('GET', /^guide$/, t => json(onboardingDescriptor(publicBase(t.env))));
-route("PATCH", /^$/, async (t, req) => {
+async function requireAgentManageOnPage(t: Tendril, agentId: string, targetPageId: string): Promise<void> {
+  if (!t.env.ACCOUNTS) throw new HttpError(503, "unavailable", "Accounts database is not configured");
+  const row = await t.env.ACCOUNTS.prepare(
+    "SELECT scopes FROM agent_grants WHERE agent_id = ? AND page_id = ?",
+  ).bind(agentId, targetPageId).first<{ scopes: string }>();
+  if (!row) {
+    throw new HttpError(403, "forbidden", `This agent does not have access to page ${targetPageId}, which currently holds this subdomain.`);
+  }
+  const scopes = JSON.parse(row.scopes) as string[];
+  if (!scopes.includes("host:manage")) {
+    throw new HttpError(403, "agent_scope_required", `Reassigning from page ${targetPageId} requires host:manage scope on that page.`);
+  }
+}
+
+route("PATCH", /^$/, async (t, req, _url, by, _params, principal) => {
   const b = await readJson(req, 64 * 1024);
   if (b.name !== undefined) t.db.set("name", validName(b.name));
   if (b.lifetime !== undefined) {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
     await changeLifetime(t, b.lifetime);
+  }
+  if (b.subdomain !== undefined) {
+    if (b.subdomain !== null && typeof b.subdomain !== "string") {
+      throw new HttpError(400, "invalid_subdomain", "subdomain must be a string or null to remove");
+    }
+    const owner = t.db.get<string | null>("owner_account", null);
+    if (!owner) {
+      throw new HttpError(409, "claim_required", "Claim this page with a paid account before assigning a named subdomain.");
+    }
+    await setPageSubdomain(t.env, owner, t.tid, b.subdomain, by, {
+      reassign: b.reassign === true,
+      swap: b.swap === true,
+      authorizeDisplacedPage: (prevId) => requireAgentManageOnPage(t, principal.agentId, prevId),
+    });
   }
   if (b.short_name !== undefined) t.db.set("short_name", b.short_name === null ? null : validName(b.short_name).slice(0, 30));
   for (const k of ["theme_color", "background_color"] as const) {
@@ -139,6 +172,30 @@ route("PATCH", /^$/, async (t, req) => {
   }
   t.scheduleAlarm();
   return json(await tendrilInfo(t));
+});
+
+route("PUT", /^subdomain$/, async (t, req, _url, by, _params, principal) => {
+  const b = await readJson(req, 4096);
+  if (b.subdomain !== null && typeof b.subdomain !== "string") {
+    throw new HttpError(400, "invalid_subdomain", "Expected { subdomain: string | null }");
+  }
+  const owner = t.db.get<string | null>("owner_account", null);
+  if (!owner) {
+    throw new HttpError(409, "claim_required", "Claim this page with a paid account before assigning a named subdomain.");
+  }
+  return json(await setPageSubdomain(t.env, owner, t.tid, b.subdomain, by, {
+    reassign: b.reassign === true,
+    swap: b.swap === true,
+    authorizeDisplacedPage: (prevId) => requireAgentManageOnPage(t, principal.agentId, prevId),
+  }));
+});
+
+route("DELETE", /^subdomain$/, async (t, _req, _url, by) => {
+  const owner = t.db.get<string | null>("owner_account", null);
+  if (!owner) {
+    throw new HttpError(409, "claim_required", "This page is not claimed.");
+  }
+  return json(await setPageSubdomain(t.env, owner, t.tid, null, by));
 });
 
 route("DELETE", /^$/, async (t) => {
@@ -177,6 +234,8 @@ route("POST", /^release$/, t => withUnconfiguredApplication(t, async () => {
     await released.body?.cancel();
     throw err;
   }
+  await t.env.ACCOUNTS.prepare("DELETE FROM page_subdomains WHERE tendril_id = ?").bind(t.tid).run().catch(() => {});
+  t.db.del("subdomain");
   t.db.del("owner_account");
   t.db.del("claimed_at");
   t.db.del("owner_label");

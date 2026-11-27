@@ -105,6 +105,9 @@ export function createAgentClient({ service, token }, { fetch: fetcher = globalT
       request: pageRequest,
       socket,
       info: () => pageRequest('', undefined, 'objectResponse'),
+      setSubdomain: (subdomain, { reassign, swap, ...options } = {}) => subdomain === null
+        ? pageRequest('/subdomain', { method: 'DELETE', ...options }, 'objectResponse')
+        : pageRequest('/subdomain', { method: 'PUT', body: { subdomain, ...(reassign ? { reassign: true } : {}), ...(swap ? { swap: true } : {}) }, ...options }, 'objectResponse'),
       service: () => pageRequest('/service', undefined, 'serviceDescriptor'),
     });
     pages.set(key, value);
@@ -115,6 +118,7 @@ export function createAgentClient({ service, token }, { fetch: fetcher = globalT
     request,
     self: options => request('', options, 'objectResponse'),
     updateProfile: (body, options = {}) => request('', { method: 'PATCH', body: assertValid('agentProfileUpdate', body), ...options }, 'objectResponse'),
+    checkSubdomain: (name, { pageId, signal } = {}) => request('/subdomains/check?name=' + encodeURIComponent(name) + (pageId ? '&page_id=' + encodeURIComponent(pageId) : ''), { signal }, 'objectResponse'),
     reportVersions: (versions, options = {}) => request('/versions', { method: 'PUT', body: validateClientVersions(versions), ...options }, 'objectResponse'),
     broadcasts: (options = {}) => fetchBroadcasts(origin, { audience: 'agents', ...options, fetch: fetcher }),
     broadcastKeys: (options = {}) => fetchBroadcastKeys(origin, { ...options, fetch: fetcher }),

@@ -3,28 +3,33 @@ import siteCopy from "./site-copy.json";
 export type SiteCopy = typeof siteCopy;
 export const SITE_COPY: SiteCopy = siteCopy;
 
+export type CopyVars = Record<string, string | undefined>;
+
 export function escapeCopyHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function substituteVars(template: string, vars: CopyVars = {}): string {
+  let out = template;
+  for (const [k, v] of Object.entries(vars)) {
+    if (v !== undefined) out = out.replaceAll(`{${k}}`, v);
+  }
+  return out;
+}
+
 /**
- * Renders lightweight inline copy formatting (**bold**, `code`) and origin
- * placeholders ({host}, {base}) into safe escaped HTML.
+ * Renders lightweight inline copy formatting (**bold**, `code`) and template
+ * placeholders ({host}, {base}, {name}, etc.) into safe escaped HTML.
  */
-export function renderCopyText(template: string, vars: { host?: string; base?: string } = {}): string {
-  const substituted = template
-    .replaceAll("{host}", vars.host ?? "")
-    .replaceAll("{base}", vars.base ?? "");
-  return escapeCopyHtml(substituted)
+export function renderCopyText(template: string, vars: CopyVars = {}): string {
+  return escapeCopyHtml(substituteVars(template, vars))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
 /** Plain-text substitution for attributes, prompts, and Markdown output. */
-export function renderCopyPlain(template: string, vars: { host?: string; base?: string } = {}): string {
-  return template
-    .replaceAll("{host}", vars.host ?? "")
-    .replaceAll("{base}", vars.base ?? "");
+export function renderCopyPlain(template: string, vars: CopyVars = {}): string {
+  return substituteVars(template, vars);
 }
 
 /**

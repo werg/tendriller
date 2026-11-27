@@ -26,6 +26,7 @@ Start free and build freely: **offline work and direct peer-to-peer sync stay fr
 | Encrypted WebSocket relay fallback | 2 concurrent · 5 active hrs/mo · 1 hr session | 16 concurrent · 50 active hrs/mo · 2 hr session | 64 concurrent · 250 active hrs/mo · 4 hr session | Unlimited |
 | Hosted MCP (`/mcp`) | 1 page · 250 calls/mo · 50 MB sync store | 25 pages · 15,000 calls/mo · 500 MB/page | 100 pages · 100,000 calls/mo · 2 GB/page | Unlimited |
 | Outbound OAuth & org tie-ins | Tier A (`agent-held`, zero-trust) | + Tier B **host-brokered personal OAuth** | + **Team OAuth tie-ins** (GitHub Org/Team & Google Workspace admission, auto-offboarding & shared page-custody OAuth) | All enabled |
+| Named page subdomains (`/dashboard/domains#subdomains`) | — (generated ID) | **25** pages (`my-app.tendriller.dev`) | **100** pages (`my-app.tendriller.dev`) | Unlimited |
 | Custom page domains (`/dashboard/domains`) | — | — | Included (`app.yourteam.com`) | Included |
 | Opt-in Pay-As-You-Go overage | Off (hard stop + P2P fallback) | $0.10/GB media · $2/10k MCP calls | $0.08/GB media · $1.50/10k MCP calls | Paid directly to Cloudflare |
 

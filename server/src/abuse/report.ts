@@ -1,26 +1,38 @@
 import type { Env } from "../env";
 import { errorResponse, HttpError, readBody } from "../http";
-import { parsePageRoute, publicBase } from "../urls";
+import { parsePageHostLabel, parsePageRoute, publicBase } from "../urls";
+import { TENDRIL_ID_RE } from "../ids";
+import { resolveSubdomainRequest } from "../subdomains";
+import { resolveCustomDomainRequest } from "../custom-domains";
 import { serviceSession } from "../accounts/auth";
 import { renderShell } from "../accounts/ui";
+import { copyAttrs, renderCopyText, SITE_COPY } from "../site-copy";
 
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+export function renderReportPageHtml(options: { prefill?: string; turnstileSiteKey?: string; editable?: boolean } = {}): string {
+  const editable = Boolean(options.editable);
+  const r = SITE_COPY.report;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const prefill = options.prefill ?? "";
+  return renderShell({
+    title: "Report a page",
+    referrer: "no-referrer",
+    themeToggle: editable,
+    head: options.turnstileSiteKey ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>` : "",
+    body: `<section class="card"><span class="eyebrow"${c("report.eyebrow", r.eyebrow)}>${renderCopyText(r.eyebrow)}</span><h1${c("report.title", r.title)}>${renderCopyText(r.title)}</h1>
+      <form method="post"><div class="field"><label class="field-label" for="report-url">Page URL</label><input id="report-url" name="url" type="url" required value="${escape(prefill.slice(0, 2048))}"></div>
+      <div class="field"><label class="field-label" for="report-reason">Reason</label><textarea id="report-reason" name="reason" required maxlength="2000"></textarea></div>
+      ${options.turnstileSiteKey ? `<div class="cf-turnstile" data-sitekey="${escape(options.turnstileSiteKey)}" data-action="report"></div>` : ""}
+      <div class="actions"><button>Send report</button></div></form></section>`,
+  });
+}
 
 export async function reportPage(req: Request, env: Env, url: URL): Promise<Response> {
   if (req.method === "GET") {
     if (!env.TURNSTILE_SITE_KEY) return errorResponse(503, "unavailable", "Reporting is not configured");
     const prefill = url.searchParams.get("url") ?? "";
-    const html = renderShell({
-      title: "Report a page",
-      referrer: "no-referrer",
-      themeToggle: false,
-      head: `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`,
-      body: `<section class="card"><span class="eyebrow">Safety</span><h1>Report a Tendriller page</h1>
-      <form method="post"><div class="field"><label class="field-label" for="report-url">Page URL</label><input id="report-url" name="url" type="url" required value="${escape(prefill.slice(0, 2048))}"></div>
-      <div class="field"><label class="field-label" for="report-reason">Reason</label><textarea id="report-reason" name="reason" required maxlength="2000"></textarea></div>
-      <div class="cf-turnstile" data-sitekey="${escape(env.TURNSTILE_SITE_KEY)}" data-action="report"></div>
-      <div class="actions"><button>Send report</button></div></form></section>`,
-    });
+    const html = renderReportPageHtml({ prefill, turnstileSiteKey: env.TURNSTILE_SITE_KEY });
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
         "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
@@ -37,8 +49,22 @@ export async function reportPage(req: Request, env: Env, url: URL): Promise<Resp
   let reported: URL;
   try { reported = new URL(form.get("url") ?? ""); }
   catch { return errorResponse(400, "bad_request", "Invalid page URL"); }
-  const page = parsePageRoute(reported, env);
-  if (reported.protocol !== "https:" || !page) {
+  let pageId: string | null = parsePageRoute(reported, env)?.id ?? null;
+  if (!pageId && reported.protocol === "https:") {
+    const label = parsePageHostLabel(reported, env);
+    if (label) {
+      const sub = await resolveSubdomainRequest(reported, env);
+      if (sub) pageId = sub.record.tendril_id;
+      else if (TENDRIL_ID_RE.test(label) && env.ACCOUNTS) {
+        const exists = await env.ACCOUNTS.prepare("SELECT id FROM tendrils WHERE id = ?").bind(label).first<{ id: string }>().catch(() => null);
+        if (exists) pageId = exists.id;
+      }
+    } else {
+      const custom = await resolveCustomDomainRequest(reported, env);
+      if (custom) pageId = custom.record.tendril_id;
+    }
+  }
+  if (reported.protocol !== "https:" || !pageId) {
     return errorResponse(400, "bad_request", "Use a Tendriller page URL");
   }
   const verified = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST",
@@ -50,7 +76,7 @@ export async function reportPage(req: Request, env: Env, url: URL): Promise<Resp
     return errorResponse(403, "verification_failed", "Verification failed");
   }
   const session = await serviceSession(req, env);
-  const stub = env.TENDRIL.get(env.TENDRIL.idFromName(page.id));
+  const stub = env.TENDRIL.get(env.TENDRIL.idFromName(pageId));
   const record = await stub.fetch(new Request("https://tendril.internal/abuse/report", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source: "external", account_id: session?.accountId ?? null, reason }) }));
   if (!record.ok) return record;

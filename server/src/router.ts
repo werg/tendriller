@@ -1,6 +1,7 @@
 import { routeMcp, routeMcpHttpGateway } from './mcp-gateway';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
-import { servicePage } from "./accounts/ui";
+import { renderShell, servicePage } from "./accounts/ui";
+import { copyAttrs, renderCopyText, SITE_COPY } from "./site-copy";
 import { schemaDocument } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
@@ -16,18 +17,19 @@ import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, getChan
 import { budgetWebhook } from "./budget";
 import { polarWebhookRoute, pricingPage, routeBillingDashboard, selfHostPage } from "./billing/routes";
 import { resolveCustomDomainRequest, routeCustomDomains } from "./custom-domains";
+import { resolveSubdomainRequest } from "./subdomains";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, json, readJson, toErrorResponse, withCors } from "./http";
 import { escapeHtml, landingPage } from "./inject";
 import { etagMatches } from "./immutable-cache";
-import { BROADCAST_ID_RE } from "./ids";
+import { BROADCAST_ID_RE, TENDRIL_ID_RE } from "./ids";
 import { agentPlatformHtml, agentPlatformIndexHtml, agentPlatformIndexMd, agentPlatformMd } from "./agent-platforms";
 import { internalHeaders, routeAgentApi } from "./agents";
 import { serviceDescriptor } from "./descriptor";
 import { hostAttestationKey } from "./host-attestation";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
-import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
+import { isBranchPreview, parseBarePagePath, parseKeyedPagePath, parsePageHostLabel, publicBase, type PageRoute } from "./urls";
 import { serviceReadiness } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
 import type { CacheContext } from "./immutable-cache";
@@ -59,21 +61,25 @@ async function asset(env: Env, url: URL, path: string, extra?: Record<string, st
 }
 
 export async function route(req: Request, env: Env, context?: CacheContext): Promise<Response> {
-  const host = new URL(req.url).hostname.toLowerCase();
+  const reqUrl = new URL(req.url);
+  const host = reqUrl.hostname.toLowerCase();
   const pagesDomain = env.PAGE_BASE_DOMAIN?.toLowerCase();
   const serviceHost = new URL(publicBase(env)).hostname.toLowerCase();
   const onStandardPagesDomain = host !== serviceHost && !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
+  const customSubdomain = onStandardPagesDomain
+    ? await resolveSubdomainRequest(reqUrl, env)
+    : null;
   const customDomain = !onStandardPagesDomain && host !== serviceHost
-    ? await resolveCustomDomainRequest(new URL(req.url), env)
+    ? await resolveCustomDomainRequest(reqUrl, env)
     : null;
   const onPagesDomain = onStandardPagesDomain || Boolean(customDomain);
   let res: Response;
-  try { res = await routeInner(req, env, onPagesDomain, customDomain, context); }
+  try { res = await routeInner(req, env, onPagesDomain, customSubdomain, customDomain, context); }
   catch (err) { res = toErrorResponse(err); }
   const preview = isBranchPreview(env);
   if (onPagesDomain || preview) {
     const headers = new Headers(res.headers);
-    if (onPagesDomain && new URL(req.url).protocol === "https:") {
+    if (onPagesDomain && reqUrl.protocol === "https:") {
       headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
     }
     if (preview) headers.set("X-Robots-Tag", "noindex, nofollow");
@@ -87,6 +93,7 @@ async function routeInner(
   req: Request,
   env: Env,
   onPagesDomain: boolean,
+  customSubdomain: Awaited<ReturnType<typeof resolveSubdomainRequest>>,
   customDomain: Awaited<ReturnType<typeof resolveCustomDomainRequest>>,
   context?: CacheContext,
 ): Promise<Response> {
@@ -96,21 +103,24 @@ async function routeInner(
   const rootRuntime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
   const rootBrand = path === '/favicon.ico' || /^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path);
   const publicRead = (req.method === 'GET' || req.method === 'HEAD') && req.headers.get('Upgrade')?.toLowerCase() !== 'websocket';
+
+  let pageHost: { id: string; customHost: string | null; hostKind: "custom_domain" | "subdomain" | "id" } | null = null;
   if (customDomain) {
     if (!customDomain.entitlementOk) {
       return errorResponse(402, "plan_required", "This custom domain is paused because the account is no longer on the Team plan. Open the page from your Tendriller dashboard.");
     }
-    if (!customDomain.page && (!publicRead || !(rootRuntime || rootBrand))) {
+    pageHost = { id: customDomain.record.tendril_id, customHost: customDomain.record.hostname, hostKind: "custom_domain" };
+  } else if (customSubdomain) {
+    if (!customSubdomain.entitlementOk) {
+      return errorResponse(402, "plan_required", "This named subdomain is paused because the account is no longer on a paid plan. Open the page from your Tendriller dashboard.");
+    }
+    pageHost = { id: customSubdomain.record.tendril_id, customHost: customSubdomain.host, hostKind: "subdomain" };
+  } else if (onPagesDomain) {
+    const label = parsePageHostLabel(url, env);
+    if (!label || !TENDRIL_ID_RE.test(label)) {
       return errorResponse(404, "not_found", "Not found");
     }
-  } else if (onPagesDomain && !parsePageRoute(url, env)) {
-    // Old runtime releases missing from the static deployment still resolve
-    // through R2 at the same public root URL. Reuse the page-host validator so
-    // foreign preview labels and nested/unrecognised subdomains remain invalid.
-    const probe = new URL(url);
-    probe.pathname = `/s/${'a'.repeat(26)}/`;
-    if (!publicRead || !(rootRuntime || rootBrand) || !parsePageRoute(probe, env))
-      return errorResponse(404, "not_found", "Not found");
+    pageHost = { id: label, customHost: null, hostKind: "id" };
   }
   if (!onPagesDomain && url.origin !== new URL(publicBase(env)).origin) return errorResponse(404, "not_found", "Not found");
 
@@ -122,9 +132,25 @@ async function routeInner(
     return response;
   }
 
-  // Pages: P and everything under it (standard subdomain or verified custom domain).
-  const page = customDomain ? customDomain.page : parsePageRoute(url, env);
-  const customHost = customDomain ? customDomain.record.hostname : null;
+  // Pages: keyed `/s/<key>/` or bare root `/` on standard subdomain, named subdomain, or verified custom domain.
+  let page: PageRoute | null = null;
+  const customHost = pageHost?.customHost ?? null;
+  if (pageHost) {
+    const keyed = parseKeyedPagePath(url, pageHost.id);
+    if (keyed) {
+      page = keyed;
+    } else {
+      // For standard gibberish IDs, verify the page exists in D1 before opening bare-domain routing
+      // so probes against unknown IDs fail closed with 404 and zero DO invocations.
+      if (pageHost.hostKind === "id") {
+        const exists = env.ACCOUNTS
+          ? await env.ACCOUNTS.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(pageHost.id).first().catch(() => null)
+          : null;
+        if (!exists) return errorResponse(404, "not_found", "Not found");
+      }
+      page = parseBarePagePath(url, pageHost.id);
+    }
+  }
   if (page) {
     const shareTargetFallback = page.rest === "_tendril/share-target" && req.method === "POST";
     if (!shareTargetFallback && ((req.method !== "GET" && req.method !== "HEAD") || req.headers.get("Upgrade")?.toLowerCase() === "websocket") &&
@@ -137,7 +163,7 @@ async function routeInner(
       return Response.redirect(to.toString(), 308);
     }
     if (page.rest === "_tendril/auth/session" && req.method === "GET") {
-      return redeemPageCode(env, page.id, page.key, url.searchParams.get("code") ?? "", customHost);
+      return redeemPageCode(env, page.id, page.key, url.searchParams.get("code") ?? "", customHost, Boolean(page.bare));
     }
     const rest = page.rest;
     // These platform bytes are already public on the service origin. Fetching
@@ -153,7 +179,7 @@ async function routeInner(
     // access gate; authored files and page APIs authenticate in their one DO call.
     if (resource || rest === "_tendril/sw.js") {
       const check = await stub(env, page.id).fetch(new Request("https://tendril.internal/claim/check", {
-        headers: { "x-tendril-key": page.key, Cookie: req.headers.get("Cookie") ?? "",
+        headers: { "x-tendril-key": page.key, ...(page.bare ? { "x-tendril-bare": "1" } : {}), Cookie: req.headers.get("Cookie") ?? "",
           "x-visitor-ip": req.headers.get("CF-Connecting-IP") ?? "" },
       }));
       if (!check.ok && ![401, 403, 404].includes(check.status)) return check;
@@ -164,6 +190,7 @@ async function routeInner(
     }
     const response = await forward(env, page.id, "page", req, url, {
       "x-tendril-key": page.key,
+      ...(page.bare ? { "x-tendril-bare": "1" } : {}),
       "x-tendril-origin": url.origin,
       "x-tendril-base": page.base,
       "x-tendril-rest": encodeURIComponent(rest),
@@ -304,16 +331,16 @@ async function routeInner(
       env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>(),
       listActiveBroadcasts(env, { audiences: ["dashboard", "page_all"] }),
     ]);
-    const mode = state?.mode === "open" ? ["ok", "Operational", "Pages, sign-in and new page creation are available."]
-      : state?.mode === "creation_paused" ? ["warn", "New page creation paused", "Existing pages keep working. New pages cannot be created right now."]
-      : ["danger", "Read-only or unavailable", "Existing pages may be read-only. Changes are paused until service resumes."];
-    const noticesHtml = feed.broadcasts.length
-      ? `<section class="card"><h2>Service notices</h2><ul class="list">${feed.broadcasts.map(({ payload }) => {
-          const badge = payload.severity === "critical" || payload.severity === "urgent" ? "danger" : payload.severity === "recommended" ? "warn" : "";
-          return `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><span class="badge ${badge}">${escapeHtml(payload.kind)} · ${escapeHtml(payload.severity)}</span> ${escapeHtml(payload.title)}</div><p class="list-item-sub">${escapeHtml(payload.summary)}${payload.docs_url ? ` · <a href="${escapeHtml(payload.docs_url)}" rel="noopener">Details</a>` : ""}</p></div></li>`;
-        }).join("")}</ul></section>`
-      : "";
-    return servicePage("Status", `<div class="stack"><section class="hero"><span class="eyebrow">Service</span><h1>Tendriller status</h1><p class="lead">${mode[2]}</p><div class="actions"><span class="badge ${mode[0]}">${mode[1]}</span></div></section>${noticesHtml}</div>`);
+    return servicePage("Status", renderStatusBody({
+      mode: state?.mode === "open" ? "open" : state?.mode === "creation_paused" ? "creation_paused" : "unavailable",
+      broadcasts: feed.broadcasts.map(({ payload }) => ({
+        kind: payload.kind,
+        severity: payload.severity,
+        title: payload.title,
+        summary: payload.summary,
+        docs_url: payload.docs_url ?? null,
+      })),
+    }));
   }
   if (path === "/agent.md" || path === "/AGENTS.md" || path === "/llms.txt" || path === "/llms-full.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
@@ -356,13 +383,49 @@ async function routeInner(
   return errorResponse(404, "not_found", "Not found");
 }
 
-function pageAdmissionFailure(req: Request, env: Env, page: { id: string; key: string }, unavailable: boolean, customHost?: string | null): Response {
+export function renderStatusBody(options: {
+  mode: "open" | "creation_paused" | "unavailable";
+  broadcasts?: Array<{ kind: string; severity: string; title: string; summary: string; docs_url?: string | null }>;
+  editable?: boolean;
+}): string {
+  const editable = Boolean(options.editable);
+  const st = SITE_COPY.status;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const tone = options.mode === "open" ? "ok" : options.mode === "creation_paused" ? "warn" : "danger";
+  const m = st.modes[options.mode];
+  const broadcasts = options.broadcasts ?? [];
+  const noticesHtml = broadcasts.length
+    ? `<section class="card"><h2${c("status.noticesTitle", st.noticesTitle)}>${renderCopyText(st.noticesTitle)}</h2><ul class="list">${broadcasts.map((payload) => {
+        const badge = payload.severity === "critical" || payload.severity === "urgent" ? "danger" : payload.severity === "recommended" ? "warn" : "";
+        return `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><span class="badge ${badge}">${escapeHtml(payload.kind)} · ${escapeHtml(payload.severity)}</span> ${escapeHtml(payload.title)}</div><p class="list-item-sub">${escapeHtml(payload.summary)}${payload.docs_url ? ` · <a href="${escapeHtml(payload.docs_url)}" rel="noopener">Details</a>` : ""}</p></div></li>`;
+      }).join("")}</ul></section>`
+    : "";
+  return `<div class="stack"><section class="hero"><span class="eyebrow"${c("status.eyebrow", st.eyebrow)}>${renderCopyText(st.eyebrow)}</span><h1${c("status.title", st.title)}>${renderCopyText(st.title)}</h1><p class="lead"${c(`status.modes.${options.mode}.lead`, m.lead)}>${renderCopyText(m.lead)}</p><div class="actions"><span class="badge ${tone}"${c(`status.modes.${options.mode}.badge`, m.badge)}>${renderCopyText(m.badge)}</span></div></section>${noticesHtml}</div>`;
+}
+
+export function renderStatusPageHtml(options: {
+  mode?: "open" | "creation_paused" | "unavailable";
+  broadcasts?: Array<{ kind: string; severity: string; title: string; summary: string; docs_url?: string | null }>;
+  editable?: boolean;
+} = {}): string {
+  return renderShell({
+    title: "Status",
+    body: renderStatusBody({
+      mode: options.mode ?? "open",
+      broadcasts: options.broadcasts,
+      editable: options.editable,
+    }),
+  });
+}
+
+function pageAdmissionFailure(req: Request, env: Env, page: { id: string; key: string; bare?: boolean }, unavailable: boolean, customHost?: string | null): Response {
   if (unavailable) return new Response("This page is unavailable pending review.", {
     status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
   });
   if (req.method === "GET" || req.method === "HEAD") {
     const hostParam = customHost ? `&host=${encodeURIComponent(customHost)}` : "";
-    return new Response(null, { status: 302, headers: { Location: `${publicBase(env)}/auth/page?tendril=${page.id}&key=${page.key}${hostParam}`,
+    const query = page.bare ? `tendril=${page.id}&bare=1${hostParam}` : `tendril=${page.id}&key=${page.key}${hostParam}`;
+    return new Response(null, { status: 302, headers: { Location: `${publicBase(env)}/auth/page?${query}`,
       "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
   }
   return errorResponse(401, "unauthorized", "Page sign-in required");

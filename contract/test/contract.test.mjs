@@ -18,9 +18,14 @@ test('agent registration and page creation schemas reject unknown or malformed f
 });
 test('the host SDK starts no traffic and exposes only explicit host and participant services', async () => {
   const calls = [], fetch = async (url, options) => { calls.push({ url, options }); return Response.json({ id: 'page' }); };
-  const client = createAgentClient(credential, { fetch }).page('aaaaaaaaaaaa', { applicationId: application.id });
+  const agent = createAgentClient(credential, { fetch });
+  assert.deepEqual(
+    Object.keys(agent).sort(),
+    ['broadcastKeys', 'broadcasts', 'changelog', 'checkSubdomain', 'close', 'hub', 'page', 'pages', 'reportVersions', 'request', 'self', 'service', 'updateProfile'],
+  );
+  const client = agent.page('aaaaaaaaaaaa', { applicationId: application.id });
   assert.equal(calls.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
+  assert.deepEqual(Object.keys(client).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'setSubdomain', 'socket']);
   assert.deepEqual(await client.info(), { id: 'page' });
   assert.equal(calls[0].options.headers.Authorization, 'Bearer ' + credential.token);
   assert.equal(calls[0].url, 'https://host.test/api/agent/pages/aaaaaaaaaaaa');

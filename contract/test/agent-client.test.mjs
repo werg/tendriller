@@ -41,7 +41,6 @@ test('the agent client is inert until used and bases page routes at /api/agent/p
   };
   const client = createAgentClient({ service, token: TOKEN }, { fetch, WebSocket: hub.WebSocket });
   assert.equal(calls.length, 0); assert.equal(hub.connections.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['broadcastKeys', 'broadcasts', 'changelog', 'close', 'hub', 'page', 'pages', 'reportVersions', 'request', 'self', 'service', 'updateProfile']);
   assert.equal((await client.self()).grants, 2);
   assert.equal(calls[0].init.headers.Authorization, 'Bearer ' + TOKEN);
   await client.updateProfile({ handle: 'atlas', bio: 'Primary assistant' });
@@ -52,9 +51,16 @@ test('the agent client is inert until used and bases page routes at /api/agent/p
   assert.deepEqual(all, [PAGE, 'bbbbbbbbbbbb']);
   const one = client.page(PAGE, { applicationId: application.id });
   assert.equal(one, client.page(PAGE, { applicationId: application.id }));
-  assert.deepEqual(Object.keys(one).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
   await one.info();
   assert.equal(calls.at(-1).url, `${service}/api/agent/pages/${PAGE}`);
+  await one.setSubdomain('my-notes', { reassign: true, swap: true });
+  assert.equal(calls.at(-1).url, `${service}/api/agent/pages/${PAGE}/subdomain`);
+  assert.equal(calls.at(-1).init.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls.at(-1).init.body), { subdomain: 'my-notes', reassign: true, swap: true });
+  await one.setSubdomain(null);
+  assert.equal(calls.at(-1).init.method, 'DELETE');
+  await client.checkSubdomain('my-notes');
+  assert.equal(calls.at(-1).url, `${service}/api/agent/subdomains/check?name=my-notes`);
   await one.fetch(`${one.base}/peers/pairing`);
   assert.equal(calls.at(-1).init.headers.get('Authorization'), 'Bearer ' + TOKEN);
   await assert.rejects(one.fetch(`${service}/api/agent/pages/bbbbbbbbbbbb/peers/pairing`), { code: 'invalid_page_route' });

@@ -57,6 +57,8 @@ export interface PlanQuotas {
   teamOrgOAuth: boolean;
   /** Whether custom page domains (*.yourteam.com) are included. */
   customDomain: boolean;
+  /** Named page subdomains (<name>.<PAGE_BASE_DOMAIN>) per account (0 = not included, null = unlimited). */
+  customSubdomains: number | null;
 }
 
 export interface PlanSpec {
@@ -100,12 +102,13 @@ export const PLANS: Readonly<Record<PlanId, PlanSpec>> = Object.freeze({
       hostBrokeredOAuth: false,
       teamOrgOAuth: false,
       customDomain: false,
+      customSubdomains: 0,
     },
   },
   pro: {
     id: "pro",
     name: "Pro",
-    tagline: "Group video calls, reliable cloud relay, and full hosted MCP.",
+    tagline: "Named subdomains, group video calls, reliable cloud relay, and full hosted MCP.",
     monthlyPriceCents: 1200,
     yearlyPriceCents: 10000,
     quotas: {
@@ -133,12 +136,13 @@ export const PLANS: Readonly<Record<PlanId, PlanSpec>> = Object.freeze({
       hostBrokeredOAuth: true,
       teamOrgOAuth: false,
       customDomain: false,
+      customSubdomains: 25,
     },
   },
   team: {
     id: "team",
     name: "Team",
-    tagline: "Larger video rooms, team sign-in, high-volume hosted MCP, and custom domains.",
+    tagline: "Larger video rooms, team sign-in, high-volume hosted MCP, named subdomains, and custom domains.",
     monthlyPriceCents: 3900,
     yearlyPriceCents: 32000,
     quotas: {
@@ -166,6 +170,7 @@ export const PLANS: Readonly<Record<PlanId, PlanSpec>> = Object.freeze({
       hostBrokeredOAuth: true,
       teamOrgOAuth: true,
       customDomain: true,
+      customSubdomains: 100,
     },
   },
   unlimited: {
@@ -199,6 +204,7 @@ export const PLANS: Readonly<Record<PlanId, PlanSpec>> = Object.freeze({
       hostBrokeredOAuth: true,
       teamOrgOAuth: true,
       customDomain: true,
+      customSubdomains: null,
     },
   },
 });

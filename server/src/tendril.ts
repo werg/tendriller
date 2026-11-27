@@ -22,7 +22,7 @@ import { Db } from './db';
 import { DeadlineAlarm } from './alarm';
 import { admitPageTraffic } from './traffic-budget';
 import { Transactions, type CommitEffect } from './transactions';
-import { deleteUnreferencedContent } from './files';
+import { createVersion, deleteUnreferencedContent, servedVersion, storeContent, versionFiles, type VersionFile } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
 import { parseShareExpiry } from './sharing';
 import { AGENT_PUBLIC_KEY_RE, AGENT_WRAP_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, validAgentBio, validAgentHandle, writeLocalGrant } from './agent-grants';
@@ -33,7 +33,7 @@ import { accountLimits } from './service-state';
 import { getAccountEntitlements, quotaError } from './billing/entitlements';
 import { handlePage, pageAccessDenied } from './page';
 import { enforceOrgDepartureOnPage, matchingPageGroupRule } from './groups/org-groups';
-import { agentPageApi, pageUrl, publicBase } from './urls';
+import { agentPageApi, barePageUrl, pageUrl, publicBase } from './urls';
 import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
 import { agentPageSummary } from './agent';
 import { claimCreatorAgents } from './agents';
@@ -132,10 +132,12 @@ export class Tendril extends DurableObject<Env> {
     const kind = url.pathname.split("/")[1];
     try {
       if (kind === "create") return await this.create(req);
+      if (kind === "create-owned") return await this.createOwned(req);
       if (!this.exists()) {
         if (kind === "page") return pageAccessDenied(401);
         throw new HttpError(404, "not_found", "No such tendril");
       }
+      if (kind === "remix-source" && req.method === "GET") return this.remixSource(req);
       await this.admitTraffic(kind);
       if (kind === "agent" || kind === "page" || kind === "claim") {
         await recoverLifetimeChange(this);
@@ -197,7 +199,12 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
-          name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
+          name: this.db.get("name", "Tendril"),
+          page_url: this.mainPageUrl(),
+          bare_url: this.barePageUrl(),
+          fallback_page_url: this.mainPageUrl({ fallback: true }),
+          fallback_bare_url: this.barePageUrl({ fallback: true }),
+          subdomain: this.activeSubdomain(),
           icon: this.db.get<string | null>("icon", null), theme_color: this.db.get<string | null>("theme_color", null),
           version: this.db.get("current", 0), held: this.db.get("disabled", false),
           bytes: this.storageUsed(),
@@ -205,8 +212,38 @@ export class Tendril extends DurableObject<Env> {
             + (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_connections")?.n ?? 0),
           primary_agent_id: this.db.get<string | null>("primary_agent_id", null),
           guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
+          open_readers: this.db.get<boolean>("v2_open_readers", false),
+          open_writers: this.db.get<boolean>("v2_open_writers", false),
           last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
         });
+        if (url.pathname === "/account/subdomain" && req.method === "POST") {
+          const body = await readJson(req, 4096);
+          const next = body.subdomain === null ? null : typeof body.subdomain === "string" ? body.subdomain.trim().toLowerCase() || null : undefined;
+          if (next === undefined) throw new HttpError(400, "bad_request", "Expected { subdomain: string | null }");
+          const by = typeof body.by === "string" && body.by.trim() ? body.by.trim().slice(0, 120) : `owner:${req.headers.get("x-account-id")}`;
+          const prev = this.activeSubdomain();
+          this.transaction(() => {
+            if (next === null) this.db.del("subdomain");
+            else this.db.set("subdomain", next);
+            if (prev !== next) {
+              addActivity(this, {
+                kind: "subdomain",
+                summary: next
+                  ? `Set named subdomain to ${next}.${this.env.PAGE_BASE_DOMAIN}`
+                  : `Removed named subdomain${prev ? ` (${prev}.${this.env.PAGE_BASE_DOMAIN})` : ""}`,
+                by,
+              });
+            }
+          });
+          return json({
+            id: this.tid,
+            subdomain: this.activeSubdomain(),
+            page_url: this.mainPageUrl(),
+            bare_url: this.barePageUrl(),
+            fallback_page_url: this.mainPageUrl({ fallback: true }),
+            fallback_bare_url: this.barePageUrl({ fallback: true }),
+          });
+        }
         if (url.pathname === "/account/activity" && req.method === "GET") return json({
           events: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 200"),
         });
@@ -327,14 +364,127 @@ export class Tendril extends DurableObject<Env> {
     return json({ ...this.pageResult(), scopes: grant.scopes, revision: grant.revision, granted_by: grant.granted_by }, 201);
   }
 
+  /**
+   * Owner-direct page creation with zero agent required (used by Remix and browser-first starter launch).
+   * Optionally seeds immutable public v1 files into R2 and rewrites `configuration.json` to bind
+   * the brand-new `applicationId`, `page_url`, and optional `authority` hint.
+   */
+  private async createOwned(req: Request): Promise<Response> {
+    if (this.exists()) throw new HttpError(409, "exists");
+    const id = req.headers.get("x-tendril-id") ?? "";
+    const account = req.headers.get("x-account-id") ?? "";
+    if (!id || !account) throw new HttpError(400, "bad_request", "Missing page ID or owner account");
+    const body = await readJson(req, 8 * 1024 * 1024);
+    const name = body.name === undefined ? "New Page" : validName(body.name);
+    const entry = typeof body.entry === "string" && body.entry.trim() ? body.entry.trim() : "index.html";
+    const rawFiles = Array.isArray(body.files) ? body.files : [];
+    const rewriteConfigJson = body.rewriteConfigJson === true;
+    const authorityHint = body.authorityHint && typeof body.authorityHint === "object" ? body.authorityHint : null;
+    const activitySummary = typeof body.activitySummary === "string" && body.activitySummary.trim()
+      ? body.activitySummary.trim().slice(0, 200)
+      : `Page "${name}" created from dashboard`;
+
+    const label = await this.env.ACCOUNTS.prepare("SELECT login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
+      .bind(account).first<{ login: string }>();
+    const now = this.now();
+    const key = newPageKey(), keyHash = await sha256Hex(key);
+    const appId = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
+
+    this.transaction(() => {
+      this.db.set("id", id);
+      this.db.set("name", name);
+      this.db.set("owner_account", account);
+      this.db.set("claimed_at", now);
+      if (label) this.db.set("owner_label", label.login.slice(0, 80));
+      this.db.set("lifetime", "ad_hoc");
+      this.db.set("application", applicationSelection({ id: appId }));
+      this.db.set("created_at", now);
+      this.db.set("next_cleanup", now + DAY);
+      if (authorityHint?.mode === "open") {
+        // Record the creator's requested authority hint, but keep v2_open_readers = false
+        // until the owner's browser actually signs & initializes the real LogGenesis!
+        this.db.set("v2_pending_authority_hint", authorityHint);
+      }
+      this.db.run(
+        "INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at) VALUES ('l_main', ?, ?, 'owner', 'main', ?, NULL)",
+        key, keyHash, now,
+      );
+      addActivity(this, { kind: "created", summary: activitySummary, by: `owner:${account}` });
+    });
+
+    const pageUrlValue = this.mainPageUrl();
+    let version = 0;
+    if (rawFiles.length > 0) {
+      const ent = await getAccountEntitlements(this.env, account, now).catch(() => null);
+      const pageLimit = ent?.quotas.pageStorageBytes;
+      const versionMap = new Map<string, VersionFile>();
+      for (const item of rawFiles as Array<{ path?: unknown; type?: unknown; bytesBase64?: unknown }>) {
+        if (!item || typeof item.path !== "string" || typeof item.type !== "string" || typeof item.bytesBase64 !== "string") {
+          throw new HttpError(400, "invalid_seed_file");
+        }
+        let bytes: Uint8Array;
+        if (rewriteConfigJson && item.path === "configuration.json") {
+          const nextConfig: Record<string, unknown> = {
+            applicationId: appId,
+            page_url: pageUrlValue,
+            ...(authorityHint ? { authority: authorityHint } : {}),
+          };
+          bytes = new TextEncoder().encode(JSON.stringify(nextConfig, null, 2) + "\n");
+        } else {
+          const bin = atob(item.bytesBase64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        }
+        const hash = await sha256Hex(bytes);
+        await storeContent(this, bytes.slice().buffer, item.type, { pageLimit });
+        versionMap.set(item.path, { path: item.path, hash, type: item.type, size: bytes.byteLength });
+      }
+      if (!versionMap.has(entry)) throw new HttpError(400, "entry_missing", `Entry file ${entry} missing from seeded files`);
+      await createVersion(this, versionMap, null, `owner:${account}`, {
+        entry,
+        beforeCommit: async () => {},
+        commit(v) { version = v; },
+      });
+    }
+
+    this.recordAccess();
+    this.scheduleAlarm();
+    return json({ id, name, page_url: pageUrlValue, version, application: { id: appId } }, 201);
+  }
+
+  /** Return ONLY public publication metadata for Remix (never private ops, keys, or envelopes). */
+  private remixSource(req: Request): Response {
+    const requester = req.headers.get("x-account-id") ?? "";
+    const owner = this.db.get<string | null>("owner_account", null);
+    const openReaders = this.db.get<boolean>("v2_open_readers", false);
+    if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled", "This page is unavailable");
+    if (!requester || (requester !== owner && !openReaders)) {
+      throw new HttpError(403, "forbidden", "Only the owner (or any signed-in user on a public page) can remix this page.");
+    }
+    const v = servedVersion(this);
+    if (v <= 0) throw new HttpError(409, "not_published", "Publish a version before remixing this page.");
+    const ver = this.db.one<{ entry: string | null }>("SELECT entry FROM versions WHERE version = ?", v);
+    const files = versionFiles(this, v);
+    return json({
+      id: this.tid,
+      name: this.db.get("name", "Tendril"),
+      entry: ver?.entry || "index.html",
+      files,
+    });
+  }
+
   /** The agent-facing description of a newly created page. Contains no credential. */
   pageResult() {
     const application = selectedApplication(this);
     const claimed = this.db.get<string | null>("owner_account", null) !== null;
+    const subdomain = this.activeSubdomain();
     return {
       id: this.tid,
       name: this.db.get("name", "Tendril"),
+      subdomain,
       page_url: this.mainPageUrl(),
+      bare_url: this.barePageUrl(),
+      fallback_page_url: this.mainPageUrl({ fallback: true }),
       api: agentPageApi(this.env, this.tid),
       lifetime: this.db.get("lifetime", "ad_hoc"),
       claimed,
@@ -348,10 +498,25 @@ export class Tendril extends DurableObject<Env> {
     };
   }
 
-  mainPageUrl(): string {
+  activeSubdomain(): string | null {
+    return this.db.get<string | null>("subdomain", null);
+  }
+
+  mainLink(): Link | null {
+    return this.db.cached('links:main-row', () => {
+      const row = this.db.one<Link>("SELECT * FROM links WHERE id = 'l_main'");
+      return row ? Object.freeze(row) : null;
+    });
+  }
+
+  mainPageUrl(options?: { fallback?: boolean }): string {
     const key = this.db.cached('links:main-key', () =>
       this.db.one<{ key: string }>("SELECT key FROM links WHERE id = 'l_main'")!.key);
-    return pageUrl(this.env, this.tid, key);
+    return pageUrl(this.env, this.tid, key, options?.fallback ? null : this.activeSubdomain());
+  }
+
+  barePageUrl(options?: { fallback?: boolean }): string {
+    return barePageUrl(this.env, this.tid, options?.fallback ? null : this.activeSubdomain());
   }
 
   async pageSession(req: Request): Promise<{ account_id: string; role: Role } | null> {
@@ -455,8 +620,15 @@ export class Tendril extends DurableObject<Env> {
       this.ownerClaimTail = claim.then(() => undefined, () => undefined);
       return claim;
     }
+    if (url.pathname === "/claim/bare-info" && req.method === "GET") {
+      return json({
+        claimed: !!this.db.get<string | null>("owner_account", null),
+        open_readers: this.db.get<boolean>("v2_open_readers", false),
+      });
+    }
+    const bare = req.headers.get("x-tendril-bare") === "1";
     const key = req.headers.get("x-tendril-key") ?? "";
-    const link = await this.linkForKey(key);
+    const link = bare ? this.mainLink() : await this.linkForKey(key);
     if (!link) throw new HttpError(404, "not_found", "Unknown or expired link");
     if (url.pathname === "/claim/info" && req.method === "GET") {
       return json({ claimed: !!this.db.get<string | null>("owner_account", null),
@@ -471,19 +643,20 @@ export class Tendril extends DurableObject<Env> {
       return json({ status: row?.approved === 1 ? "approved" : row?.approved === -1 ? "declined" : row ? "pending" : "none" });
     }
     if (url.pathname === "/claim/check" && req.method === "GET") {
-      const { principal } = await authenticateLocalPage(this, req, link);
+      const { principal } = await authenticateLocalPage(this, req, link, { bare });
       if (principal.role === "display") {
         await this.recordVisitorSignal("display", req.headers.get("x-visitor-ip") ?? "");
         if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
       }
       const status = await this.checkPagePolicy(principal.role === "display" ? null : principal.accountId);
       if (status === "page") throw new HttpError(403, "disabled");
-      if (status === "visitor" || !currentPrincipal(this, principal, key)) throw new HttpError(401, "unauthorized");
+      if (status === "visitor" || !currentPrincipal(this, principal, bare ? undefined : key)) throw new HttpError(401, "unauthorized");
       return json({ role: principal.role });
     }
     if (url.pathname === "/claim/session" && req.method === "POST") {
       const b = await readJson(req, 4096);
       if (typeof b.account_id !== "string" || typeof b.hash !== "string" || !/^[a-f0-9]{64}$/.test(b.hash)) throw new HttpError(403, "forbidden");
+      if (bare && b.role !== "owner") throw new HttpError(403, "forbidden");
       if (b.role === "owner" && (link.role !== "owner" || b.account_id !== this.db.get<string | null>("owner_account", null))) throw new HttpError(403, "forbidden");
       if (b.role === "guest") {
         const orgApproved = link.role === "owner" && this.db.one("SELECT 1 AS x FROM guest_accounts WHERE account_id = ? AND link_id = '__org__' AND approved = 1", b.account_id);
@@ -638,7 +811,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   linkUrl(key: string): string {
-    return pageUrl(this.env, this.tid, key);
+    return pageUrl(this.env, this.tid, key, this.activeSubdomain());
   }
 
   expiresAt(): number | null {

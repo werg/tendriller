@@ -11,6 +11,7 @@ import { broadcastSummary, getAgentVersions, recordAgentVersions } from './broad
 import { publicBase } from './urls';
 import { joinBlurb } from './sharing';
 import { routeAgentConnectionsApi } from './oauth-outbound/routes';
+import { checkSubdomainAvailability, setPageSubdomain, validateSubdomainForNewPage } from './subdomains';
 
 export const HUB_PROTOCOL = 'tendriller.hub.v1';
 export { AGENT_HANDLE_RE };
@@ -152,6 +153,13 @@ export async function routeAgentApi(req: Request, env: Env, url: URL): Promise<R
     headers.set('Sec-WebSocket-Protocol', HUB_PROTOCOL);
     headers.set(AGENT_HEADER, agent.id);
     return hubStub(env, agent.id).fetch(new Request('https://hub.internal/connect', { headers }));
+  }
+  if (path === '/api/agent/subdomains/check') {
+    if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method_not_allowed');
+    await authenticateAgentRequest(env, req);
+    const name = url.searchParams.get('name') ?? '';
+    const pageId = url.searchParams.get('page_id');
+    return json(await checkSubdomainAvailability(env, name, pageId && TENDRIL_ID_RE.test(pageId) ? pageId : null));
   }
   if (path === '/api/agent/pages') {
     const agent = await authenticateAgentRequest(env, req);
@@ -319,6 +327,8 @@ async function agentSelf(env: Env, agent: GrantedAgent) {
               sfuMaxPeers: ent.quotas.sfuMaxPeers,
               hostBrokeredOAuth: ent.quotas.hostBrokeredOAuth,
               teamOrgOAuth: ent.quotas.teamOrgOAuth,
+              customSubdomains: ent.quotas.customSubdomains,
+              customDomain: ent.quotas.customDomain,
             },
             usage: {
               period: ent.usage.period,
@@ -347,13 +357,15 @@ async function listAgentPages(env: Env, agent: GrantedAgent, cursor: string | nu
     .all<{ page_id: string; scopes: string; granted_by: string; granted_at: number; lifetime: string; state: string }>();
   const visible = rows.results.slice(0, AGENT_PAGE_LIST_LIMIT);
   const pages = await Promise.all(visible.map(async row => {
-    let detail: { name?: string; page_url?: string; application?: { id: string }; expires_at?: number | null; claimed?: boolean; primary_agent_id?: string | null; is_primary?: boolean; agents?: unknown[] } = {};
+    let detail: { name?: string; subdomain?: string | null; page_url?: string; bare_url?: string; fallback_page_url?: string; application?: { id: string }; expires_at?: number | null; claimed?: boolean; primary_agent_id?: string | null; is_primary?: boolean; agents?: unknown[] } = {};
     try {
       const response = await pageStub(env, row.page_id).fetch(new Request('https://tendril.internal/agent-summary', { headers: { [AGENT_HEADER]: agent.id } }));
       if (response.ok) detail = await response.json(); else await response.body?.cancel();
     } catch { /* One unavailable page must not hide the rest. */ }
     return {
-      id: row.page_id, name: detail.name ?? null, page_url: detail.page_url ?? null, api: `${publicBase(env)}/api/agent/pages/${row.page_id}`,
+      id: row.page_id, name: detail.name ?? null, subdomain: detail.subdomain ?? null,
+      page_url: detail.page_url ?? null, bare_url: detail.bare_url ?? null, fallback_page_url: detail.fallback_page_url ?? null,
+      api: `${publicBase(env)}/api/agent/pages/${row.page_id}`,
       scopes: JSON.parse(row.scopes) as AgentScope[], granted_by: row.granted_by, granted_at: row.granted_at,
       application: detail.application ?? null, lifetime: row.lifetime, state: row.state,
       claimed: detail.claimed ?? null, expires_at: detail.expires_at ?? null,
@@ -373,19 +385,30 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
   if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: 'agent:' + agent.id })).success)
     throw new HttpError(429, 'rate_limited', 'Creation rate limit reached');
   const input = await body(req, 64 * 1024);
-  for (const key of Object.keys(input)) if (!['name', 'mode', 'application'].includes(key))
+  for (const key of Object.keys(input)) if (!['name', 'mode', 'application', 'subdomain'].includes(key))
     throw new HttpError(400, 'bad_request', `Unknown page field ${key}`);
   if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 200)) throw new HttpError(400, 'bad_request', 'name must be a string');
+  if (input.subdomain !== undefined && typeof input.subdomain !== 'string') throw new HttpError(400, 'invalid_subdomain', 'subdomain must be a string');
   if (input.application !== undefined && (!isPlainObject(input.application) || Object.keys(input.application).length !== 1 ||
       typeof input.application.id !== 'string' || !/^[0-9a-f]{64}$/.test(input.application.id)))
     throw new HttpError(400, 'bad_request', 'application must be { id: <64 lowercase hex> }');
   const claimed = agent.account_id;
-  const doBody = JSON.stringify({ ...input, ...(claimed ? {} : { owner: agent.owner_email }) });
+  let requestedSubdomain: string | null = null;
+  if (input.subdomain !== undefined) {
+    if (!claimed) {
+      throw new HttpError(409, 'claim_required', 'Named subdomains require a claimed paid account. Create the page first, have the owner claim it, then set the subdomain via PATCH /api/agent/pages/:id.');
+    }
+    requestedSubdomain = await validateSubdomainForNewPage(env, claimed, input.subdomain);
+  }
+  const { subdomain: _ignoredSubdomain, ...createPayload } = input;
+  const doBody = JSON.stringify({ ...createPayload, ...(claimed ? {} : { owner: agent.owner_email }) });
   const releaseIp = claimed ? async () => {} : await reserveCreationIp(env, req);
   let created = false;
   try {
     for (let i = 0; i < 3; i++) {
       const id = newTendrilId(), now = Date.now();
+      const collidesSub = await env.ACCOUNTS.prepare('SELECT 1 FROM page_subdomains WHERE subdomain = ?').bind(id).first().catch(() => null);
+      if (collidesSub) continue;
       const admission = env.ADMISSION.get(env.ADMISSION.idFromName('global'));
       const allowed = await admission.fetch(new Request('https://admission.internal/reserve', { method: 'POST', headers: { 'x-tendril-id': id } }));
       if (!allowed.ok) return allowed;
@@ -434,12 +457,28 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
         await env.ACCOUNTS.prepare('INSERT INTO agent_grants(agent_id,page_id,scopes,revision,granted_at,granted_by) VALUES(?,?,?,?,?,?)')
           .bind(agent.id, id, JSON.stringify(page.scopes), page.revision, now, 'creator').run();
       } catch (err) { await cancel(); throw err; }
+      const { revision: _revision, ...result } = page as Record<string, unknown>;
+      if (requestedSubdomain && claimed) {
+        try {
+          const bound = await setPageSubdomain(env, claimed, id, requestedSubdomain, `agent:${agent.id}`);
+          result.subdomain = bound.subdomain;
+          result.page_url = bound.page_url;
+          result.bare_url = bound.bare_url;
+          result.fallback_page_url = bound.fallback_page_url;
+        } catch (err) {
+          await pageStub(env, id).fetch(new Request('https://tendril.internal/account/delete', {
+            method: 'POST',
+            headers: { 'x-account-id': claimed },
+          })).then(r => r.body?.cancel()).catch(() => {});
+          await cancel();
+          throw err;
+        }
+      }
       created = true;
       if (claimed) {
         const released = await admission.fetch(new Request('https://admission.internal/release', { method: 'POST', headers: { 'x-tendril-id': id } }));
         await released.body?.cancel();
       }
-      const { revision: _revision, ...result } = page as Record<string, unknown>;
       return json(result, 201);
     }
     throw new HttpError(500, 'internal', 'Could not allocate a tendril id');

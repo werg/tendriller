@@ -433,9 +433,9 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       }));
     },
     /** Retain exact creation intent before dispatch; uncertainty never creates a replacement page. */
-    async createPage(slug, { name = slug, mode, application } = {}, { signal } = {}) {
+    async createPage(slug, { name = slug, mode, application, subdomain } = {}, { signal } = {}) {
       if (typeof slug !== 'string' || !SLUG.test(slug)) throw failure('invalid_slug', 'Use a page slug of lowercase letters, digits and dashes (max 48).', 64);
-      assertValid('agentPageCreate', { name, ...(mode === undefined ? {} : { mode }), ...(application === undefined ? {} : { application }) });
+      assertValid('agentPageCreate', { name, ...(mode === undefined ? {} : { mode }), ...(application === undefined ? {} : { application }), ...(subdomain === undefined ? {} : { subdomain }) });
       await refreshPages();
       if (!config.pages?.[slug]) requireCreationReady(await describeReadiness(config.service, { ...(fetcher ? { fetch: fetcher } : {}), signal }), { service: config.service });
       const directory = join(paths.secret, 'page-intents', slug);
@@ -448,7 +448,35 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
           catch (error) { if (error.code === 'EEXIST') return false; throw error; }
         },
       };
-      return createWorkspacePage({ workspace, client: await getClient(), store, slug, name, mode, application, signal });
+      return createWorkspacePage({ workspace, client: await getClient(), store, slug, name, mode, application, subdomain, signal });
+    },
+    /** Set, rename, reassign/swap, or clear a page's named subdomain and persist updated page URLs locally. */
+    async setPageSubdomain(ref, subdomain, { reassign = false, swap = false, signal } = {}) {
+      const page = await workspace.page(ref);
+      const client = await getClient();
+      const updated = await client.page(page.id).setSubdomain(subdomain, { ...(reassign ? { reassign: true } : {}), ...(swap ? { swap: true } : {}), signal });
+      const saved = await record(page.id);
+      if (saved) {
+        await replaceJson(join(pageDirectory(page.id), 'page.json'), {
+          ...saved,
+          subdomain: updated.subdomain ?? null,
+          page_url: updated.page_url ?? saved.page_url,
+          bare_url: updated.bare_url ?? null,
+        });
+      }
+      if (updated.previous_tendril_id) {
+        const prevSaved = await record(updated.previous_tendril_id);
+        if (prevSaved) {
+          const prevInfo = await client.page(updated.previous_tendril_id).info().catch(() => null);
+          await replaceJson(join(pageDirectory(updated.previous_tendril_id), 'page.json'), {
+            ...prevSaved,
+            subdomain: updated.swapped_subdomain ?? null,
+            page_url: typeof prevInfo?.page_url === 'string' ? prevInfo.page_url : prevSaved.page_url,
+            bare_url: typeof prevInfo?.bare_url === 'string' ? prevInfo.bare_url : null,
+          });
+        }
+      }
+      return { slug: page.slug, ...updated };
     },
     /** Register a granted page under a slug; the page URL stays in the private record. */
     async registerPage(slug, page) {
@@ -462,7 +490,8 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       await mkdir(pageDirectory(page.id), { recursive: true, mode: 0o700 });
       const previous = await record(page.id);
       if (!previous) await savePrivateJson(join(pageDirectory(page.id), 'page.json'), { schemaVersion: 1, id: page.id, name: page.name ?? slug,
-        page_url: page.page_url, application: page.application, scopes: page.scopes ?? [], registered_at: new Date().toISOString() });
+        ...(page.subdomain ? { subdomain: page.subdomain } : {}),
+        page_url: page.page_url, ...(page.bare_url ? { bare_url: page.bare_url } : {}), application: page.application, scopes: page.scopes ?? [], registered_at: new Date().toISOString() });
       config.pages = { ...config.pages, [slug]: { id: page.id } };
       await replaceJson(paths.config, config);
       await mkdir(join(paths.sources, slug), { recursive: true });

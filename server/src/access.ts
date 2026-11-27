@@ -167,8 +167,20 @@ export function participantIdentity(t: Tendril, principal: Principal): { route: 
   return { route: `account:${current.accountId}`, budget: `account:${current.accountId}` };
 }
 
-export async function authenticateLocalPage(t: Tendril, req: Request, link: Link): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
+export async function authenticateLocalPage(t: Tendril, req: Request, link: Link, options?: { bare?: boolean }): Promise<{ principal: PagePrincipal; session: PageSession | null }> {
   const session = link.role === "display" ? null : await browserSession(t, req);
+  if (options?.bare) {
+    if (session?.role === "owner") {
+      const principal = localPagePrincipal(t, { role: "owner", accountId: session.account_id,
+        linkId: link.id, sessionHash: session.hash });
+      if (principal) return { principal, session };
+    }
+    if (t.db.get<boolean>("v2_open_readers", false)) {
+      const openPrincipal = localPagePrincipal(t, { role: "guest", accountId: null, linkId: link.id, sessionHash: null, openPublic: true });
+      if (openPrincipal) return { principal: openPrincipal, session: null };
+    }
+    throw new HttpError(401, "unauthorized", "Page sign-in required");
+  }
   const role: Role = link.role === "owner" && session?.role === "guest" ? "guest" : link.role;
   const principal = localPagePrincipal(t, { role, accountId: session?.account_id ?? null,
     linkId: link.id, sessionHash: session?.hash ?? null });

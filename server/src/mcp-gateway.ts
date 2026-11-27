@@ -10,17 +10,21 @@ import { getAccountEntitlements } from './billing/entitlements';
 import { listActiveBroadcasts } from './broadcasts';
 import type { Env } from './env';
 import { assistantDiscovery, assistantGuide, assistantGuides } from './mcp-guide';
+import { MCP_APP_INBOX_URI, MCP_APP_MIME_TYPE, renderTendrillerMcpAppHtml } from './mcp-app-inbox';
 import { serviceIdentity } from './service-identity';
 import { browserIdentity, ensureOAuthSchema, redirect } from './accounts/oauth-data';
 import { inspectAccessToken } from './accounts/oauth-tokens';
 import { base64url } from './accounts/oauth-support';
-import { servicePage } from './accounts/ui';
+import { renderShell, servicePage } from './accounts/ui';
+import { copyAttrs, renderCopyText, SITE_COPY } from './site-copy';
 import { escapeHtml } from './inject';
 import {
   mcpConnectExternalProvider,
   mcpInvokeExternalConnection,
   mcpListExternalConnections,
   renderAccountExternalConnectionsSection,
+  renderExternalConnectionsSectionHtml,
+  type ExternalConnectionsView,
 } from './oauth-outbound/routes';
 import { HttpError, isPlainObject, json, readBody } from './http';
 import { sha256Hex } from './ids';
@@ -79,6 +83,24 @@ const tools = [
     ['handle', 'publicKey', 'wrapKey'], false),
   tool('list_tendrils', 'List applications opted into hosted MCP for this OAuth grant, 100 per call.',
     'tendrils:list', { cursor: { type: 'string', pattern: '^[a-z2-7]{12}$' } }, []),
+  {
+    ...tool(
+      'open_tendriller_inbox',
+      'Open the interactive Tendriller Inbox view (Antigravity App side panel / full-page MCP App, or plain-text connected-pages summary on CLI and IDE).',
+      'tendrils:list',
+      { applicationId: app.applicationId },
+      [],
+    ),
+    _meta: {
+      ui: { resourceUri: MCP_APP_INBOX_URI },
+      'com.google.antigravity/ui': {
+        entrypoints: [
+          { type: 'aux_pane', title: 'Tendriller Inbox' },
+          { type: 'global', title: 'Tendriller' },
+        ],
+      },
+    },
+  },
   tool('list_external_connections', 'List this account’s external OAuth connections (Google, GitHub, Linear, Notion, Slack, etc.) and live provider availability/actions on this host.',
     'applications:read', {}, []),
   tool('connect_external_provider', 'Start a wrapped Tier B (host-brokered) external OAuth connection so this MCP assistant can access an external service even when no browser UI or local agent is open. Share the returned authorize_url with the user in chat; K_conn auto-seals to this MCP grant’s wrap key (zero plaintext tokens or keys at rest). Request only the exact minimal scopes needed.',
@@ -130,6 +152,40 @@ const tools = [
     ['applicationId', 'text', 'operationId'], false),
   tool('query_application', 'Run a declared application query against the page’s Chronolog state.',
     'applications:read', { ...app, query: schemaString, input: {} }, ['applicationId', 'query', 'input']),
+  tool('query_sql', 'Run a read-only SQL query (including FTS5 and sqlite-vec) against a page’s chronolog-db SQL topic without needing a domain bundle.',
+    'applications:read',
+    {
+      ...app,
+      sql: { type: 'string', minLength: 1, maxLength: 8192 },
+      params: { type: 'array', maxItems: 64, items: {} },
+      topic: schemaString,
+      format: { type: 'string', enum: ['objects', 'rows'] },
+    },
+    ['applicationId', 'sql']),
+  tool('query_multiple_applications', 'Fan out up to 8 read-only queries (declared queries or read-only SQL) across multiple opted-in pages in parallel in a single turn.',
+    'applications:read',
+    {
+      targets: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 8,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ...app,
+            query: schemaString,
+            input: {},
+            sql: { type: 'string', minLength: 1, maxLength: 8192 },
+            params: { type: 'array', maxItems: 64, items: {} },
+            topic: schemaString,
+            format: { type: 'string', enum: ['objects', 'rows'] },
+          },
+          required: ['applicationId'],
+        },
+      },
+    },
+    ['targets']),
   tool('call_application_command', 'Execute a declared application command directly as this hosted Chronolog participant. Keep operationId and input unchanged on retry.',
     'applications:write', { ...app, command: schemaString, input: {}, operationId: schemaString },
     ['applicationId', 'command', 'input', 'operationId'], false),
@@ -274,6 +330,47 @@ async function submitCommandBatch(env: Env, pageId: string, req: Request, applic
   return { applicationId, results, complete: results.length === commands.length, nextIndex: results.length };
 }
 
+export function renderConnectionsPageBody(options: {
+  showMcpSection: boolean;
+  mcpPages: Array<{ label: string; handle: string; clientName: string }>;
+  externalHtml: string;
+  editable?: boolean;
+}): string {
+  const editable = Boolean(options.editable);
+  const co = SITE_COPY.connections;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const txt = (t: string) => renderCopyText(t);
+  let mcpSection = '';
+  if (options.showMcpSection) {
+    const listHtml = options.mcpPages.length
+      ? '<ul class="list">' + options.mcpPages.map(row =>
+          `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(row.label)} <span class="badge ok">@${escapeHtml(row.handle)}</span></div><p class="list-item-sub">Hosted MCP via ${escapeHtml(row.clientName)} · keys wrapped to OAuth token</p></div><a class="button sm secondary" href="/dashboard">Open from dashboard</a></li>`
+        ).join('') + '</ul>'
+      : `<p class="empty"${c('connections.mcp.empty', co.mcp.empty)}>${txt(co.mcp.empty)}</p>`;
+    mcpSection = `<section class="card"><span class="eyebrow"${c('connections.mcp.eyebrow', co.mcp.eyebrow)}>${txt(co.mcp.eyebrow)}</span><h2${c('connections.mcp.title', co.mcp.title)}>${txt(co.mcp.title)}</h2><p class="lead"${c('connections.mcp.lead', co.mcp.lead)}>${txt(co.mcp.lead)}</p>${listHtml}<div class="actions" style="margin-top:1rem"><a class="button secondary sm" href="/oauth/connections">Manage OAuth clients</a></div></section>`;
+  }
+  return `<div class="page-head"><span class="eyebrow"${c('connections.hero.eyebrow', co.hero.eyebrow)}>${txt(co.hero.eyebrow)}</span><h1${c('connections.hero.title', co.hero.title)}>${txt(co.hero.title)}</h1><p class="lead"${c('connections.hero.lead', co.hero.lead)}>${txt(co.hero.lead)}</p></div>${mcpSection}${options.externalHtml}<div class="actions" style="margin-top:1.5rem"><a class="button ghost" href="/dashboard">Back to dashboard</a></div>`;
+}
+
+export function renderConnectionsPageHtml(options: {
+  showMcpSection?: boolean;
+  mcpPages?: Array<{ label: string; handle: string; clientName: string }>;
+  external: ExternalConnectionsView;
+  editable?: boolean;
+}): string {
+  const external = renderExternalConnectionsSectionHtml({ ...options.external, editable: options.editable });
+  return renderShell({
+    title: 'Connections',
+    body: renderConnectionsPageBody({
+      showMcpSection: options.showMcpSection ?? true,
+      mcpPages: options.mcpPages ?? [],
+      externalHtml: external.html,
+      editable: options.editable,
+    }),
+    script: external.script,
+  });
+}
+
 export async function routeMcp(req: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   const config = await mcpOAuth(env);
@@ -282,26 +379,25 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
     if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
     const owner = await browserIdentity(req, env);
     if (!owner) return redirect('/auth?return_to=' + encodeURIComponent(path));
-    let mcpSection = '';
-    if (config && config.issuer === url.origin) {
+    const showMcpSection = Boolean(config && config.issuer === url.origin);
+    let mcpPages: Array<{ label: string; handle: string; clientName: string }> = [];
+    if (showMcpSection && config) {
       const rows = await env.ACCOUNTS.prepare(`SELECT c.page_id,c.grant_id,c.handle,c.label,g.client_id
         FROM mcp_connections c
         JOIN integration_oauth_grants g ON g.id=c.grant_id
         JOIN tendrils t ON t.id=c.page_id
         WHERE c.account_id=? AND t.owner_account=c.account_id AND t.state='active' AND g.revoked_at IS NULL AND g.expires_at>?
         ORDER BY c.page_id LIMIT 50`).bind(owner.id, Date.now()).all<{ page_id: string; grant_id: string; handle: string; label: string; client_id: string }>();
-      const listHtml = rows.results.length
-        ? '<ul class="list">' + rows.results.map(row => {
-            const clientName = config.clients.find(c => c.id === row.client_id)?.name ?? row.client_id;
-            return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(row.label)} <span class="badge ok">@${escapeHtml(row.handle)}</span></div><p class="list-item-sub">Hosted MCP via ${escapeHtml(clientName)} · keys wrapped to OAuth token</p></div><a class="button sm secondary" href="/dashboard">Open from dashboard</a></li>`;
-          }).join('') + '</ul>'
-        : '<p class="empty">No pages are opted into hosted MCP yet. Open any page and use <strong>Page options → Agents</strong> to opt it in.</p>';
-      mcpSection = `<section class="card"><span class="eyebrow">Hosted MCP</span><h2>Assistant page connections</h2><p class="lead">Opt-in pages whose keys are wrapped to your OAuth clients’ Bearer tokens (zero plaintext keys stored on Tendriller).</p>${listHtml}<div class="actions" style="margin-top:1rem"><a class="button secondary sm" href="/oauth/connections">Manage OAuth clients</a></div></section>`;
+      mcpPages = rows.results.map(row => ({
+        label: row.label,
+        handle: row.handle,
+        clientName: config.clients.find(c => c.id === row.client_id)?.name ?? row.client_id,
+      }));
     }
     const external = await renderAccountExternalConnectionsSection(env, owner.id);
     return servicePage(
       'Connections',
-      `<div class="page-head"><span class="eyebrow">Integrations</span><h1>Connections</h1><p class="lead">Opt-in hosted MCP pages, external OAuth integrations, and verified organization memberships.</p></div>${mcpSection}${external.html}<div class="actions" style="margin-top:1.5rem"><a class="button ghost" href="/dashboard">Back to dashboard</a></div>`,
+      renderConnectionsPageBody({ showMcpSection, mcpPages, externalHtml: external.html }),
       external.script,
     );
   }
@@ -412,11 +508,28 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       return complete({
         resources: [
           { name: 'Tendriller setup and app-building guide', description: 'Start here when building an app or when no applications are connected.', uri: config.issuer + assistantGuides.start, mimeType: 'text/markdown' },
+          {
+            name: 'Tendriller Inbox MCP App',
+            description: 'Interactive connected Tendriller pages and agent_feed inbox for MCP Apps hosts (Antigravity App side panel and full-page views).',
+            uri: MCP_APP_INBOX_URI,
+            mimeType: MCP_APP_MIME_TYPE,
+            _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } } },
+          },
         ],
       });
     }
     if (method === 'resources/templates/list') return complete({ resourceTemplates: [] });
     if (method === 'resources/read') {
+      if (params.uri === MCP_APP_INBOX_URI) {
+        return complete({
+          contents: [{
+            uri: MCP_APP_INBOX_URI,
+            mimeType: MCP_APP_MIME_TYPE,
+            text: renderTendrillerMcpAppHtml(config.issuer),
+            _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } } },
+          }],
+        });
+      }
       const guideTopic = Object.entries(assistantGuides).find(([, p]) => params.uri === config.issuer + p)?.[0];
       if (!guideTopic) throw new HttpError(404, 'unknown_resource');
       const guide = await assistantGuide(env, config.issuer, guideTopic);
@@ -475,6 +588,8 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
                 sfuMaxPeers: ent.quotas.sfuMaxPeers,
                 hostBrokeredOAuth: ent.quotas.hostBrokeredOAuth,
                 teamOrgOAuth: ent.quotas.teamOrgOAuth,
+                customSubdomains: ent.quotas.customSubdomains,
+                customDomain: ent.quotas.customDomain,
               },
               usage: {
                 period: ent.usage.period,
@@ -500,6 +615,26 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
         const { applications, nextCursor } = await listConnected(env, principal.account, principal.grant, args.cursor === undefined ? null : string(args.cursor, 12));
         return complete(toolResult({ applications, nextCursor, ...await assistantDiscovery(env, config.issuer, applications.length === 0 && args.cursor === undefined) }));
       }
+      if (selected.name === 'open_tendriller_inbox') {
+        const { applications } = await listConnected(env, principal.account, principal.grant, null);
+        const requestedAppId = args.applicationId === undefined ? null : string(args.applicationId, 64, APP_ID);
+        const selectedApplicationId = requestedAppId ?? (applications[0] as { applicationId?: string } | undefined)?.applicationId ?? null;
+        let feed: unknown = null;
+        if (selectedApplicationId && principal.scopes.includes('applications:read')) {
+          try {
+            const connected = await resolveConnection(env, principal.account, principal.grant, selectedApplicationId);
+            const res = await pageMcpRequest(env, connected.pageId, req, principal, selectedApplicationId, 'agent_feed', {});
+            feed = res.value;
+          } catch { /* Plain-text inbox summary still lists connected apps cleanly */ }
+        }
+        return complete(toolResult({
+          serviceOrigin: config.issuer,
+          uiResourceUri: MCP_APP_INBOX_URI,
+          applications,
+          selectedApplicationId,
+          ...(feed !== null ? { feed } : {}),
+        }, modern));
+      }
       if (selected.name === 'list_external_connections') {
         return complete(toolResult(await mcpListExternalConnections(env, principal.account)));
       }
@@ -508,6 +643,56 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       }
       if (selected.name === 'invoke_external_connection') {
         return complete(toolResult(await mcpInvokeExternalConnection(env, principal.account, principal.grant, principal.wrapPublicKey, principal.wrapPrivateKey, args)));
+      }
+      if (selected.name === 'query_multiple_applications') {
+        const rawTargets = Array.isArray(args.targets) ? args.targets : [];
+        if (!rawTargets.length || rawTargets.length > 8) {
+          throw new HttpError(400, 'invalid_arguments', 'Supply 1..8 query targets.');
+        }
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(new Error('FEDERATED_QUERY_TIMEOUT')), 25_000);
+        const signal = AbortSignal.any([req.signal, ac.signal]);
+        const bounded = new Request(req.url, { signal });
+        try {
+          const results = await Promise.all(rawTargets.map(async (rawTarget: unknown) => {
+            try {
+              const target = fields(rawTarget, ['applicationId', 'query', 'input', 'sql', 'params', 'topic', 'format'], ['applicationId']);
+              const appId = string(target.applicationId, 64, APP_ID);
+              const connectedTarget = await resolveConnection(env, principal.account, principal.grant, appId);
+              if (typeof target.sql === 'string') {
+                const { value } = await pageMcpRequest(env, connectedTarget.pageId, bounded, principal, appId, 'query_sql', target);
+                return { applicationId: appId, ok: true, value };
+              }
+              if (typeof target.query === 'string') {
+                const { value } = await pageMcpRequest(env, connectedTarget.pageId, bounded, principal, appId, 'query_application', {
+                  query: target.query,
+                  input: target.input ?? null,
+                });
+                return { applicationId: appId, ok: true, value };
+              }
+              throw new HttpError(400, 'invalid_arguments', 'Each target requires either "query" or "sql".');
+            } catch (error) {
+              const expected = error instanceof HttpError;
+              const targetId = isPlainObject(rawTarget) && typeof rawTarget.applicationId === 'string' ? rawTarget.applicationId : '';
+              return {
+                applicationId: targetId,
+                ok: false,
+                error: {
+                  code: expected ? error.code : 'mcp_unavailable',
+                  message: expected ? error.message : 'Query failed',
+                  ...extractQuotaFields(error),
+                },
+              };
+            }
+          }));
+          return complete(toolResult({
+            results,
+            succeeded: results.filter(r => r.ok).length,
+            failed: results.filter(r => !r.ok).length,
+          }, modern));
+        } finally {
+          clearTimeout(timer);
+        }
       }
       const applicationId = string(args.applicationId, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, principal.grant, applicationId);
@@ -536,7 +721,7 @@ export async function routeMcpHttpGateway(req: Request, env: Env, url: URL): Pro
   const config = await mcpOAuth(env);
   if (!config || config.issuer !== url.origin) throw new HttpError(404, 'not_found');
   if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');
-  const match = /^\/v1\/apps\/([a-f0-9]{64})\/(commands(?:\/batch)?|operations\/([A-Za-z0-9_.:-]{1,200})|query|events|agents)$/.exec(url.pathname);
+  const match = /^\/v1\/apps\/([a-f0-9]{64})\/(commands(?:\/batch)?|operations\/([A-Za-z0-9_.:-]{1,200})|query|sql|events|agents)$/.exec(url.pathname);
   if (!match) throw new HttpError(404, 'not_found');
   if (env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: 'mcp-http:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
     throw new HttpError(429, 'rate_limited');
@@ -607,6 +792,12 @@ export async function routeMcpHttpGateway(req: Request, env: Env, url: URL): Pro
       ? await readJsonBody()
       : { query: url.searchParams.get('query') ?? '', input: parseQueryJson(url.searchParams.get('input') ?? 'null') };
     const { value } = await pageMcpRequest(env, connected.pageId, req, principal, applicationId, 'query_application', params);
+    return json(value);
+  }
+  if (action === 'sql') {
+    if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    requireScope(principal, 'applications:read');
+    const { value } = await pageMcpRequest(env, connected.pageId, req, principal, applicationId, 'query_sql', await readJsonBody());
     return json(value);
   }
   if (action === 'agents') {
