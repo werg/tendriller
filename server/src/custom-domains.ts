@@ -211,7 +211,7 @@ export async function resolveCustomDomainRequest(
   const host = url.hostname.toLowerCase();
   const row = await customDomainRows.get(host, async () => await env.ACCOUNTS.prepare(
     "SELECT hostname, account_id, tendril_id, status, cf_hostname_id, verification_txt_name, verification_txt_value, ssl_status, last_error, created_at, verified_at, updated_at FROM custom_domains WHERE hostname = ? AND status = 'active'",
-  ).bind(host).first<CustomDomainRow>()).catch(() => null);
+  ).bind(host).first<CustomDomainRow>(), env.ACCOUNTS).catch(() => null);
   if (!row) return null;
 
   const ent = await cachedAccountEntitlements(env, row.account_id).catch(() => null);

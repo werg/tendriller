@@ -63,7 +63,7 @@ const pageIds = new TtlCache<true | null>(60_000, 10_000, 4096);
 async function pageIdExists(env: Env, id: string): Promise<boolean> {
   if (!env.ACCOUNTS) return false;
   return Boolean(await pageIds.get(id, async () =>
-    await env.ACCOUNTS.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(id).first() ? true : null).catch(() => null));
+    await env.ACCOUNTS.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(id).first() ? true : null, env.ACCOUNTS).catch(() => null));
 }
 
 /**

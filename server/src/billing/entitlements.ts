@@ -312,7 +312,7 @@ const PLAN_GATE_TTL_MS = 20_000;
 const planGateCache = new TtlCache<AccountEntitlements>(PLAN_GATE_TTL_MS, PLAN_GATE_TTL_MS, 512);
 
 export function cachedAccountEntitlements(env: Env, accountId: string): Promise<AccountEntitlements> {
-  return planGateCache.get(accountId, () => getAccountEntitlements(env, accountId));
+  return planGateCache.get(accountId, () => getAccountEntitlements(env, accountId), env.ACCOUNTS);
 }
 
 export function invalidateAccountEntitlements(accountId?: string): void {

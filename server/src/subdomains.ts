@@ -137,7 +137,7 @@ export async function resolveSubdomainRequest(
     return await env.ACCOUNTS.prepare(
       "SELECT subdomain, account_id, tendril_id, created_at, updated_at FROM page_subdomains WHERE subdomain = ?",
     ).bind(label).first<PageSubdomainRow>();
-  }).catch(() => null);
+  }, env.ACCOUNTS).catch(() => null);
   if (!row) return null;
 
   const ent = await cachedAccountEntitlements(env, row.account_id).catch(() => null);
