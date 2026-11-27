@@ -24,7 +24,7 @@ const usage = `Usage: npm run dev:host -- --release FULL_SOURCE_SHA [options]
   --headless        With --open, run Chromium without a window for automation
   --artifacts DIR   Read a complete manifest-bound release from DIR instead of GitHub
 
-Requires a source release with a sealed deployment and storage schema 14.
+Requires a source release with a sealed deployment and storage schema 15.
 Uses the release's packed Worker, public assets and first-app kit without a build.
 No Cloudflare account or production credentials are needed. See docs/LOCAL_HOST.md.`;
 

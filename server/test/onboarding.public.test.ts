@@ -358,16 +358,17 @@ describe('onboarding after page creation', () => {
     expect(JSON.stringify(navigation)).not.toContain(h.token);
   });
 
-  it('points unprepared publication reads and enrollment at the actual preparation step', async () => {
+  it('points uninitialized publication reads at Chronolog v2 genesis initialization', async () => {
     const h = await create();
     const response = await peerApi(h, 'publication/read');
     expect(response.status).toBe(409);
     const result = await response.json<{ error: { code: string; message: string } }>();
-    expect(result.error.code).toBe('application_unprepared');
-    expect(result.error.message).toContain('host.peers.prepare');
-    expect(result.error.message).toContain(guidePath);
-    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null,
-      hostAttestationKey: expect.stringMatching(/^[0-9a-f]{64}$/), admissionAccounts: [h.account, expect.stringMatching(/^email:owner-/)] });
+    expect(result.error.code).toBe('application_uninitialized');
+    expect(await apiJson(h, 'GET', 'application')).toEqual({
+      selection: h.application, configuration: null, genesis: null, stateRoot: null, historyDigest: null,
+      currentEpoch: -1, closedThroughMs: null,
+      hostAttestationKey: expect.stringMatching(/^[0-9a-f]{64}$/), admissionAccounts: [h.account, expect.stringMatching(/^email:owner-/)],
+    });
   });
 
   it('does not expose a per-page MCP route on the tendril API', async () => {

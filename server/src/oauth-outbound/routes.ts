@@ -9,7 +9,7 @@ import type { Tendril } from '../tendril';
 import type { PagePrincipal } from '../access';
 import { allows } from '../access';
 import { addActivity } from '../activity';
-import { readAuthorityBundle } from '../authority';
+import { readControlState } from '../authority';
 import { serviceSession } from '../accounts/auth';
 import { authenticateAgentRequest, type GrantedAgent } from '../agents';
 import { HttpError, isPlainObject, json, readJson } from '../http';
@@ -1038,11 +1038,12 @@ export async function handlePageConnections(t: Tendril, req: Request, sub: strin
       let canRekey = grant.account_id === principal.accountId || ownerAccount === principal.accountId;
       if (!canRekey && grant.grant_custody === 'page') {
         // Also allow any current Chronolog administrator on `page`-custody connections (e.g. org-admin rotating epoch keys).
-        const bundle = await readAuthorityBundle(t);
-        if (bundle) {
-          const adminKeys = new Set(bundle.memberships.at(-1)!.payload.members.filter(mem => mem.administrator).map(mem => mem.publicKey));
-          canRekey = bundle.memberships.some(mem =>
-            mem.payload.admitted.some(a => a.attestation.payload.accountId === principal.accountId && adminKeys.has(a.publicKey)),
+        const state = await readControlState(t);
+        if (state) {
+          const adminKeys = state.permissions.administrators;
+          const attestations = t.db.get<Record<string, { payload: { accountId?: string; publicKey?: string } }>>('group_attestations', {});
+          canRekey = Object.values(attestations).some(a =>
+            a.payload?.accountId === principal.accountId && a.payload?.publicKey && adminKeys.has(a.payload.publicKey),
           );
         }
       }

@@ -37,14 +37,13 @@ function archiveFiles(bytes){
  throw Error('TRUNCATED_SESSION_TAR');
 }
 export function validateSessionProvenance(proof){
- assert.equal(proof.format,'chronolog-peer-session-package/v1','INVALID_SESSION_PROVENANCE_FORMAT');
+ assert.equal(proof.format,'chronolog-peer-session-package/v2','INVALID_SESSION_PROVENANCE_FORMAT');
  assert.equal(proof.repository,'werg/chronolog-db','INVALID_SESSION_REPOSITORY');
  assert.match(proof.source,/^[a-f0-9]{40}$/,'EXACT_SESSION_SOURCE_REQUIRED');
  assert.match(proof.sourceTree,/^[a-f0-9]{40}$/,'EXACT_SESSION_TREE_REQUIRED');
  assert.equal(proof.dirty,false,'CLEAN_SESSION_SOURCE_REQUIRED');
- assert.equal(proof.profile,'chronolog-crdt-v1','STANDARD_SESSION_PROFILE_REQUIRED');
- assert.equal(proof.nativeRtc,true,'NATIVE_RTC_SESSION_REQUIRED');
- assert(Array.isArray(proof.sqlEngines)&&proof.sqlEngines.length===0,'SQL_FREE_SESSION_PIN_REQUIRED');
+ assert.equal(proof.profile,'chronolog-crdt-v2','STANDARD_SESSION_PROFILE_REQUIRED');
+ assert.equal(proof.zeroNativeBuild,true,'ZERO_NATIVE_BUILD_SESSION_REQUIRED');
  return Object.freeze({source:proof.source});
 }
 export function readSessionPin(root=resolve(import.meta.dirname,'..')){

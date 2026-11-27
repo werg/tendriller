@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session';
 
 // Tier-2 per-participant / per-device view bindings stored as normal Chronolog events.
 // Lets one Chronolog stateful pipe render dedicated UIs for different people or devices
@@ -32,12 +32,12 @@ export const viewBindingCommands = Object.freeze({
       if (facetId !== '' && !FACET_ID.test(facetId)) {
         throw Error('VIEW_BINDING_FACET_INVALID');
       }
-      return program(emit('ui/view-binding', {
+      return [{ topic: 'ui/view-binding', input: {
         targetKind: input.targetKind,
         targetId: input.targetId,
         facetId: facetId || null,
         ...(typeof input.label === 'string' && input.label.trim() ? { label: input.label.trim() } : {}),
-      }));
+      } }];
     },
   }),
 });

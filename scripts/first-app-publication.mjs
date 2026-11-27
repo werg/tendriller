@@ -84,7 +84,7 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
     const response = await fetch(publicationGateUrl, { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, id: gateId, author: ownerBefore.identity.publicKey,
-        previous: publicationBefore.publication.id, proofHash }),
+        previous: publicationBefore.opId, proofHash }),
       signal: AbortSignal.timeout(5_000) });
     if (!response.ok) throw Error('Publication gate ' + action + ' failed: ' + response.status);
     return response.json();
@@ -155,16 +155,17 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
     if (failures.length) throw failures.length === 1 ? failures[0]
       : new AggregateError(failures, firstFailure.message, { cause: firstFailure });
     const first = settled[0].value;
-    assert.equal(progress.operationId, first.publication.payload.operationId,
-      'The held request must be this exact signed publication operation.');
-    assert.notEqual(first.publication.id, publicationBefore.publication.id);
-    assert.equal(first.publication.payload.author, ownerBefore.identity.publicKey);
-    const signedProof = first.publication.payload.files.find(file => file.path === 'resident-publication-proof.txt');
+    assert.notEqual(first.opId, publicationBefore.opId);
+    assert.equal(first.release.author, ownerBefore.identity.publicKey);
+    const signedProof = first.release.files.find(file => file.path === 'resident-publication-proof.txt');
     assert.equal(signedProof?.hash, proofHash);
     assert.equal(signedProof?.size, proof.length);
-    assert.equal((await attached(['publication'])).publication.id, first.publication.id);
     const retained = await attached(['publication-operation', 'resident-publication-one']);
-    assert.deepEqual(retained, { publication: first.publication, receipt: first });
+    assert.equal(progress.operationId, retained.operationId,
+      'The held request must be this exact signed publication operation.');
+    assert.equal(retained.opId, first.opId);
+    assert.deepEqual(retained.receipt, first);
+    assert.equal((await attached(['publication'])).opId, first.opId);
     assert.deepEqual(await attached(['publish', pageDirectory, '--operation', 'resident-publication-one']), first);
     await expect.poll(() => { alive(); return observed(browserText); }, { timeout: 30_000 }).toBe(true);
 
@@ -173,13 +174,13 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
       error => /PEER_PUBLICATION_OPERATION_REUSED|Publication operation ID already binds another graph/u.test([error.message, error.stdout, error.stderr].join('\n')),
       'Changed bytes must not reuse the first signed publication identity.');
     const second = await attached(['publish', pageDirectory, '--operation', 'resident-publication-two']);
-    assert.notEqual(second.publication.id, first.publication.id);
-    assert.equal(second.publication.payload.previous, first.publication.id);
+    assert.notEqual(second.opId, first.opId);
+    assert.equal(second.revision, first.revision + 1);
     await writeFile(indexPath, firstHtml);
     assert.deepEqual(await attached(['publish', pageDirectory, '--operation', 'resident-publication-one']), first,
       'A stale exact retry returns its retained receipt.');
     const selected = await attached(['publication']);
-    assert.equal(selected.publication.id, second.publication.id,
+    assert.equal(selected.opId, second.opId,
       'A stale retry must not move the selected signed head backwards.');
     assert.ok(Number.isSafeInteger(selected.version) && selected.version > 0);
     await writeFile(indexPath, secondHtml);
@@ -241,7 +242,7 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
     assert.equal((await attached(['self'])).endpoint.ownerInstanceId, ownerBefore.endpoint.ownerInstanceId);
     alive();
     result = { passed: true, ownerInstanceId: ownerBefore.endpoint.ownerInstanceId,
-      publications: [first.publication.id, second.publication.id], selectedPublication: second.publication.id,
+      publications: [first.opId, second.opId], selectedPublication: second.opId,
       stagedAssetBytes: proof.length, stagedAssetHash: proofHash, exactRetry: true, changedBytesRejected: true,
       staleRetryPreservedHead: true, consumerProcessStayedAlive: true, consumerBatches: batches.length,
       browserCommandObserved: true, publicationProgress: progress, nativeCommandObservedAfterPublisherDetach: true,

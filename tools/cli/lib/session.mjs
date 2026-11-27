@@ -157,22 +157,28 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     finally { await view.release(); }
   }
   if (command === 'finality') {
-    // Proofs contain exact bigint author times. Export canonical bytes, not a
-    // lossy JSON rewrite of signed statements (or JSON.stringify(BigInt)).
     const record = async value => {
       const [{ encodeRecord }, { authorityRecord }] = await Promise.all([import('@chronolog/peer-session'), import('@tendriller/core/authority')]);
       return authorityRecord(encodeRecord(value));
     };
-    if (args[0] === 'close') {
-      const result = await session.finality.closeAuthorTime({ throughMs: authorTime(required(options.through, '--through with an explicit author-time frontier')) });
-      return { closedThroughMs: result.closedThroughMs === null ? null : result.closedThroughMs.toString(), proofs: await record(result.proofs) };
+    if (args[0] === 'status') {
+      const status = session.finality.status();
+      return {
+        hasActiveFinality: status.hasActiveFinality,
+        closedThroughMs: status.closedThroughMs === null ? null : status.closedThroughMs.toString(),
+        checkpoints: status.checkpoints.length,
+      };
     }
-    if (args[0] === 'vote') return { votes: await record(await session.finality.voteAuthorTime({ throughMs: authorTime(required(options.through, '--through with an explicit author-time frontier')) })) };
+    if (args[0] === 'close') {
+      const checkpoint = await session.finality.createCheckpoint({ throughMs: authorTime(required(options.through, '--through with an explicit author-time frontier')) });
+      return { closedThroughMs: checkpoint.payload.closedThroughMs.toString(), checkpoint: await record(checkpoint) };
+    }
     if (args[0] === 'submit') {
       const [{ decodeRecord }, { authorityRecordBytes }] = await Promise.all([import('@chronolog/peer-session'), import('@tendriller/core/authority')]);
-      return session.finality.submitProofs(decodeRecord(authorityRecordBytes(jsonInput(args[1], 'canonical hex finality proof record'))));
+      const parsed = decodeRecord(authorityRecordBytes(jsonInput(args[1], 'canonical hex finality checkpoint record')));
+      return session.finality.submitCheckpoints(Array.isArray(parsed) ? parsed : [parsed]);
     }
-    throw Error('Use finality close, vote, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
+    throw Error('Use finality status, close, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
   }
   if (command === 'definition') return controlOf(owned).definition();
   if (command === 'publication') return controlOf(owned).publication();
@@ -192,12 +198,15 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       if (options.operation === undefined) throw error;
       // An explicitly retained identity can still retry with the complete original bytes.
     }
-    const knownHashes = new Set((currentHead?.publication?.payload?.files ?? []).map(file => `${file.hash}:${file.size}`));
+    const currentFiles = currentHead?.release?.files ?? currentHead?.publication?.payload?.files ?? [];
+    const currentId = currentHead?.opId ?? currentHead?.publication?.id ?? null;
+    const currentRevision = currentHead?.revision ?? currentHead?.publication?.payload?.revision ?? -1;
+    const knownHashes = new Set(currentFiles.map(file => `${file.hash}:${file.size}`));
     const operationId = options.operation ?? (() => {
       const digest = createHash('sha256').update(JSON.stringify({
-        previous: currentHead?.publication?.id ?? null, entry: source.entry, files: manifestFiles,
+        previous: currentId, entry: source.entry, files: manifestFiles,
       })).digest('hex').slice(0, 16);
-      return `pub-${(currentHead?.publication?.payload?.revision ?? -1) + 1}-${digest}`;
+      return `pub-${currentRevision + 1}-${digest}`;
     })();
     let publication;
     try {
@@ -227,13 +236,15 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       } catch { /* Never fail a committed publish if blob retention is unavailable. */ }
       return receipt;
     } catch (error) {
-      const committed = error.outcome === 'committed' && error.receipt?.publication?.id === publication?.id;
+      const receiptId = error.receipt?.opId ?? error.receipt?.publication?.id ?? null;
+      const publicationId = publication?.opId ?? publication?.id ?? null;
+      const committed = error.outcome === 'committed' && receiptId !== null && (publicationId === null || receiptId === publicationId);
       error.publication = { operationId: publication?.payload?.operationId ?? operationId,
         ...(publication?.payload?.operationId && publication.payload.operationId !== operationId ? { localOperationId: operationId } : {}),
-        publicationId: publication?.id ?? null,
+        publicationId,
         outcome: committed ? 'committed' : publication ? 'unknown' : 'not_submitted',
         phase: error.phase ?? (publication ? 'submission' : 'preparation'),
-        receipt: committed ? { publicationId: error.receipt.publication.id, version: error.receipt.version } : null,
+        receipt: committed ? { publicationId: receiptId, version: error.receipt.version } : null,
         nextAction: committed
           ? 'The host acknowledged this publication. Reopen the same device and inspect publication plus publication-operation; verify the signed selected head before calling the release current.'
           : 'Keep this operation identity, device store and authored bytes. Inspect publication and publication-operation after reopening. Retry only the original publication intent; do not create a replacement operation because the response was uncertain.' };

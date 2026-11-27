@@ -4,7 +4,7 @@ Tendriller is open-source and runs on a single Cloudflare Worker with D1, R2, an
 
 ## What it costs on your own Cloudflare account
 
-- **Cloudflare Workers Paid ($5/month base):** Strongly recommended before serving hosted MCP or public traffic. Removes the Free plan’s 10 ms CPU ceiling (needed for QuickJS-NG and DoltLite WASM in hosted MCP) and includes 10M Worker requests, 1M Durable Object requests, 400k GB-s DO duration, 25B D1/DO SQL reads, 50M writes, and 10 GB R2 storage with zero egress.
+- **Cloudflare Workers Paid ($5/month base):** Strongly recommended before serving hosted MCP or public traffic. Removes the Free plan’s 10 ms CPU ceiling (needed for QuickJS-NG and `sqlite-cas.wasm` in hosted MCP) and includes 10M Worker requests, 1M Durable Object requests, 400k GB-s DO duration, 25B D1/DO SQL reads, 50M writes, and 10 GB R2 storage with zero egress.
 - **Cloudflare Realtime SFU & TURN (optional):** Includes **1,000 GB/month free** shared egress across SFU and TURN, then **$0.05/GB** egress (ingress is free, and TURN used with Cloudflare Realtime SFU is free).
 
 ## 1. Provision Worker, D1, R2, and domains

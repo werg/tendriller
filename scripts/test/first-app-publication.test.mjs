@@ -5,26 +5,52 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { qualifyFirstAppPublication } from '../first-app-publication.mjs';
-import {createSigningIdentity,signPublicationManifest} from '@chronolog/authority';
-import {createAuthorityClient} from '../../contract/authority.mjs';
-import {decodeFirstAppPublication} from '../first-app-publication-codec.mjs';
-import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
-import {build} from 'esbuild';
-import { createFirstAppPublicationGate,createFirstAppWebsocketProxyWorker,FIRST_APP_WEBSOCKET_PROXY_WORKER } from '../first-app-websocket-host.mjs';
+import { createSigningIdentity, hexToBytes } from '@chronolog/authority';
+import { encodeSignedOperation, signOperationCore } from '@chronolog/peer-session/kernel';
+import { authorityRecord, createAuthorityClient } from '../../contract/authority.mjs';
+import { decodeFirstAppPublication } from '../first-app-publication-codec.mjs';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { build } from 'esbuild';
+import { createFirstAppPublicationGate, createFirstAppWebsocketProxyWorker, FIRST_APP_WEBSOCKET_PROXY_WORKER } from '../first-app-websocket-host.mjs';
 
 const browserText = 'Browser work while the resident owner publishes';
-const signer=await createSigningIdentity(),otherSigner=await createSigningIdentity();
-const author=signer.publicKey,previous='b'.repeat(64),operationId='nativepub_scoped_fixture_identity';
-const proofHash=createHash('sha256').update('attached-publication-proof\n'+'p'.repeat(900000)).digest('hex');
-const intent={applicationId:'f'.repeat(64),membershipId:'e'.repeat(64),executionManifestDigest:'d'.repeat(64),author,previous,operationId,revision:1,entry:'index.html',
- files:[{path:'index.html',hash:'c'.repeat(64),size:22,type:'text/html'},{path:'resident-publication-proof.txt',hash:proofHash,size:900027,type:'text/plain'}]};
+const signer = await createSigningIdentity(), otherSigner = await createSigningIdentity();
+const author = signer.publicKey, previous = 'b'.repeat(64), operationId = 'nativepub_scoped_fixture_identity';
+const proofHash = createHash('sha256').update('attached-publication-proof\n' + 'p'.repeat(900000)).digest('hex');
+const intent = {
+  applicationId: 'f'.repeat(64), author, previous, operationId, revision: 1, entry: 'index.html',
+  files: [
+    { path: 'index.html', hash: 'c'.repeat(64), size: 22, type: 'text/html' },
+    { path: 'resident-publication-proof.txt', hash: proofHash, size: 900027, type: 'text/plain' },
+  ],
+};
+const signPublicationOp = async (payload = intent) => {
+  const who = payload.author === author ? signer : otherSigner;
+  const signed = await signOperationCore({
+    version: 1,
+    chainId: hexToBytes(payload.applicationId),
+    author: hexToBytes(payload.author),
+    authorTimestampMs: BigInt(Date.now()),
+    operationId: payload.operationId,
+    nonce: crypto.getRandomValues(new Uint8Array(16)),
+    visibility: 'public',
+    updates: [{
+      topic: '$publications',
+      input: { previous: payload.previous, revision: payload.revision, entry: payload.entry, files: payload.files },
+    }],
+  }, who.privateKey);
+  return authorityRecord(encodeSignedOperation(signed));
+};
 // Derive every positive request from the maintained public transport, not a
 // hand-written fixture envelope that could agree with an incorrect gate.
-const publishRequest=async(payload=intent)=>{
- let request;
- const client=createAuthorityClient(async(path,options)=>{request=new Request('https://fixture/api/agent/pages/page/'+path,{method:options.method,body:JSON.stringify(options.body)});return null;});
- await client.publish(await signPublicationManifest(payload,payload.author===author?signer:otherSigner),[]);
- return request;
+const publishRequest = async (payload = intent) => {
+  let request;
+  const client = createAuthorityClient(async (path, options) => {
+    request = new Request('https://fixture/api/agent/pages/page/' + path, { method: options.method, body: JSON.stringify(options.body) });
+    return null;
+  });
+  await client.publish(await signPublicationOp(payload), []);
+  return request;
 };
 const controlRequest = (action, id, extra = {}) => new Request('https://fixture/__first_app_publication', {
   method: 'POST', body: JSON.stringify({ action, id, author, previous, proofHash, ...extra }),
@@ -70,13 +96,23 @@ setInterval(() => {}, 1000);`);
     return gate.control(new Request('https://fixture/__first_app_publication', request));
   });
   let publications = 0;
+  const firstReceipt = {
+    opId: 'c'.repeat(64),
+    revision: 1,
+    version: 2,
+    release: { revision: 1, opId: 'c'.repeat(64), author: intent.author, timestampMs: 2, entry: intent.entry, files: intent.files },
+    finalized: false,
+  };
   const node = async args => {
     const command = args[3];
     // The attached CLI's current self response: the page's signing identity is its public key.
     if (command === 'self') return JSON.stringify({ mode: 'attach', page: 'notes', applicationId: 'f'.repeat(64), identity: { publicKey: author }, endpoint: { ownerInstanceId: 'owner' } });
     if (command === 'publication') {
       if (publications++) throw completed;
-      return JSON.stringify({ publication: { id: previous } });
+      return JSON.stringify({ opId: previous, revision: 0, version: 1, release: { revision: 0, opId: previous, author, timestampMs: 1, entry: 'index.html', files: [] }, finalized: false });
+    }
+    if (command === 'publication-operation') {
+      return JSON.stringify({ opId: firstReceipt.opId, operationId, receipt: firstReceipt });
     }
     assert.equal(command, 'publish');
     const passed = gate.before(await publishRequest());
@@ -86,7 +122,7 @@ setInterval(() => {}, 1000);`);
         const rejected = await passed;
         if (rejected) throw Error('Publication request failed: ' + rejected.status);
       }
-      return JSON.stringify({ publication: { id: 'c'.repeat(64), payload: intent } });
+      return JSON.stringify(firstReceipt);
     } finally { state.publisherSettled = true; state.trace.push('publisher-settled'); }
   };
   const page = {
@@ -249,40 +285,61 @@ test('raw proxy gate is inactive without an authority decoder; obsolete transpor
  assert.equal((await(await gate.control(controlRequest('status',id))).json()).phase,'armed');
 });
 
-test('gate rejects obsolete wrapped records, malformed signed JSON and invalid signatures without consuming the original request',async()=>{
- const gate=createFirstAppPublicationGate({decodePublication:decodeFirstAppPublication}),id=randomUUID();await gate.control(controlRequest('arm',id));
- const signed=await signPublicationManifest(intent,signer);
- const altered={...signed,signature:(signed.signature[0]==='0'?'1':'0')+signed.signature.slice(1)};
- for(const publication of [{record:'00'}, altered, {payload:intent}, null]){
-  const request=new Request('https://fixture/peers/publication',{method:'POST',body:JSON.stringify({action:'publish',publication,assets:[]})});
-  const expected=await request.clone().text();assert.equal(await gate.before(request),undefined);assert.equal(await request.text(),expected);
- }
- const state=await(await gate.control(controlRequest('status',id))).json();assert.equal(state.phase,'armed');assert.equal(state.matched,0);
+test('gate rejects malformed records and invalid signatures without consuming the original request', async () => {
+  const gate = createFirstAppPublicationGate({ decodePublication: decodeFirstAppPublication }), id = randomUUID();
+  await gate.control(controlRequest('arm', id));
+  const signed = await signPublicationOp(intent);
+  const altered = { record: signed.record.slice(0, -2) + (signed.record.endsWith('00') ? '01' : '00') };
+  for (const op of [{ record: '00' }, altered, { payload: intent }, null]) {
+    const request = new Request('https://fixture/peers/publication', { method: 'POST', body: JSON.stringify({ action: 'publish', op, assets: [] }) });
+    const expected = await request.clone().text();
+    assert.equal(await gate.before(request), undefined);
+    assert.equal(await request.text(), expected);
+  }
+  const state = await (await gate.control(controlRequest('status', id))).json();
+  assert.equal(state.phase, 'armed');
+  assert.equal(state.matched, 0);
 });
 
-test('bundled Workerd proxy holds actual createAuthorityClient.publish signed-JSON wire bytes and forwards them unchanged', {timeout:15000},async()=>{
- const entry=new URL('../first-app-publication-codec.mjs',import.meta.url).pathname;
- const bundle=await build({stdin:{contents:`import {createAuthorityClient} from '../../contract/authority.mjs';
-import {decodeFirstAppPublication} from ${JSON.stringify(entry)};\n${createFirstAppWebsocketProxyWorker({decodePublicationExpression:'decodeFirstAppPublication'})}`,resolveDir:import.meta.dirname},write:false,bundle:true,format:'esm',platform:'browser',target:'es2022'});
- const mf=new Miniflare({...convertV4MiniflareOptions({workers:[{name:'network',modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-11-01',serviceBindings:{PACKED_HOST:'echo'}},{name:'echo',modules:true,script:`export default{async fetch(request){return new Response(await request.arrayBuffer(),{headers:{'Content-Type':'application/json'}});}}`,compatibilityDate:'2026-11-01'}]}),logRequests:false});
- const id=randomUUID();let pending;
- const control=async action=>mf.dispatchFetch('https://fixture/__first_app_publication',{method:'POST',body:JSON.stringify({action,id,author,previous,proofHash})});
- try{
-  assert.equal((await control('arm')).status,200);
-  const signed=await signPublicationManifest(intent,signer),assets=[];let completed=false,expected;
-  const client=createAuthorityClient(async(path,options)=>{
-   assert.equal(path,'peers/publication');assert.equal(options.method,'POST');
-   // Assert the real client's direct SignedPublication shape explicitly.
-   assert.equal(options.body.publication,signed);assert.equal(Object.hasOwn(options.body.publication,'record'),false);
-   expected=JSON.stringify(options.body);
-   const response=await mf.dispatchFetch('https://fixture/api/agent/pages/page/'+path,{method:options.method,body:expected});
-   return response.text();
+test('bundled Workerd proxy holds actual createAuthorityClient.publish signed-CBOR wire bytes and forwards them unchanged', { timeout: 15000 }, async () => {
+  const entry = new URL('../first-app-publication-codec.mjs', import.meta.url).pathname;
+  const bundle = await build({
+    stdin: {
+      contents: `import {createAuthorityClient} from '../../contract/authority.mjs';
+import {decodeFirstAppPublication} from ${JSON.stringify(entry)};\n${createFirstAppWebsocketProxyWorker({ decodePublicationExpression: 'decodeFirstAppPublication' })}`,
+      resolveDir: import.meta.dirname,
+    },
+    write: false, bundle: true, format: 'esm', platform: 'browser', target: 'es2022',
   });
-  pending=client.publish(signed,assets).then(value=>{completed=true;return value;});
-  await until(async()=>(await(await control('status')).json()).phase==='held');
-  const state=await(await control('status')).json();assert.equal(state.matched,1);assert.equal(state.operationId,operationId);assert.equal(completed,false);
-  await control('release');assert.equal(await pending,expected);
-  assert.deepEqual(JSON.parse(expected),{action:'publish',publication:signed,assets});
-  assert.equal(completed,true);
- }finally{await control('reset').catch(()=>{});await pending?.catch(()=>{});await mf.dispose();}
+  const mf = new Miniflare({ ...convertV4MiniflareOptions({ workers: [{ name: 'network', modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-11-01', serviceBindings: { PACKED_HOST: 'echo' } }, { name: 'echo', modules: true, script: `export default{async fetch(request){return new Response(await request.arrayBuffer(),{headers:{'Content-Type':'application/json'}});}}`, compatibilityDate: '2026-11-01' }] }), logRequests: false });
+  const id = randomUUID();
+  let pending;
+  const control = async action => mf.dispatchFetch('https://fixture/__first_app_publication', { method: 'POST', body: JSON.stringify({ action, id, author, previous, proofHash }) });
+  try {
+    assert.equal((await control('arm')).status, 200);
+    const signed = await signPublicationOp(intent), assets = [];
+    let completed = false, expected;
+    const client = createAuthorityClient(async (path, options) => {
+      assert.equal(path, 'peers/publication');
+      assert.equal(options.method, 'POST');
+      assert.equal(options.body.op, signed);
+      expected = JSON.stringify(options.body);
+      const response = await mf.dispatchFetch('https://fixture/api/agent/pages/page/' + path, { method: options.method, body: expected });
+      return response.text();
+    });
+    pending = client.publish(signed, assets).then(value => { completed = true; return value; });
+    await until(async () => (await (await control('status')).json()).phase === 'held');
+    const state = await (await control('status')).json();
+    assert.equal(state.matched, 1);
+    assert.equal(state.operationId, operationId);
+    assert.equal(completed, false);
+    await control('release');
+    assert.equal(await pending, expected);
+    assert.deepEqual(JSON.parse(expected), { action: 'publish', op: signed, assets });
+    assert.equal(completed, true);
+  } finally {
+    await control('reset').catch(() => {});
+    await pending?.catch(() => {});
+    await mf.dispose();
+  }
 });

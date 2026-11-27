@@ -70,10 +70,16 @@ async function bundles() {
             async diagnostics() { return []; },
             async readView() {
               return { applicationId, revision: revision(), release() {},
-                async query(sql) {
+                async query(topic, input) {
+                  const req = typeof topic === 'string' && input !== undefined ? input : { sql: topic };
+                  if (req?.kind === 'tables') {
+                    return { tables: store.initialized ? [{ name: 'inventory', type: 'table' }, { name: 'transfers', type: 'table' }] : [] };
+                  }
+                  const sql = typeof req === 'string' ? req : String(req?.sql ?? '');
                   if (!store.initialized) throw Error('no such table: inventory');
                   if (sql.includes('sqlite_master')) return { rows: [['inventory', 'table'], ['transfers', 'table']] };
                   if (sql.startsWith('PRAGMA table_info')) return { rows: [[0, 'id'], [1, 'units']] };
+                  if (sql.includes('LIMIT 0')) return { columns: ['id', 'units'], rows: [] };
                   if (sql.includes('FROM transfers')) return { rows: store.transfers.map(row => [row.id, row.source, row.destination, row.units]) };
                   if (sql.includes('FROM inventory')) return { rows: Object.entries(store.stock).map(([id, units]) => [id, units]) };
                   throw Error('unsupported fixture query');
@@ -161,9 +167,8 @@ test('the whole page startup runs: owner attached, diagnostics mounted, live vie
   assert.equal(state.localOwnerStatus, 'open');
   assert.deepEqual(state.sessionStatus, { phase: 'ready', canAuthor: true, connectedPeers: 0 });
   assert.equal(await page.locator('#public-key').inputValue(), 'b'.repeat(64));
-  // Before the ordinary initialize transaction there is no table: an honest, retained view error, and Save stays available.
-  await page.waitForFunction(() => !document.querySelector('#view-error').hidden);
-  assert.match(await page.locator('#view-error').textContent(), /no such table: inventory/);
+  // Before the ordinary initialize transaction there are no tables yet: empty catalog renders cleanly and Save stays available.
+  await page.waitForFunction(() => document.querySelector('#summary').textContent.includes('0 bins · 0 total units'));
   assert.equal(await enabled(page, '#initialize'), true);
   // The live view is installed, not just Save enabled: the stored DDL/DML transaction renders its rows.
   await page.locator('#initialize').click();

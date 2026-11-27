@@ -18,7 +18,7 @@ export async function recordReview({ project, accessPath, output, composition, v
   assert.equal(handle.service, access.origin);
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
-  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { verifyAuthorityBundle, verifyPublicationManifest, decodeRecord } } = await importReviewPackages(project);
+  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { decodeGenesisBlock, decodeSignedOperation, verifySignedOperation } } = await importReviewPackages(project);
   assert(browser && context && page && token, 'Provide the initialized browser owner profile and its linked-account token');
   const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
@@ -76,12 +76,13 @@ export async function recordReview({ project, accessPath, output, composition, v
     await positive(1, async () => {
       const result = await call('describe_application', app); assert(JSON.stringify(result.structuredContent).includes('completeItem'));
       const value = result.structuredContent;
-      assert.equal(value.hostedParticipant.keyCustody, 'oauth-token-wrapped'); assert.equal(value.hasDomainBundle, true);
+      assert.equal(value.hostedParticipant.keyCustody, 'oauth-token-wrapped');
+      assert.ok(Array.isArray(value.commands) && value.commands.some(item => item.name === 'completeItem'));
       return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), hostedParticipant: value.hostedParticipant.handle, keyCustody: value.hostedParticipant.keyCustody };
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
     const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
-    const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).publication.id;
+    const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).opId;
     await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));
     let operationId;
@@ -122,11 +123,11 @@ export async function recordReview({ project, accessPath, output, composition, v
     assert.deepEqual(await query(), unchanged);
     // The signed page is code, independent of data: it must remain the original verified publication.
     const metadata = await readWithAdmissionRetry(() => host.peers.application());
-    await verifyAuthorityBundle(decodeRecord(authorityRecordBytes(metadata.authority)));
+    decodeGenesisBlock(authorityRecordBytes(metadata.genesis));
     const publication = await readWithAdmissionRetry(() => host.peers.publication());
-    assert.equal(publication.publication.id, originalPublication, 'Data commands must not require or change signed code');
-    await verifyPublicationManifest(publication.publication, metadata.publicationAuthority);
-    report.publication = publication.publication.id;
+    assert.equal(publication.opId, originalPublication, 'Data commands must not require or change signed code');
+    if (publication.op) await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication.op)));
+    report.publication = publication.opId;
     await page.goto(handle.page_url); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.reload(); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.screenshot({ path: resolve(output, 'verified-page.png'), fullPage: true });

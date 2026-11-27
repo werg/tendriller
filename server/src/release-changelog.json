@@ -70,6 +70,36 @@
         "expires_at": 1798243200000,
         "supersedes_id": null
       }
+    },
+    {
+      "slug": "2026-11-26-chronolog-v2-reducers-and-sqlite-cas",
+      "date": "2026-11-26",
+      "category": "breaking",
+      "core_version": "0.3.0-rc.17",
+      "title": "Breaking upgrade: Chronolog v2 Merkle-DAG reducers, chronolog/sql (SQLite-CAS), pluggable authority & zero native builds",
+      "summary": "Chronolog v2 replaces v1 authority/genesis, DoltLite, better-sqlite3, and separate domain.js bundles with hash-pinned in-chain QuickJS-NG ES Module $reducers, deterministic Merkle-paged SQLite-CAS (chronolog/sql + write RLS), and pluggable $permissions (--authority attested|multisig|open). Pre-v2 pages and local device stores cannot be migrated in place and must be recreated.",
+      "body": "Action required for all existing workspaces and agents: (1) Upgrade to Node 22.15+ and install the latest pinned `firstApp.release` kit with `npm ci --ignore-scripts` (zero native C/C++ builds). (2) Recreate pages under Chronolog v2 (`npm run page:new`, `npm run init`, `npm run deploy`); pre-v2 pages, browser profiles, and `.tendriller/` device stores will not open under v2. (3) For SQL apps, bind topics directly to built-in `chronolog/sql` (declarative SQLite + FTS5 + sqlite-vec with atomic `preconditions`/`postconditions`, Postgres-style write RLS via `chronolog/rls`, and `{ query: 'schema' }` introspection) instead of DoltLite/MySQL DDL. (4) For custom reducers, ship pure ES Modules in `$reducers` and check capabilities via `ctx.query('$permissions', { check, actor })`; pass `--authority attested|multisig|open` to `setup.mjs init` to choose host-attested, M-of-N multisig, or open membership. Browser workers must compile and pass `wasmModule` (QuickJS-NG) and `sqliteWasmModule` (`sqlite-cas.wasm` for SQL pages) — already wired in the `notes`, `inventory`, and `call` templates.",
+      "docs_path": "/docs/STATE_MODELS.md",
+      "sunset_at": null,
+      "supersedes": null,
+      "broadcast": {
+        "id": "bc_fowsfcezu3s2to3cy4g4vpwpjv",
+        "kind": "upgrade",
+        "severity": "urgent",
+        "audiences": [
+          "agents",
+          "mcp"
+        ],
+        "title": "Breaking upgrade: Chronolog v2 Merkle-DAG reducers, chronolog/sql (SQLite-CAS), pluggable authority & zero native builds",
+        "summary": "Chronolog v2 replaces v1 authority/genesis, DoltLite, better-sqlite3, and separate domain.js bundles with hash-pinned in-chain QuickJS-NG ES Module $reducers, deterministic Merkle-paged SQLite-CAS (chronolog/sql + write RLS), and pluggable $permissions (--authority attested|multisig|open). Pre-v2 pages and local device stores cannot be migrated in place and must be recreated.",
+        "body": "Action required for all existing workspaces and agents: (1) Upgrade to Node 22.15+ and install the latest pinned `firstApp.release` kit with `npm ci --ignore-scripts` (zero native C/C++ builds). (2) Recreate pages under Chronolog v2 (`npm run page:new`, `npm run init`, `npm run deploy`); pre-v2 pages, browser profiles, and `.tendriller/` device stores will not open under v2. (3) For SQL apps, bind topics directly to built-in `chronolog/sql` (declarative SQLite + FTS5 + sqlite-vec with atomic `preconditions`/`postconditions`, Postgres-style write RLS via `chronolog/rls`, and `{ query: 'schema' }` introspection) instead of DoltLite/MySQL DDL. (4) For custom reducers, ship pure ES Modules in `$reducers` and check capabilities via `ctx.query('$permissions', { check, actor })`; pass `--authority attested|multisig|open` to `setup.mjs init` to choose host-attested, M-of-N multisig, or open membership. Browser workers must compile and pass `wasmModule` (QuickJS-NG) and `sqliteWasmModule` (`sqlite-cas.wasm` for SQL pages) — already wired in the `notes`, `inventory`, and `call` templates.",
+        "docs_path": "/docs/STATE_MODELS.md",
+        "action": null,
+        "match": null,
+        "dismissible": true,
+        "expires_at": 1803427200000,
+        "supersedes_id": null
+      }
     }
   ]
 }

@@ -69,7 +69,22 @@ async function bundles() {
             async readView() {
               if (mode.hold) await readGate;
               if (mode.failRead) throw Error('Read unavailable');
-              return { applicationId, revision: revision(), release() {}, query() { return { columns: [], rows: [] }; },
+              return { applicationId, revision: revision(), release() {},
+                query(topic) {
+                  if (topic === 'notes') {
+                    const byId = new Map();
+                    for (const ev of store.events) {
+                      if (ev.topic === 'note.put') byId.set(ev.payload.noteId, { id: ev.payload.noteId, text: ev.payload.text, author: ev.author, proposalId: ev.proposalId, operationId: ev.operationId, authorTimestampMs: ev.authorTimestampMs });
+                      else if (ev.topic === 'note.deleted') byId.delete(ev.payload.noteId);
+                    }
+                    return [...byId.values()].sort((a, b) => {
+                      const ta = BigInt(a.authorTimestampMs ?? 0), tb = BigInt(b.authorTimestampMs ?? 0);
+                      if (ta !== tb) return ta < tb ? -1 : 1;
+                      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+                    });
+                  }
+                  return { columns: [], rows: [] };
+                },
                 readEvents(options = {}) { const topics = options.topics; return { revision: revision(), events: structuredClone(store.events.filter(event => !topics || topics.includes(event.topic))), cursor: '', hasMore: false }; } };
             },
             async command(name, input, options) {

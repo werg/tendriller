@@ -3,19 +3,16 @@ import test from 'node:test';
 import {
   bytesToHex,
   createApplicationSession,
-  decodeRecord,
   defineApplication,
   defineCommand,
   defineQuery,
-  emit,
-  eventExecutionManifest,
-  executionManifestArtifacts,
+  encryptedEnvelopeDigest,
+  hexToBytes,
   openApplicationDevice,
-  program,
 } from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { composeOwnerExtensions, createAdmission, deviceWrapKey, openPageAuthority } from '../../session/admission.mjs';
+import { composeOwnerExtensions, createAdmission, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
 import { createAdmissionHost } from './helpers/admission-host.mjs';
 import {
   connectHostedMcpGrant,
@@ -30,9 +27,7 @@ class MemoryStore {
   async get(k) { return this.#map.get(k)?.slice() ?? null; }
   async put(k, v) { this.#map.set(k, v.slice()); }
   async delete(k) { this.#map.delete(k); }
-  async initialize(entries) {
-    for (const e of entries) if (!this.#map.has(e.key)) this.#map.set(e.key, e.value.slice());
-  }
+  async entries() { return [...this.#map.entries()].map(([key, value]) => ({ key, value: value.slice() })); }
 }
 
 function unbase64url(encoded) {
@@ -43,11 +38,15 @@ function unbase64url(encoded) {
   return out;
 }
 
-function hexToBytes(hex) {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
+const NOTES_REDUCER = `
+export default {
+  reduce(state, tx) {
+    const list = Array.isArray(state?.notes) ? state.notes.concat([tx.payload]) : [tx.payload];
+    return { ok: true, state: { notes: list }, events: [{ topic: 'note', payload: tx.payload }] };
+  },
+  query(state) { return Array.isArray(state?.notes) ? state.notes : []; },
+};
+`;
 
 const definition = defineApplication({
   id: 'hosted-mcp-helper-test',
@@ -56,7 +55,7 @@ const definition = defineApplication({
     putNote: defineCommand({
       description: 'Store a note',
       input: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
-      prepare: ({ text }) => program(emit('note', { text })),
+      prepare: ({ text }) => [{ topic: 'notes', input: { text } }],
     }),
   },
   queries: {
@@ -68,21 +67,41 @@ const definition = defineApplication({
   },
 });
 
-// The page Worker composition: an administrator browser session with device admission and
-// the hosted MCP owner extension, attached to the page facade exactly as the starters do.
 async function openFixture(t) {
-  const digest = bytesToHex((await executionManifestArtifacts(await eventExecutionManifest())).executionManifestDigest);
-  const appId = 'a'.repeat(64), host = await createAdmissionHost({ applicationId: appId, configuration: { executionManifestDigest: digest, executionProfile: 'events', publisherKeys: ['aa'.repeat(32)] } });
+  const host = await createAdmissionHost();
   const peers = host.client({ account: { accountId: 'acct_owner', email: 'owner@example.test' } });
-  const device = await openApplicationDevice({ store: new MemoryStore(), create: true }), wrapKey = await deviceWrapKey(device.store);
-  const { authority } = await openPageAuthority({ store: device.store, identity: device.identity, wrapKey, peers, applicationId: appId, executionManifestDigest: digest });
-  const session = await createApplicationSession({ device, definition, authority });
+  const device = await openApplicationDevice({ store: new MemoryStore(), create: true });
+  const wrapKey = await deviceWrapKey(device.store);
+  const opened = await openPageGenesis({
+    store: device.store,
+    identity: device.identity,
+    wrapKey,
+    peers,
+    imports: { 'app/notes': NOTES_REDUCER },
+    topics: { notes: { module: 'app/notes', initialState: { notes: [] } } },
+  });
+  const session = await createApplicationSession({
+    device,
+    definition,
+    genesis: opened.genesisBytes,
+    casNodes: opened.casNodes,
+    epochKeys: new Map([[0, opened.epoch0Key]]),
+  });
   const admission = createAdmission(session, { peers, wrapKey, store: device.store, memberIntervalMs: 60_000 });
-  const owner = createApplicationOwner(session, { extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })) });
-  const channel = new MessageChannel(); owner.attach(channel.port1);
-  const page = await connectApplicationOwner(channel.port2, { applicationId: appId });
-  t.after(async () => { await page.detach().catch(() => {}); admission.close(); await owner.close(); channel.port1.close(); channel.port2.close(); });
-  return { appId, session, page, peers, host, admission, getBundle: () => session.authority.bundle(), epochKey: session.authority.epochKey(0) };
+  const owner = createApplicationOwner(session, {
+    extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })),
+  });
+  const channel = new MessageChannel();
+  owner.attach(channel.port1);
+  const page = await connectApplicationOwner(channel.port2, { applicationId: opened.chainId });
+  t.after(async () => {
+    await page.detach().catch(() => {});
+    admission.close();
+    await owner.close();
+    channel.port1.close();
+    channel.port2.close();
+  });
+  return { appId: opened.chainId, opened, session, page, peers, host, admission, epochKey: opened.epoch0Key };
 }
 
 test('connectHostedMcpGrant adds a revocable identity through the owner and X25519-seals epoch keys; the page never sees them', async t => {
@@ -151,30 +170,29 @@ test('connectHostedMcpGrant adds a revocable identity through the owner and X255
   assert.equal(material.signingPublicKey, postedConnect.publicKey);
   assert.match(material.signingSeedHex, /^[a-f0-9]{96}$/u);
   assert.equal(material.epochKeys['0'], bytesToHex(f.epochKey));
-  // The hosted identity is an ordinary administrator-signed member, visible and removable on every replica.
-  const added = f.session.authority.grant(postedConnect.publicKey);
+  // The hosted identity is an ordinary administrator-signed member, visible on both session and blind host.
+  const added = f.session.member(postedConnect.publicKey);
   assert.deepEqual([added.reader, added.writer, added.administrator], [true, true, false]);
-  assert.equal(decodeRecord(Uint8Array.from(f.host.state.authority.record.match(/../g), byte => parseInt(byte, 16))).memberships.at(-1).signer, f.session.device.identity.publicKey);
+  assert.ok(f.host.state.control.permissions.members.some(m => m.publicKey === postedConnect.publicKey));
 });
 
 test('syncHostedMcpEnvelopes and enableHostedMcp exchange blind encrypted envelopes across sessions without plaintext', async t => {
   const f = await openFixture(t);
-  // Author a local operation on browser session
   const op1 = await f.session.command('putNote', { text: 'From browser' }, { operationId: 'op-browser-1' });
   await op1.materialized({ signal: AbortSignal.timeout(5000) });
 
-  // Simulate DO mcp_store retaining blind encrypted envelopes
+  // Simulate DO mcp_store retaining blind encrypted v2 envelopes keyed by encryptedEnvelopeDigest
   const doStore = new Map();
   const fetchImpl = async (url, init = {}) => {
     if (String(url).endsWith('_tendril/mcp/sync')) {
       const body = JSON.parse(init.body);
       for (const b64 of body.envelopes) {
         const raw = unbase64url(b64);
-        const env = decodeRecord(raw);
-        doStore.set(env.payload.proposalId, b64);
+        const digest = bytesToHex(encryptedEnvelopeDigest(raw));
+        doStore.set(digest, b64);
       }
       const known = new Set(body.knownIds);
-      const missing = [...doStore.entries()].filter(([id]) => !known.has(id)).map(([proposalId, envelopeBase64]) => ({ proposalId, envelopeBase64 }));
+      const missing = [...doStore.entries()].filter(([id]) => !known.has(id)).map(([digest, envelopeBase64]) => ({ digest, envelopeBase64 }));
       return new Response(JSON.stringify({ stored: body.envelopes.length, envelopes: missing }), { status: 200 });
     }
     throw Error('Unexpected URL: ' + url);
@@ -191,12 +209,15 @@ test('syncHostedMcpEnvelopes and enableHostedMcp exchange blind encrypted envelo
   // Second device/session (simulating hosted MCP) writes an op and pushes to DO store
   const peerDevice = await openApplicationDevice({ store: new MemoryStore(), create: true });
   await f.admission.call('admission.addKey', peerDevice.identity.publicKey, null, { writer: true });
+  const exported = await f.session.exportFacts({ includePrivateCas: false });
   const peerSession = await createApplicationSession({
     device: peerDevice,
     definition,
-    authority: f.getBundle(),
+    genesis: f.opened.genesisBytes,
+    casNodes: f.opened.casNodes,
     epochKeys: new Map([[0, f.epochKey]]),
   });
+  await peerSession.mergeFacts({ publicOps: exported.publicOps, encryptedEnvelopes: [], casNodes: [], retentions: [], checkpoints: [] });
   t.after(() => peerSession.close());
   const op2 = await peerSession.command('putNote', { text: 'From hosted MCP' }, { operationId: 'op-mcp-1' });
   await op2.materialized({ signal: AbortSignal.timeout(5000) });

@@ -16,19 +16,30 @@ export async function createPage(slug,{template='notes',name}={}) {
  await requireEmptyPageFolder(slug);const origin=selected.config.service;
  requireCreationReady(await describeReadiness(origin),{service:origin});
  const source=new URL(template+'/',templateRoot);
- if(template==='inventory')await(await import(new URL('setup.mjs',source).href)).preflight(); // verifies browser WASM only
  await requireEmptyPageFolder(slug);
  const page=await selected.createPage(slug,{name:name??(template==='inventory'?'Shared inventory':'Shared notes')}),target=join(workspaceRoot,'pages',slug);
  for(const entry of await readdir(source))await cp(new URL(entry,source),join(target,entry),{recursive:true,errorOnExist:true,force:false});
  return{slug,id:page.id,page_url:page.page_url,template,next:`npm run init -- ${slug} (this agent creates the page keys), then npm run deploy -- ${slug}.`};
 }
+function parseAuthorityOption(values) {
+  const mode = values.authority;
+  if (!mode || mode === 'attested') return undefined;
+  if (mode === 'open') return { mode: 'open' };
+  if (mode === 'multisig') {
+    const signers = values.signers ? String(values.signers).split(',').map(s => s.trim()).filter(Boolean) : [];
+    const threshold = values.threshold === undefined ? undefined : Number(values.threshold);
+    return { mode: 'multisig', signers, ...(threshold === undefined ? {} : { threshold }) };
+  }
+  throw Error('Choose --authority attested, multisig, or open');
+}
 export async function run(action,args) {
- const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'}}});
+ const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'},authority:{type:'string'},signers:{type:'string'},threshold:{type:'string'}}});
  const[slug]=positionals;if(action==='new')return createPage(slug,values);
  const selected=await workspace(),context=await selected.pageContext(requireSlug(slug));
  if(action==='demo'){await pageModule(slug,'demo.mjs');return;}
  if(action==='init'){
-  const result=await(await pageModule(slug,'setup.mjs')).initializePage(context,{...(values['browser-finalizer']?{requestedFinality:{kind:'browser-signed-frontier'}}:{}),browserFirst:values['browser-first']===true||values['browser-finalizer']===true,...(values['owner-grant']===undefined?{}:{ownerGrant:values['owner-grant']})}); // a browser finalizer is the browser creator's key
+  const authority=parseAuthorityOption(values);
+  const result=await(await pageModule(slug,'setup.mjs')).initializePage(context,{...(values['browser-finalizer']?{requestedFinality:{kind:'browser-signed-frontier'}}:{}),browserFirst:values['browser-first']===true||values['browser-finalizer']===true,...(values['owner-grant']===undefined?{}:{ownerGrant:values['owner-grant']}),...(authority===undefined?{}:{authority})}); // a browser finalizer is the browser creator's key
   return{...result,next:result.creator==='agent'?`npm run deploy -- ${slug}, then give the owner the page URL. Keep npm run agent running so this agent admits the owner's browsers; it already holds this page's keys and can import data now.`:`npm run deploy -- ${slug}, then give the owner the page URL. Their first browser creates the page data; npm run agent is admitted from its signed grant once a holder is online.`};
  }
  if(action==='build'||action==='deploy'){

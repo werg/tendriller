@@ -5,7 +5,7 @@
 // (an administrator device) generates a revocable Ed25519 identity, signs its
 // membership grant, X25519-seals it with every epoch key to the OAuth grant's
 // `wrap_public_key`, and discards the ephemeral identity.
-import { bytesToHex, createSigningIdentity, decodeRecord, encodeRecord, exportSigningIdentity, hexToBytes } from '@chronolog/peer-session';
+import { bytesToHex, createSigningIdentity, decodeEncryptedEnvelope, encryptedEnvelopeDigest, exportSigningIdentity, hexToBytes } from '@chronolog/peer-session';
 
 const encoder = new TextEncoder();
 
@@ -82,10 +82,8 @@ export function hostedMcpExtensions({ session, admission }) {
       const hostedIdentity = await createSigningIdentity(), exported = await exportSigningIdentity(hostedIdentity);
       await admission.call('admission.addKey', hostedIdentity.publicKey, null, { writer });
       const epochKeys = {};
-      for (const epoch of new Set(session.authority.bundle().memberships.map(m => m.payload.epoch))) {
-        const key = session.authority.epochKey(epoch);
-        if (!key) throw Error(`Missing epoch key ${epoch} for hosted MCP export`);
-        epochKeys[String(epoch)] = bytesToHex(key);
+      if (typeof session.exportEpochKeys === 'function') {
+        for (const [ep, keyBytes] of session.exportEpochKeys()) epochKeys[String(ep)] = bytesToHex(keyBytes);
       }
       const sealed = await sealHostedKeys(wrapPublicKey, { signingSeedHex: exported.privateKey, signingPublicKey: exported.publicKey, epochKeys }, aad);
       return { publicKey: exported.publicKey, wrappedKeysBase64: base64url(sealed) };
@@ -173,15 +171,14 @@ export async function syncHostedMcpEnvelopes({
     return { supported: false, uploaded: 0, merged: 0 };
   }
   const facts = await session.exportFacts();
-  const localEnvelopes = Array.isArray(facts?.envelopes) ? facts.envelopes : [];
+  const localEnvelopes = Array.isArray(facts?.encryptedEnvelopes) ? facts.encryptedEnvelopes : [];
   const knownIds = [];
   const outgoing = [];
-  for (const env of localEnvelopes) {
-    const id = env?.payload?.proposalId;
-    if (typeof id !== 'string') continue;
-    knownIds.push(id);
-    if (!uploadedIds.has(id) && outgoing.length < 256) {
-      outgoing.push(base64url(encodeRecord(env)));
+  for (const raw of localEnvelopes) {
+    const digest = bytesToHex(encryptedEnvelopeDigest(raw));
+    knownIds.push(digest);
+    if (!uploadedIds.has(digest) && outgoing.length < 256) {
+      outgoing.push(base64url(raw));
     }
   }
   const res = await fetchImpl(`${base}_tendril/mcp/sync`, {
@@ -202,13 +199,13 @@ export async function syncHostedMcpEnvelopes({
   for (const item of Array.isArray(data?.envelopes) ? data.envelopes : []) {
     if (typeof item?.envelopeBase64 === 'string') {
       try {
-        incoming.push(decodeRecord(unbase64url(item.envelopeBase64)));
-        if (typeof item.proposalId === 'string') uploadedIds.add(item.proposalId);
+        incoming.push(unbase64url(item.envelopeBase64));
+        if (typeof item.digest === 'string') uploadedIds.add(item.digest);
       } catch { /* ignore malformed envelope */ }
     }
   }
   if (incoming.length > 0) {
-    await session.mergeFacts({ envelopes: incoming, retentions: [], finality: [] });
+    await session.mergeFacts({ publicOps: [], encryptedEnvelopes: incoming, casNodes: [], retentions: [], checkpoints: [] });
   }
   return { supported: true, uploaded: outgoing.length, merged: incoming.length };
 }

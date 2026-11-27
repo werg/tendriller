@@ -119,18 +119,28 @@ export async function pruneOldestNonCurrentVersion(t: Tendril): Promise<{ pruned
 }
 
 /** Stores the bytes content-addressed in R2 (skipped if already present), pruning oldest non-current versions under storage pressure. */
-export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
+export async function storeContent(
+  t: Tendril,
+  body: ArrayBuffer,
+  type: string,
+  options?: { pageLimit?: number | null },
+): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
-  const owner = t.db.get<string | null>("owner_account", null);
-  const pageLimit = owner
-    ? (await getAccountEntitlements(t.env, owner, t.now()).catch(() => null))?.quotas.pageStorageBytes
-    : undefined;
+  const pageLimit = options && 'pageLimit' in options
+    ? options.pageLimit
+    : await (() => {
+        const owner = t.db.get<string | null>("owner_account", null);
+        return owner
+          ? getAccountEntitlements(t.env, owner, t.now()).then(e => e.quotas.pageStorageBytes, () => undefined)
+          : Promise.resolve(undefined);
+      })();
+  const resolvedPageLimit = pageLimit ?? undefined;
 
   for (;;) {
     try {
       await contentOperation(t, hash, async () => {
         const riskScore = scanContent(body);
-        const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, pageLimit);
+        const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, resolvedPageLimit);
         let globalReserved = false;
         let uploaded = false;
         const key = fileKey(t, hash);

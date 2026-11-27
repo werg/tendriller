@@ -15,9 +15,8 @@ export function mountFinality({ root, session }) {
     try {
       if (!/^(?:0|[1-9][0-9]{0,18})$/.test(input.value)) throw Error('Enter an exact nonnegative int64 author timestamp');
       button.disabled = true;
-      const result = await session.finality.closeAuthorTime({ throughMs: BigInt(input.value) });
-      status.textContent = result.closedThroughMs === null ? 'No complete author-time frontier was established; required evidence or dependencies remain. Save is still independent.'
-        : `Verified local provider returned ${result.proofs.length} proof(s), closed through ${result.closedThroughMs}. Inspect each operation’s finalized/excluded facts; retention is separate.`;
+      const checkpoint = await session.finality.createCheckpoint({ throughMs: BigInt(input.value) });
+      status.textContent = `Verified local finality checkpoint closed through ${checkpoint.payload.closedThroughMs} (stateRoot ${checkpoint.payload.stateRoot.slice(0, 12)}...). Inspect each operation’s finalized/excluded facts; retention is separate.`;
     } catch (error) { status.textContent = `No closure was established: ${error.message}. Local authoring remains available. A no-finality policy explicitly does not support finalization; validator quorums need separately collected votes.`; }
     finally { consent.checked = false; button.disabled = true; }
   });

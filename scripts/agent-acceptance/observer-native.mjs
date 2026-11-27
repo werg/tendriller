@@ -8,63 +8,89 @@ import { at, need, same, MeasurementError } from './observer-data.mjs';
 import { hash } from './evidence.mjs';
 
 export function requireAuthoredProofSDK(sdk) {
-  if (['verifyAuthorityBundle', 'verifyRecord', 'writerAuthorizedAt', 'recordDigest', 'encodeRecord', 'decodeRecord'].some(name => typeof sdk?.[name] !== 'function'))
+  if (['decodeGenesisBlock', 'genesisChainId', 'decodeEncryptedEnvelope', 'encryptedEnvelopeDigest',
+    'decodeSignedOperation', 'verifySignedOperation', 'verifyRecord', 'recordDigest', 'encodeRecord', 'decodeRecord',
+    'bytesToHex', 'hexToBytes'].some(name => typeof sdk?.[name] !== 'function')) {
     throw new MeasurementError('authored-public-proof-sdk-unavailable');
+  }
 }
 
-/** Verify and index public authority records without opening a device/store or keys.
- * verifyAuthorityBundle returns void; it does not return an AuthorityProvider. */
-export async function verifiedAuthority(bundle, descriptor, sdk) {
+function toBytes(value, sdk) {
+  if (value instanceof Uint8Array) return value;
+  if (value && typeof value === 'object' && typeof value.record === 'string') return sdk.hexToBytes(value.record);
+  throw new MeasurementError('genesis-record-format', 'failed');
+}
+
+/** Verify a Chronolog v2 GenesisBlock without opening a device/store or holding keys. */
+export async function verifiedAuthority(genesisRecord, pinned, sdk, permissionsOverride = null) {
   requireAuthoredProofSDK(sdk);
-  // Canonical public record transport preserves bigint policy activation floors.
-  // A decoded signed descriptor is also a current public value, not an old profile.
-  const pinned = descriptor?.record === undefined ? descriptor : sdk.decodeRecord(sdk.hexToBytes(descriptor.record));
-  await sdk.verifyAuthorityBundle(bundle, pinned);
-  const entries = await Promise.all(bundle.memberships.map(async signed => [await sdk.recordDigest(signed), signed.payload]));
-  const memberships = new Map(entries), current = entries.at(-1);
-  return { descriptor: bundle.descriptor.payload, currentMembershipId: current[0], currentMembership: current[1],
-    bundle: () => bundle, membership: id => memberships.get(id) ?? null,
-    grant: (author, id = current[0]) => memberships.get(id)?.members.find(member => member.publicKey === author) ?? null };
+  const raw = toBytes(genesisRecord, sdk);
+  const genesis = sdk.decodeGenesisBlock(raw);
+  const chainId = sdk.bytesToHex(sdk.genesisChainId(raw));
+  if (pinned !== undefined && pinned !== null) {
+    const pinnedBytes = toBytes(pinned, sdk);
+    const pinnedChainId = sdk.bytesToHex(sdk.genesisChainId(pinnedBytes));
+    same(chainId, pinnedChainId, 'pinned-genesis-mismatch');
+  }
+  const permissions = permissionsOverride ?? genesis.initialTopics.$permissions ?? { members: [] };
+  const finality = genesis.initialTopics.$finality ?? { schedule: [{ effectiveAfterMs: -1, policy: { kind: 'none' } }] };
+  return {
+    chainId,
+    applicationId: chainId,
+    genesis,
+    genesisBytes: raw,
+    permissions,
+    finality,
+    grant: author => (permissions.members ?? []).find(member => member.publicKey === author) ?? null,
+  };
 }
 
-/** Public signed encrypted envelope proof, not a decrypted core/command proof.
- * The stable proposal digest is signed by the author. No provider label is proof. */
-export async function verifySignedOperation(envelope, authority, sdk) {
-  const value = need(envelope?.payload, 'operation-envelope');
-  same(value.applicationId, authority.descriptor.applicationId, 'operation-authority-application');
-  same(value.executionManifestDigest, authority.descriptor.executionManifestDigest, 'operation-execution-manifest');
-  if (!/^[a-f0-9]{64}$/.test(value.proposalId ?? '') || typeof value.authorTimestampMs !== 'bigint' ||
-      value.authorTimestampMs < 0n || value.authorTimestampMs > (1n << 63n) - 1n) throw new MeasurementError('operation-envelope-scope', 'failed');
-  await sdk.verifyRecord('operation-envelope', envelope, value.author);
-  same(sdk.writerAuthorizedAt(authority, value.author, value.membershipId, value.authorTimestampMs), true, 'operation-historical-writer');
-  const membership = need(authority.membership(value.membershipId), 'operation-membership');
-  same(authority.grant(value.author, value.membershipId)?.writer, true, 'operation-writer-grant');
-  if (typeof value.encrypted?.epoch !== 'bigint' || value.encrypted.epoch < 0n || value.encrypted.epoch > BigInt(Number.MAX_SAFE_INTEGER) ||
-      !authority.bundle().memberships.some(item => item.payload.epoch === Number(value.encrypted.epoch)) ||
-      value.authorTimestampMs <= membership.authorTimeAfterMs) throw new MeasurementError('operation-epoch-or-time', 'failed');
+/**
+ * Verify a Chronolog v2 signed encrypted outer envelope against verified genesis/permissions.
+ * Does not decrypt the inner core; binds chainId, opId, author, epoch, and writer grant.
+ */
+export async function verifySignedOperation(rawEnvelope, authority, sdk) {
+  const raw = toBytes(rawEnvelope, sdk);
+  const env = sdk.decodeEncryptedEnvelope(raw);
+  same(env.version, 1, 'operation-envelope-version');
+  same(sdk.bytesToHex(env.chainId), authority.chainId, 'operation-authority-application');
+  const opId = sdk.bytesToHex(env.opId);
+  const author = sdk.bytesToHex(env.author);
+  if (!/^[a-f0-9]{64}$/.test(opId) || !/^[a-f0-9]{64}$/.test(author) || !Number.isSafeInteger(env.epoch) || env.epoch < 0) {
+    throw new MeasurementError('operation-envelope-scope', 'failed');
+  }
+  const grant = authority.grant(author);
+  same(grant?.writer, true, 'operation-writer-grant');
+  const digest = sdk.bytesToHex(sdk.encryptedEnvelopeDigest(raw));
+  return { opId, author, epoch: env.epoch, digest, raw };
 }
 
-async function authorityBundle(session) {
-  if (typeof session.readAuthority === 'function') return session.readAuthority();
-  // ApplicationSession exposes authority; some application wrappers name it authorityProvider.
-  const provider = session.authorityProvider ?? session.authority;
-  if (typeof provider?.bundle !== 'function') throw new MeasurementError('public-authority-evidence-unsupported');
-  return provider.bundle();
+async function sessionGenesisBytes(session) {
+  if (session.genesisBytes instanceof Uint8Array) return session.genesisBytes;
+  if (typeof session.readGenesis === 'function') return session.readGenesis();
+  throw new MeasurementError('public-authority-evidence-unsupported');
 }
 
 export async function sessionMeasurement(session, config, sdk, { operationId, author, expectedProofHash } = {}) {
   same(session.applicationId, config.applicationId, 'session-application');
   const deviceId = need(session.identity?.publicKey, 'session-public-key');
   same(deviceId, config.native.deviceId, 'session-native-device');
-  const authority = await verifiedAuthority(await authorityBundle(session), need(config.descriptor, 'pinned-data-descriptor'), sdk);
+  const perms = typeof session.permissions === 'function' ? session.permissions() : null;
+  const authority = await verifiedAuthority(await sessionGenesisBytes(session), need(config.descriptor, 'pinned-data-descriptor'), sdk, perms);
   const query = need(config.query, 'query-config');
   const snapshot = await session.query(need(query.name, 'query-name'), query.input ?? null);
   same(snapshot.applicationId, config.applicationId, 'query-application');
   need(snapshot.revision?.digest, 'query-materialized-revision');
   const rows = need(at(snapshot, query.rows ?? '/value'), 'query-rows');
   if (!Array.isArray(rows)) throw new MeasurementError('query-row-array', 'failed');
-  const result = { applicationId: session.applicationId, deviceId, revision: snapshot.revision, rows,
-    status: session.status, module: config.native.modulePath };
+  const result = {
+    applicationId: session.applicationId,
+    deviceId,
+    revision: snapshot.revision,
+    rows,
+    status: session.status,
+    module: config.native.modulePath,
+  };
   if (operationId) {
     const handle = need(await session.operations.get(operationId), 'stored-operation-handle');
     const state = await handle.inspect();
@@ -72,36 +98,44 @@ export async function sessionMeasurement(session, config, sdk, { operationId, au
     same(state.author, need(author, 'expected-operation-author'), 'operation-author');
     same(state.proposalId, handle.id, 'operation-proposal-id');
     if (operationId !== state.proposalId) same(state.operationId, operationId, 'requested-operation-id');
-    // The current owner facade does NOT expose raw signed facts. Do not invent an
-    // inspect response, use private source imports, or open a second signer to get them.
     if (typeof session.exportFacts !== 'function') throw new MeasurementError('signed-operation-evidence-unsupported');
     const facts = await session.exportFacts();
-    const matches = facts.envelopes.filter(item => item.payload.proposalId === state.proposalId && item.payload.author === state.author &&
-      item.payload.authorTimestampMs.toString() === state.authorTimestampMs);
-    // Rewrapping cannot mint a proposal. Select an actual retained witness, and
-    // after an uncertain reply require the original witness bytes, not a new wrap.
-    const envelope = need(matches.find(item => !expectedProofHash || hash(sdk.encodeRecord(item)) === expectedProofHash), 'original-signed-operation-envelope');
-    await verifySignedOperation(envelope, authority, sdk);
-    same(envelope.payload.author, state.author, 'signed-operation-author');
-    same(envelope.payload.authorTimestampMs.toString(), state.authorTimestampMs, 'signed-operation-time');
+    const envelopes = facts.encryptedEnvelopes ?? [];
+    const parsed = [];
+    for (const raw of envelopes) {
+      try {
+        const bytes = toBytes(raw, sdk);
+        const env = sdk.decodeEncryptedEnvelope(bytes);
+        if (sdk.bytesToHex(env.opId) === state.proposalId && sdk.bytesToHex(env.author) === state.author) {
+          parsed.push({ bytes, digest: sdk.bytesToHex(sdk.encryptedEnvelopeDigest(bytes)) });
+        }
+      } catch {}
+    }
+    const chosen = need(
+      parsed.find(item => !expectedProofHash || hash(item.bytes) === expectedProofHash),
+      'original-signed-operation-envelope',
+    );
+    await verifySignedOperation(chosen.bytes, authority, sdk);
     for (const evidence of state.retained) {
-      await sdk.verifyRecord('retention', evidence, evidence.payload.peer);
+      await sdk.verifyRecord('operation-retention', evidence, evidence.payload.peer);
       same(evidence.payload.applicationId, config.applicationId, 'retention-application');
       same(evidence.payload.proposalId, state.proposalId, 'retention-proposal');
       same(evidence.payload.author, state.author, 'retention-author');
-      const subjects = await Promise.all(facts.envelopes.map(async subject => ({ subject, digest: await sdk.recordDigest(subject) })));
-      const subject = need(subjects.find(item => item.digest === evidence.payload.envelopeDigest)?.subject, 'retention-signed-envelope-subject');
-      same(subject.payload.proposalId, state.proposalId, 'retention-envelope-proposal');
-      same(subject.payload.author, state.author, 'retention-envelope-author');
-      await verifySignedOperation(subject, authority, sdk);
-      if (evidence.payload.peer === deviceId || typeof evidence.payload.storageId !== 'string' || !evidence.payload.storageId || evidence.payload.storageId.length > 128)
+      const subject = need(parsed.find(item => item.digest === evidence.payload.envelopeDigest), 'retention-signed-envelope-subject');
+      await verifySignedOperation(subject.bytes, authority, sdk);
+      if (evidence.payload.peer === deviceId || typeof evidence.payload.storageId !== 'string' || !evidence.payload.storageId || evidence.payload.storageId.length > 128) {
         throw new MeasurementError('retention-independent-peer', 'failed');
+      }
       need(authority.grant(evidence.payload.peer), 'retention-member-grant');
     }
-    const bytes = sdk.encodeRecord(envelope);
-    result.operation = { state, envelope: { record: Buffer.from(bytes).toString('hex') }, proofHash: hash(bytes), signatureVerified: true,
+    result.operation = {
+      state,
+      envelope: { record: Buffer.from(chosen.bytes).toString('hex') },
+      proofHash: hash(chosen.bytes),
+      signatureVerified: true,
       inspectionSource: 'authorized-public-exportFacts',
-      proofScope: 'Signed encrypted envelope, proposal reference and historical writer authorization; operation ID, command execution and revisable outcome are local session observations, not independent decrypted-core verification' };
+      proofScope: 'Encrypted v2 operation envelope, proposal digest and writer grant; operation ID, reducer execution and revisable outcome are local session observations, not independent decrypted-core verification',
+    };
     if (config.query.operationId === null) {
       const view = await session.readView(), events = [];
       try {
@@ -131,9 +165,7 @@ async function importWorkspaceTools(project) {
   finally { rmSync(path, { force: true }); }
 }
 
-
-/** Attach only. Never open another signer/store. A facade lacking raw signed
- * proof is an evidence boundary, not an application Save/network failure. */
+/** Attach only. Never open another signer/store. */
 export async function probe(config, options, { packages = importReviewPackages, workspaceTools = importWorkspaceTools } = {}) {
   if (!config.native) throw new MeasurementError('optional-native-observer-not-configured');
   const { session: sdk } = await packages(config.native.project);
@@ -147,7 +179,6 @@ export async function probe(config, options, { packages = importReviewPackages, 
     await sessionMeasurement(session, config, sdk);
     let operationId = options.operationId, author = options.author, waiterInterrupted = false;
     if (options.action === 'submit' || options.action === 'submit-lost') {
-      // Check proof capability before deliberately authoring a test operation.
       if (typeof session.exportFacts !== 'function') throw new MeasurementError('signed-operation-evidence-unsupported');
       const operation = await session.command(options.command, options.input, { operationId });
       const saved = await operation.inspect();

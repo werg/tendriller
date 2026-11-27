@@ -65,11 +65,10 @@ export async function verifyFirstAppComposition({ release, composition, coreProo
     else {
       const proof = archive.json('provenance.json'), source = composition.chronolog[role];
       for (const key of ['repository', 'source', 'sourceTree', 'dirty']) assert.equal(proof[key], source[key]);
-      assert.equal(proof.profile, 'chronolog-crdt-v1');
-      assert.equal(proof.format, role === 'authority' ? 'chronolog-authority-package/v1' : 'chronolog-peer-session-package/v1');
+      assert.equal(proof.profile, 'chronolog-crdt-v2');
+      assert.equal(proof.format, role === 'authority' ? 'chronolog-authority-package/v2' : 'chronolog-peer-session-package/v2');
       if (role === 'session') {
-        assert.deepEqual(proof.sqlEngines, []);
-        assert(!Object.keys(archive.package.exports ?? {}).some(name => name === './sql' || name.startsWith('./sql-')));
+        assert.equal(proof.zeroNativeBuild, true);
       }
     }
   }

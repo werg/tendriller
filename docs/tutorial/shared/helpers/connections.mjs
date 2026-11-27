@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session';
 
 // Shared team (`custody: "page"`) Tier B connection wrap-key (`K_conn`) storage inside Chronolog.
 // Because every Chronolog event is encrypted under the page's epoch key, only admitted page members
@@ -35,12 +35,12 @@ export const pageConnectionCommands = Object.freeze({
       if (!CONN_ID.test(input.connectionId)) throw Error('CONNECTION_ID_INVALID');
       const key = input.connectionKey ?? '';
       if (key !== '' && !KEY_RE.test(key)) throw Error('CONNECTION_KEY_INVALID');
-      return program(emit('connections/page-key', {
+      return [{ topic: 'connections/page-key', input: {
         connectionId: input.connectionId,
         provider: input.provider,
         connectionKey: key || null,
         epoch: input.epoch ?? 0,
-      }));
+      } }];
     },
   }),
 });

@@ -7,24 +7,33 @@ const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMa
   entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
 const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog-db|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)|@chronolog\//;
 const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
-// The host admits portable control and declared input-schema verification.
-// Opt-in hosted MCP participants (`server/src/mcp-*.ts`) use portable `@chronolog/peer-session`
-// + in-memory DoltLite WASM + QuickJS WASM without storing plaintext keys at rest.
+// The host admits portable v2 public-control replay (`@chronolog/authority` +
+// `@chronolog/peer-session/kernel` in `blindHostMode: true`).
+// Opt-in hosted MCP participants (`server/src/mcp-participant.ts`) use portable
+// `@chronolog/peer-session` + deterministic `sqlite-cas.wasm` + QuickJS-NG WASM
+// without storing plaintext keys or plaintext application data at rest.
 const authorityImports = new Set([
   'server/src/authority.ts', 'server/src/admissions.ts', 'server/src/host-attestation.ts',
   'server/src/peer-publications.ts', 'server/src/peer-participant.ts',
 ]);
 const hostedMcpImports = new Set([
-  'server/src/mcp-participant.ts', 'server/src/mcp-sql.ts',
+  'server/src/mcp-participant.ts',
 ]);
-const portableAuthority = new Set(['@chronolog/authority', ...['control', 'metadata', 'participant', 'publication', 'finality'].map(name => '@chronolog/authority/' + name)]);
-const portablePeerSession = new Set(['@chronolog/peer-session']);
-const controlArtifacts = new Set(['index', 'control', 'metadata', 'participant', 'publication', 'finality'].map(name => 'node_modules/@chronolog/authority/' + name + '.mjs'));
-const isPortablePeerSessionArtifact = input => /^node_modules\/@chronolog\/peer-session\/(?:index\.mjs|chunks\/[^/]+\.mjs)$/.test(input);
+const portableAuthority = new Set([
+  '@chronolog/authority',
+  ...['codec', 'definition', 'finality'].map(name => '@chronolog/authority/' + name),
+  '@chronolog/peer-session/kernel',
+]);
+const portablePeerSession = new Set([
+  '@chronolog/peer-session',
+  '@chronolog/peer-session/kernel',
+  '@chronolog/peer-session/sqlite-cas.wasm',
+]);
+const controlArtifacts = new Set(['index', 'codec', 'definition', 'finality'].map(name => 'node_modules/@chronolog/authority/' + name + '.mjs'));
+const isPortablePeerSessionArtifact = input => /^node_modules\/@chronolog\/peer-session\/(?:(?:index|kernel)\.mjs|chunks\/[^/]+\.mjs|wasm\/sqlite-cas\.wasm)$/.test(input);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
   if (!/\.(ts|mjs|mts)$/.test(path)) continue;
   const rel = relative(root, path);
-  if (rel.startsWith('server/src/vendor/doltlite/')) continue;
   for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g)) {
     const allowedChronolog =
       (authorityImports.has(rel) && portableAuthority.has(match[1])) ||

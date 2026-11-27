@@ -68,36 +68,22 @@ test('direct staging fixtures refuse account/session writes when readiness is bl
   assert(fixture.includes("'ACCOUNTS', '--remote'")); assert(!fixture.includes('s9-accounts'));
 });
 
-test('workflow gates dependency builds and runner has no service-mode mutation path', () => {
+test('workflow gates acceptance on readiness and runner has no service-mode mutation path', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/staging-acceptance.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /fixture:\s+needs: \[readiness\]/);
-  assert(workflow.indexOf('--source-only --origin https://staging.tendriller.dev') < workflow.indexOf('repository: werg/chronolog-db'));
+  assert.match(workflow, /acceptance:\s+needs: \[readiness\]/);
+  assert(workflow.includes('--source-only --origin https://staging.tendriller.dev'));
   const runner = readFileSync(new URL('../run-staging-acceptance.mjs', import.meta.url), 'utf8');
   assert(!runner.includes('UPDATE service_state')); assert(!runner.includes('d1'));
 });
 
 
-test('live SQL fixtures use the reviewed session source and remain outside the attested checkout', () => {
+test('live SQL fixtures use the verified release session archive outside the attested checkout', () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const workflow = readFileSync(resolve(root, '.github/workflows/staging-acceptance.yml'), 'utf8');
   const pin = readSessionPin(root);
   assert.match(pin.source, /^[a-f0-9]{40}$/);
-  const fixture = workflow.slice(workflow.indexOf('  fixture:'), workflow.indexOf('  acceptance:'));
-  assert.match(fixture, /defaults:\s+run:\s+working-directory: chronolog/);
-  assert(fixture.indexOf('path: core') < fixture.indexOf('node-version: 24'));
-  assert(fixture.indexOf('node-version: 24') < fixture.indexOf('run: node scripts/session-pin.mjs'));
-  assert(fixture.indexOf('run: node scripts/session-pin.mjs') < fixture.indexOf('repository: werg/chronolog-db'));
-  assert.match(fixture, /id: session\s+working-directory: core\s+run: node scripts\/session-pin\.mjs/);
-  assert(fixture.includes('ref: ${{ steps.session.outputs.source }}'));
-  assert(fixture.includes('path: chronolog'));
-  assert.match(fixture, /pnpm\/action-setup@v4\s+with:\s+package_json_file: chronolog\/package.json/);
-  assert.match(fixture, /key: chronolog-wasm-v1-.*\$\{\{ steps.session.outputs.source \}\}/);
-  assert.match(fixture, /Build exact public Chronolog package\s+env:\s+CHRONOLOG_SHA: \$\{\{ steps.session.outputs.source \}\}/);
-  assert(!/CHRONOLOG_SHA: [a-f0-9]{40}/.test(workflow));
-  assert(!fixture.slice(0,fixture.indexOf('steps:')).includes('steps.session'), 'Step outputs cannot be used in job-level env');
-  const download = workflow.slice(workflow.indexOf('- uses: actions/download-artifact@v4'));
-  assert.match(download, /path: \$\{\{ runner.temp \}\}\/chronolog-fixture/);
-  assert(!download.includes('$GITHUB_WORKSPACE/.chronolog-fixture'));
-  assert(download.includes('"$RUNNER_TEMP"/chronolog-fixture/session/*.tgz'));
-  assert(download.includes('E2E_CHRONOLOG_WASM="$RUNNER_TEMP/chronolog-fixture/wasm"'));
+  assert(workflow.includes("a.role === 'session'"));
+  assert(workflow.includes('npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$SESSION_ARCHIVE"'));
+  assert(!workflow.includes('$GITHUB_WORKSPACE/.chronolog-fixture'));
+  assert(workflow.includes('E2E_CHRONOLOG_CONSUMER="$RUNNER_TEMP/consumer"'));
 });

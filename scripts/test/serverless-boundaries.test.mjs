@@ -119,7 +119,7 @@ test('old wait values, basedOn and other undeclared fields are rejected before o
 
 test('finalized waits are explicitly unsupported under no finality and never submit the command',async()=>{
   let commands=0;
-  const session={authority:{descriptor:{finalityPolicy:{kind:'none'}}},command:async()=>{commands++;return handleFor(id,'x');},operations:{get:async()=>handleFor(id,'original')}};
+  const session={finality:{status:()=>({hasActiveFinality:false})},command:async()=>{commands++;return handleFor(id,'x');},operations:{get:async()=>handleFor(id,'original')}};
   const adapter=createServerlessHostAdapter({...base,openSession:async()=>({session})});
   const response=await adapter.handleRequest(request('commands',{...command('original'),wait:'finalized'}));
   assert.equal(response.status,409);const body=await response.json();assert.equal(body.error.code,'finality_unsupported');assert.equal(body.submission,'not_submitted');assert.equal(commands,0);

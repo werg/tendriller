@@ -2,7 +2,9 @@ import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { serialize } from 'node:v8';
-import { canonicalJson, PUBLICATION_LIMITS } from '@chronolog/peer-session';
+import { canonicalJson, decodeSignedOperation, verifySignedOperation } from '@chronolog/peer-session';
+import { authorityRecordBytes } from '../contract/authority.mjs';
+const MAX_PUBLICATION_FILES = 256;
 const identifier = value => { if (typeof value !== 'string' || !value.length || value.length > 512 || /[\u0000-\u001f]/u.test(value)) throw Error('INVALID_IDENTIFIER'); return value; };
 const OWNER_PROTOCOL = 'chronolog/authored-session/owner/v1';
 import { createNativeFrames as frames } from './native-transport.mjs';
@@ -264,8 +266,18 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
           const { method, args = [] } = frame;
           const operation = value => binding.policy.preserveOperationId === true ? value :
             scopedOperationId(profile.applicationId, binding.id, value, true);
-          const checkedPublication = publication => {
-            const operationId = publication?.payload?.operationId;
+          const checkedPublication = async publication => {
+            let operationId;
+            if (typeof publication?.record === 'string') {
+              try {
+                const { core } = await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication, 512 * 1024)));
+                operationId = core.operationId;
+              } catch {
+                throw failure('OPERATION_BINDING_MISMATCH');
+              }
+            } else {
+              operationId = publication?.payload?.operationId;
+            }
             if (operation(operationId) !== operationId) throw failure('OPERATION_BINDING_MISMATCH');
             return publication;
           };
@@ -275,8 +287,8 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
           else if (method === 'publicationOperation') value = typeof control.publicationOperation === 'function' ? await control.publicationOperation(operation(args[0])) : (() => { throw failure('publication_inspection_unsupported', 'The installed Chronolog package cannot inspect retained publication receipts.'); })();
           else if (method === 'preparePublication') value = await control.preparePublication({ ...args[0], operationId: operation(args[0]?.operationId) });
           else if (method === 'publish') {
-            const publication = checkedPublication(args[0]), assets = args[1];
-            if (!Array.isArray(assets) || assets.length > PUBLICATION_LIMITS.files ||
+            const publication = await checkedPublication(args[0]), assets = args[1];
+            if (!Array.isArray(assets) || assets.length > MAX_PUBLICATION_FILES ||
                 assets.some(asset => !publicationAsset(asset?.hash, asset?.bytes)))
               throw failure('SUPERVISOR_PROTOCOL_INVALID');
             value = await control.publish(publication, assets);
@@ -293,7 +305,7 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
               client.stagedAssets.set(stageId, stage = { assets: new Map(), bytes: 0 });
             }
             let asset = stage.assets.get(hash);
-            if (asset?.done || (!asset && stage.assets.size >= PUBLICATION_LIMITS.files))
+            if (asset?.done || (!asset && stage.assets.size >= MAX_PUBLICATION_FILES))
               throw failure('SUPERVISOR_PROTOCOL_INVALID');
             if (client.stagedBytes + slice.length > PUBLICATION_STAGE_BYTES) throw failure('PEER_PUBLICATION_TOO_LARGE');
             if (!asset) stage.assets.set(hash, asset = { parts: [], done: false });
@@ -304,7 +316,7 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
             const [stageId, publication] = args, stage = discardStage(stageId);
             if (!stage || [...stage.assets.values()].some(asset => !asset.done)) throw failure('SUPERVISOR_PROTOCOL_INVALID');
             const assets = [...stage.assets.entries()].map(([hash, asset]) => ({ hash, bytes: asset.parts.join('') }));
-            value = await control.publish(checkedPublication(publication), assets);
+            value = await control.publish(await checkedPublication(publication), assets);
             void retainPublicationBlobs(owner.session, assets).catch(() => {});
           } else if (method === 'publishAbort') {
             discardStage(args[0]); value = { aborted: true };
@@ -491,7 +503,7 @@ export async function attachNativeSession({ directory: path, token, connect, app
     publicationOperation: operationId => callControl('publicationOperation', [operationId]),
     preparePublication: input => callControl('preparePublication', [input]),
     async publish(publication, assets) {
-      if (!Array.isArray(assets) || assets.length > PUBLICATION_LIMITS.files ||
+      if (!Array.isArray(assets) || assets.length > MAX_PUBLICATION_FILES ||
           assets.some(asset => !publicationAsset(asset?.hash, asset?.bytes))) throw failure('SUPERVISOR_PROTOCOL_INVALID');
       const payloadBytes = assets.reduce((sum, item) => sum + item.bytes.length, 0);
       if (payloadBytes > PUBLICATION_STAGE_BYTES) throw failure('PEER_PUBLICATION_TOO_LARGE');

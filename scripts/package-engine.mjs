@@ -20,10 +20,10 @@ const authorityRoot = join(root, 'node_modules/@chronolog/authority');
 const authorityProofBytes = readFileSync(join(authorityRoot, 'provenance.json'));
 const authorityProof = JSON.parse(authorityProofBytes.toString('utf8'));
 const allowDirty = process.argv.slice(2).includes('--allow-dirty');
-if ((authorityProof.dirty !== false && !(allowDirty && authorityProof.dirty === true)) || authorityProof.format !== 'chronolog-authority-package/v1' || authorityProof.profile !== 'chronolog-crdt-v1' ||
+if ((authorityProof.dirty !== false && !(allowDirty && authorityProof.dirty === true)) || authorityProof.format !== 'chronolog-authority-package/v2' || authorityProof.profile !== 'chronolog-crdt-v2' ||
     !/^[0-9a-f]{40}$/.test(authorityProof.source) || !Array.isArray(authorityProof.inputs) ||
     Object.values(authorityProof.runtimeModules ?? {}).some(module => module.inputs.some(input => /(?:materializer|peer-session|node:)/.test(input))))
-  throw Error('Application authority must identify a clean portable CRDT source checkpoint');
+  throw Error('Application authority must identify a clean portable Chronolog v2 CRDT source checkpoint');
 // A diagnostic dependency must taint the complete artifact graph, even if this
 // checkout itself is clean. Normal builds and release qualification stay strict.
 if (authorityProof.dirty) identity.dirty = true;

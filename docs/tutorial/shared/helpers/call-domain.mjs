@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session';
 
 const str = (minLength, maxLength) => ({ type: 'string', minLength, maxLength });
 
@@ -27,10 +27,10 @@ export const callCommands = Object.freeze({
       additionalProperties: false,
     },
     prepare(input) {
-      return program(emit('call/profile', {
+      return [{ topic: 'call/profile', input: {
         displayName: input.displayName.trim(),
         ...(input.avatar ? { avatar: input.avatar } : {}),
-      }));
+      } }];
     },
   }),
   callTranscriptAppend: defineCommand({
@@ -52,7 +52,7 @@ export const callCommands = Object.freeze({
     prepare(input) {
       const text = input.text.trim();
       if (!text) throw Error('CALL_UTTERANCE_EMPTY');
-      return program(emit('call/utterance', { ...input, text }));
+      return [{ topic: 'call/utterance', input: { ...input, text } }];
     },
   }),
   callNoteAdd: defineCommand({
@@ -71,7 +71,7 @@ export const callCommands = Object.freeze({
     prepare(input) {
       const text = input.text.trim();
       if (!text) throw Error('CALL_NOTE_EMPTY');
-      return program(emit('call/note', { ...input, text }));
+      return [{ topic: 'call/note', input: { ...input, text } }];
     },
   }),
 });

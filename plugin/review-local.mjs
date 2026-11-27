@@ -12,7 +12,7 @@ export const workspaceRoot = fileURLToPath(new URL('./', import.meta.url));
 export { REVIEW_SLUG };
 
 const timed = signal => (url, options = {}) => fetch(url, { ...options,
-  signal: AbortSignal.any([AbortSignal.timeout(30_000), ...[signal, options.signal].filter(Boolean)]) });
+  signal: AbortSignal.any([AbortSignal.timeout(60_000), ...[signal, options.signal].filter(Boolean)]) });
 
 export const workspace = ({ signal } = {}) => openWorkspace({ root: workspaceRoot, fetch: timed(signal) });
 

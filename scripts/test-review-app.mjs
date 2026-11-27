@@ -8,7 +8,7 @@ import { chromium } from '@playwright/test';
 import { createAgentClient } from '../dist/sdk/client.mjs';
 import { authorityRecordBytes } from '../contract/authority.mjs';
 import { readFixtureHandle } from './review/fixture.mjs';
-import { decodeRecord, verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
+import { decodeGenesisBlock, decodeSignedOperation, verifySignedOperation } from '@chronolog/peer-session';
 
 const project = resolve(process.argv[2]), access = readReviewAccess(process.argv[3]);
 // The project is the review fixture's agent workspace: one account credential, one shared signer, one granted page.
@@ -74,7 +74,7 @@ try {
   const display = await context.newPage(); await display.goto(handle.page_url);
   await display.getByRole('heading', { name: 'Review checklist' }).waitFor();
   const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
-  const beforePublication = (await host.peers.publication()).publication.id;
+  const beforePublication = (await host.peers.publication()).opId;
   const operationRecord = resolve(project, '.tendriller/pages', handle.id, 'acceptance-operation.json');
   let operationId;
   try {
@@ -96,7 +96,7 @@ try {
   const exactRetry = await call('call_application_command', { ...app, command: 'completeItem', input: { id: 'check-labels' }, operationId });
   assert.ok(!exactRetry.isError);
   // The signed page is code and independent of data: it stays the original publication while the browser-owned replica converges.
-  assert.equal((await host.peers.publication()).publication.id, beforePublication, 'Data commands must not change the signed publication');
+  assert.equal((await host.peers.publication()).opId, beforePublication, 'Data commands must not change the signed publication');
   await display.goto(handle.page_url);
   await display.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
   report.checks.push('Apply the command, retry its exact ID and see it converge into the browser-owned replica of the unchanged signed page');
@@ -119,11 +119,11 @@ try {
   assert.deepEqual(await read(), beforeDenied);
   report.checks.push('Reject deletion, another application and an unspecified item without changing state');
   const finalMetadata = await host.peers.application();
-  await verifyAuthorityBundle(decodeRecord(authorityRecordBytes(finalMetadata.authority)));
+  decodeGenesisBlock(authorityRecordBytes(finalMetadata.genesis));
   const publication = await host.peers.publication();
-  assert.equal(publication.publication.id, beforePublication);
-  await verifyPublicationManifest(publication.publication, finalMetadata.publicationAuthority);
-  report.publication = publication.publication.id;
+  assert.equal(publication.opId, beforePublication);
+  if (publication.op) await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication.op)));
+  report.publication = publication.opId;
   await display.reload(); await display.getByText('✓ Complete · Check labels', { exact: true }).waitFor();
   await display.screenshot({ path: resolve(output, 'completed-checklist.png'), fullPage: true });
   report.checks.push('Verify the signed publication and retained state after reload');

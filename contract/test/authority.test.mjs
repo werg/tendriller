@@ -21,12 +21,14 @@ test('browser-first host prepare is independent of data authority and native par
 test('admission actions are exact host enrollment requests; the host-signed grant action is gone', async () => {
   const calls = [], client = createAuthorityClient(async (path, options) => { calls.push({ path, body: options?.body }); return { selection: { id: applicationId } }; }, { applicationId });
   const record = { record: '00' }, invite = { inviteId: 'ab'.repeat(16), secret: 'cd'.repeat(32) };
-  await client.enroll(record); await client.enroll(record, invite); await client.enrollAgent(); await client.initialize(record); await client.membership(record);
-  await client.admissions(); await client.wrap(record); await client.wraps('12'.repeat(32));
+  await client.enroll(record); await client.enroll(record, invite); await client.enrollAgent();
+  await client.initialize({ genesis: record }); await client.syncControl({ publicOps: [record] });
+  await client.admissions();
   assert.ok(calls.every(call => call.path === 'peers/enrollment'));
   assert.deepEqual(calls.map(call => call.body), [
-    { action: 'enroll', proof: record }, { action: 'enroll', proof: record, invite }, { action: 'enroll-agent' }, { action: 'initialize', bundle: record },
-    { action: 'membership', bundle: record }, { action: 'admissions' }, { action: 'wrap', wrap: record }, { action: 'wraps', recipient: '12'.repeat(32) }]);
+    { action: 'enroll', proof: record }, { action: 'enroll', proof: record, invite }, { action: 'enroll-agent' },
+    { action: 'initialize', genesis: record }, { action: 'sync', publicOps: [record] }, { action: 'admissions' },
+  ]);
   assert.equal(client.grant, undefined);
 });
 test('a stable explicit scope pin rejects mismatched metadata without resolving another host scope', async () => {

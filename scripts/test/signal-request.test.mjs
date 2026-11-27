@@ -310,23 +310,30 @@ test('whenConnected waits on the session peer count and status stream, and relea
 });
 
 test('generated replies fit the actual public session signed signal encoder', async () => {
-  const peer = await import('@chronolog/peer-session'), authority = await import('@chronolog/authority');
+  const peer = await import('@chronolog/peer-session');
   const store = () => { const values = new Map(); return { async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, value) { values.set(key, value.slice()); } }; };
   const definition = peer.defineApplication({ id: 'signal-budget', version: '1', commands: {}, queries: {} });
   const device = await peer.openApplicationDevice({ store: store(), create: true });
   let session;
   try {
     // Browser-owned root and epoch key; this device is only a granted member. Nothing here bootstraps a native root.
-    const root = await authority.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32)), applicationId = '73'.repeat(32);
-    const manifest = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
-    const descriptor = await authority.signAppDescriptor({ applicationId, rootPrincipal: root.publicKey, authorityPublicKey: root.publicKey,
-      executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), finalityPolicy: { kind: 'none' } }, root);
-    const membership = await authority.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
-      epochKeyDigest: await authority.epochKeyCommitment(applicationId, 0, key),
-      members: [root.publicKey, device.identity.publicKey].map(publicKey => ({ publicKey, wrapKey: null, reader: true, writer: true,
-        administrator: publicKey === root.publicKey, publisher: false, finalizer: false })),
-      admission: { mode: 'strict', hostKey: root.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, root);
-    session = await peer.createApplicationSession({ device, definition, authority: { descriptor, memberships: [membership] }, epochKeys: new Map([[0, key]]) });
+    const root = await peer.createSigningIdentity();
+    const created = await peer.createChainGenesis({
+      creator: { publicKey: root.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false },
+      privateChain: true,
+    });
+    const genesis = structuredClone(created.genesis);
+    genesis.initialTopics.$permissions.members.push({
+      publicKey: device.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false,
+    });
+    const genesisBytes = peer.encodeGenesisBlock(genesis);
+    session = await peer.createApplicationSession({
+      device,
+      definition,
+      genesis: genesisBytes,
+      casNodes: created.casNodes,
+      epochKeys: new Map([[0, created.epoch0Key]]),
+    });
     assert.match(session.identity.publicKey, /^[a-f0-9]{64}$/);
     assert.equal(session.identity.publicKey, device.identity.publicKey);
     assert.equal(session.status.canAuthor, true);

@@ -1,4 +1,36 @@
-import { defineApplication, defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+
+const COPY_TOPICS = Object.freeze(['copy.edit', 'copy.undo', 'copy.submit', 'copy.applied']);
+
+export const reducerSource = `
+export default {
+  reduce(state, tx, ctx) {
+    if (!ctx.query('$permissions', { check: 'writer', actor: tx.author })) {
+      return { ok: false, code: 'writer_required' };
+    }
+    const eventTopic = ctx.config && typeof ctx.config.eventTopic === 'string' ? ctx.config.eventTopic : 'copy.edit';
+    const count = (state && typeof state.count === 'number' ? state.count : 0) + 1;
+    return {
+      ok: true,
+      state: { count, lastAuthor: tx.author },
+      events: [{ topic: eventTopic, payload: tx.payload }],
+    };
+  },
+  query(state) {
+    return state || { count: 0 };
+  },
+};
+`;
+
+export const imports = Object.freeze({ 'app/copy-editor': reducerSource });
+export const topics = Object.freeze(
+  Object.fromEntries(
+    COPY_TOPICS.map(name => [
+      name,
+      Object.freeze({ module: 'app/copy-editor', config: Object.freeze({ eventTopic: name }) }),
+    ]),
+  ),
+);
 
 const copyKey = { type: 'string', minLength: 1, maxLength: 160 };
 const copyText = { type: 'string', maxLength: 4000 };
@@ -76,12 +108,12 @@ export const definition = defineApplication({
     putEdit: defineCommand({
       description: 'Store a revisable inline copy edit in the shared Chronolog session.',
       input: editItem,
-      prepare: (input) => program(emit('copy.edit', input)),
+      prepare: (input) => [{ topic: 'copy.edit', input }],
     }),
     undoEdit: defineCommand({
       description: 'Revert a pending inline copy edit.',
       input: { type: 'object', properties: { key: copyKey }, required: ['key'], additionalProperties: false },
-      prepare: (input) => program(emit('copy.undo', input)),
+      prepare: (input) => [{ topic: 'copy.undo', input }],
     }),
     submitBatch: defineCommand({
       description: 'Submit pending copy edits and an optional note to the repo agent.',
@@ -96,7 +128,7 @@ export const definition = defineApplication({
         required: ['batchId', 'page', 'note', 'edits'],
         additionalProperties: false,
       },
-      prepare: (input) => program(emit('copy.submit', input)),
+      prepare: (input) => [{ topic: 'copy.submit', input }],
     }),
     markApplied: defineCommand({
       description: 'Record that the agent applied submitted keys into server/src/site-copy.json.',
@@ -109,7 +141,7 @@ export const definition = defineApplication({
         required: ['batchId', 'keys'],
         additionalProperties: false,
       },
-      prepare: (input) => program(emit('copy.applied', input)),
+      prepare: (input) => [{ topic: 'copy.applied', input }],
     }),
   },
   queries: {

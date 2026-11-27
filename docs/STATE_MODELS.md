@@ -1,66 +1,125 @@
-# Choose retained state: events or SQL
+# State models: `chronolog/sql`, JSON reducers & pluggable authority
 
-Both choices use one device-owned authored operation-set session, signed intent journal, coherent materialized views, authority and peer reconciliation. Tendriller hosts authenticated immutable UI and signed control metadata, not application execution. Disposable presence/progress uses [signals](APPLICATION_SIGNALS.md) alongside either model.
+In Chronolog v2, every Tendriller application is a single global deterministic reducer whose state is a map of topics. One topic (`$reducers`) maps each topic name to a hash-pinned QuickJS-NG ES Module (`cas:sha256-...`) stored in a Merkle-DAG Content-Addressed Store (CAS).
+
+There are **no separate events-only vs. SQL engine builds**, **no native C/C++ addons**, and **no `domain.js` bundle to keep in sync**. Every browser tab, Node 22+ agent, and opt-in hosted MCP Worker runs the exact same QuickJS-NG + `sqlite-cas.wasm` runtime.
 
 | Requirement | Start with |
 | --- | --- |
-| Notes/messages/observations; derive a domain from retained facts | Event notes: the `templates/notes/` page template of the starter workspace ([Shared Notes](BUILD_AN_APP.md)) |
-| Relational constraints, guarded multi-row transfers, permissioned DDL and ownership | SQL inventory: the `templates/inventory/` page template ([source](https://github.com/werg/tendriller/tree/master/docs/tutorial/templates/inventory)) |
-| Device capture or inference | [Sensors](SENSORS.md)/reviewed content, then an explicit command in either model |
+| Relational tables, FTS5 full-text search, `sqlite-vec` vectors, atomic preconditions + rollback, write RLS, user-owned dynamic tables | Built-in `chronolog/sql` standard reducer (`templates/inventory/domain.mjs`) |
+| Notes, messages, lightweight KV/document state, custom reducer logic | Pure JS/JSON ES Module reducer (`templates/notes/domain.mjs`) |
+| Multiple independent SQL databases in one app | Bind multiple topics to `{ module: 'chronolog/sql' }` — each gets its own hash-addressed `dbRoot` |
+| Custom governance / permissions (host-attested, M-of-N multisig, open public writers, custom capability reducer) | Override `$permissions` in genesis (`chronolog/permissions` or custom module answering `ctx.query('$permissions', ...)`) |
+| Multi-participant tasks, claims, fan-in | Built-in collaboration reducer (`@tendriller/core/collaboration`) |
+| Disposable presence, typing, telemetry | Ephemeral [signals](APPLICATION_SIGNALS.md) (anchored to `stateRoot`) |
 
-Each page is its own application with its own page record and device store, though all pages of a workspace share the agent's one signing key; a SQL page is a new page next to an events page, not a change to it. Choosing SQL for a new app is not an in-place switch for an already initialized events application, and publishing new HTML alone does not change a page's pinned definition. The descriptor pins deterministic execution semantics and chosen finality policy. It does **not** freeze application schema. Code/tool declarations may describe supported behavior but cannot reject otherwise authorized ordinary schema programs.
+## Model 1: First-class declarative SQL (`chronolog/sql`)
 
-## Browser-first SQL setup
-
-Follow [Build an app](BUILD_AN_APP.md) for readiness, immutable SDK/tools/authority/session installation and the registered workspace agent. Select the advertised immutable SQL kit and its exact SQL-capable session; one install serves every page of a workspace, so keep events and SQL pages in separate workspaces when they need different session packages. The kit supplies the matching browser WASM graph; SQL setup verifies and copies its four package-public assets to `pages/<slug>/engine/` without a supplemental download. Do not substitute a stock binary or a JS-only permission claim for the matching native/WASM authorization ABI.
-
-The SQL setup verifies WASM bytes and derives the engine/platform execution manifest from the public browser metadata. It needs no running native participant or native addon to prepare/publish the browser app.
-
-```sh
-npm run page:new -- stock --template inventory --name "Shared inventory"
-npm run init -- stock
-npm run deploy -- stock
-```
-
-`page:new` verifies the workspace's service origin, readiness and host contract, then loads the SQL engine and checks its execution manifest before creating any hosted page; a missing or unsupported engine fails there, before a page exists.
-
-The workspace's shared signer publishes code (a separate right from data access); `init` creates the page keys with the agent as creator. The owner signs in and the running agent admits the browser and wraps its keys; additional browsers are admitted the same way. The owning SQL Worker uses the supported dedicated Worker/VFS mode with the same retained local profile.
-
-## Schema is an ordinary transaction
-
-On the fresh SQL page, **Create initial tables and rows** submits authorized CREATE plus initial INSERT and emits in one ordinary atomic program. It is not a special signed-schema bootstrap channel. **Add label column** submits ordinary ALTER, updates the schema-visible materialized snapshot, and exposes its form without code publication.
-
-The exact factory is:
+Bind any topic (or multiple topics) directly to the audited built-in `chronolog/sql` reducer — **zero custom JS reducer code required**:
 
 ```js
-await createApplicationSession({device,definition,authority,
-  createMaterializer: async ({signal,rootPrincipal}) => {
-    const {createSqlMaterializationRuntime} = await import('@chronolog/peer-session/sql');
-    return createSqlMaterializationRuntime({engine,path:'/inventory.sqlite',rootPrincipal});
+const created = await createChainGenesis({
+  creator: { publicKey: identity.publicKey, wrapKey: wrapKey.publicKey, administrator: true, publisher: true },
+  topics: {
+    inventory: { module: 'chronolog/sql' },
+    analytics: { module: 'chronolog/sql', config: { allowUserDdl: false } },
   },
 });
 ```
 
-Database DDL/DML and permission/platform operations share original-signer authorization, authored-time ordering and atomic rollback. Creation in a namespace, ALTER/DROP on existing objects, and index/trigger rights are distinct from ordinary row writing. Protected internal catalogs, owner/PK/FK invariants, invoker/trigger restrictions and forbidden extension/temporary/attached SQL remain protected. A writer/admin/finalizer crypto grant does not implicitly grant destruction of somebody else's objects.
+### Supported operations on `chronolog/sql`
 
-The starter **Grant units updates and receipt inserts** action is an ordinary explicit permission program. It grants only the reviewed columns/operations for the signer's scope; a later label column does not silently join that grant. Crypto membership refresh never rewrites projected application collective permissions.
+1. **`action: 'migrate'`** (administrator only): run DDL statements in `mode: 'admin'` and optionally install Postgres-style write RLS triggers atomically:
+   ```js
+   await session.submit({
+     updates: [{
+       topic: 'inventory',
+       input: {
+         action: 'migrate',
+         statements: [
+           'CREATE TABLE IF NOT EXISTS inventory (id TEXT PRIMARY KEY, units INTEGER NOT NULL CHECK (units >= 0), owner TEXT NOT NULL)',
+           'CREATE TABLE IF NOT EXISTS bin_grants (grantee TEXT PRIMARY KEY NOT NULL)',
+         ],
+         policies: {
+           inventory: {
+             insert: 'NEW.owner = actor()',
+             update: 'OLD.owner = actor() OR EXISTS (SELECT 1 FROM bin_grants WHERE grantee = actor())',
+             delete: 'OLD.owner = actor()',
+           },
+         },
+       },
+     }],
+   });
+   ```
+2. **`action: 'exec'`** (default when `action` is omitted; any authorized writer): run declarative SQL statements with optional atomic **preconditions**. If any precondition, constraint, or RLS trigger fails, the entire transaction rolls back atomically:
+   ```js
+   await session.submit({
+     updates: [{
+       topic: 'inventory',
+       input: {
+         preconditions: [{
+           sql: 'SELECT units >= ? FROM inventory WHERE id = ?',
+           params: [3, 'source'],
+           code: 'insufficient_stock',
+         }],
+         statements: [
+           { sql: 'UPDATE inventory SET units = units - ? WHERE id = ?', params: [3, 'source'] },
+           { sql: 'UPDATE inventory SET units = units + ? WHERE id = ?', params: [3, 'destination'] },
+         ],
+         events: [{ topic: 'inventory.transferred', payload: { units: 3 } }],
+       },
+     }],
+   });
+   ```
+   Non-admin writers can also run `CREATE TABLE` / `CREATE INDEX` / `ALTER TABLE` / `DROP TABLE` on their own personal tables (when `allowUserDdl !== false`) — table ownership is enforced automatically via `_rls_table_owners`.
+3. **`action: 'setRls'`** / **`action: 'setConfig'`** (administrator only): update RLS policies or toggle `allowUserDdl`.
+4. **Queries:** `view.query('inventory', { sql: 'SELECT * FROM inventory ORDER BY id', params: [], format: 'objects' })`, `{ kind: 'tables' }`, or `{ kind: 'schema' }`.
 
-## Guarded transfers, not irreversible provisional claims
+### Deterministic guarantees
+Every SQLite invocation inside `TopicKernel` is 100% deterministic across browsers, Node, and Cloudflare Workers regardless of host OS or timezone:
+- **`actor()`**, **`op_id()`**, and **`op_time()`** are bound by the host kernel from the verified signed operation.
+- **`datetime('now')`** and **`'localtime'`** are pinned to the operation's UTC `authorTimestampMs`.
+- **`random()` / `randomblob()`** are disabled.
+- **3-mode authorizer:** `readonly` (pure queries), `user` (DML under RLS triggers + optional scoped DDL `{ createTable, alterTable, dropTable, indexOn, createView, dropView }`), and `admin` (full DDL/DML + `applyRls()`).
 
-A transfer program checks reviewed source/destination balances at its canonical position, moves units atomically, inserts its receipt and emits. Failed guards/SQL/DDL roll back all application/schema/permission/effective-event changes. Missing engine/key/body/authority dependencies are not fabricated deterministic rejection.
+## Model 2: Custom ES Module reducers (JSON / KV or direct `chronolog:sqlite`)
 
-Canonical order is solely `(signed authorTimestampMs, signing public-key bytes, stable proposal-ID bytes)`. An earlier operation received later can revise a transfer's previously displayed success/rejection, effective events and derived state. A late earlier CREATE/ALTER can similarly revise later DDL/DML outcomes. Never dependency-sort schema ahead of author time.
+When you want domain-specific reducer logic, write a plain ES Module exporting a default object `{ reduce(state, tx, ctx), query(state, input, ctx), describe() }` and check permissions via `ctx.query('$permissions', { check: 'writer', actor: tx.author })` so your reducer stays decoupled from how `$permissions` is structured:
 
-Submission resolves after exact local durable storage and stays available offline once keys/storage are ready. It does not wait for peers, a successful global/current query, a native process or finality. Retention is separate authenticated peer evidence. Ordinary apps default to no finality. Provisional reservations/claims are not global exclusivity or authority for irreversible external effects.
+```js
+export const NOTES_REDUCER_SOURCE = `
+export default {
+  reduce(state, tx, ctx) {
+    if (!ctx.query('$permissions', { check: 'writer', actor: tx.author })) {
+      return { ok: false, code: 'writer_required' };
+    }
+    const notes = { ...(state?.notes || {}) };
+    const input = tx.payload;
+    if (input.action === 'putNote') {
+      notes[input.noteId] = { id: input.noteId, text: input.text, author: tx.author, at: tx.authorTimestampMs };
+    } else if (input.action === 'deleteNote') {
+      delete notes[input.noteId];
+    }
+    return { ok: true, state: { notes }, events: [{ topic: 'note.changed', payload: input }] };
+  },
+  query(state) {
+    return Object.values(state?.notes || {}).sort((a, b) => a.id.localeCompare(b.id));
+  },
+};
+`;
+```
 
-## Reactive views and honest schema errors
+Custom SQL reducers can also import `{ openDb } from 'chronolog:sqlite'` and `{ applyRls, ensureTableOwners, getOwnedTables, recordTableOwners } from 'chronolog/rls'` directly.
 
-`deriveInventory(view)` introspects the catalog and queries bins/receipts from one captured materialized revision. The page recomputes rows, counts, selected details and label forms after schema-only or data changes. Drafts/reviewed guard values are separate local view state and are not overwritten by incoming snapshots.
+## Model 3: Pluggable `$permissions` & self-evolving or frozen `$reducers`
 
-A missing table or outdated query reports an explicit view error. Keep the last successful snapshot visible as **not current**, preserve selection/focus/deep links/unsent input, and leave unrelated local authoring available. Captured reader leases stay coherent and are released. Read revisions are digests of effective materialized input sets/execution/policy, never global sequence allocation.
+Neither Chronolog nor Tendriller forces a single membership model. Tendriller's blind host evaluates `$permissions` via `TopicKernel.query()` and only enforces host-attested admission when the genesis opts in (`admission !== null`). You can pick any built-in authority preset from `chronolog/permissions` or write your own:
 
-The optional exact author-time field demonstrates late earlier work. Choose and retain that bigint value once; retries use the original signed proposal. Inspect stored/materialized/retained/finalized/excluded independently. A no-finality final wait fails explicitly as unsupported; a sealed frontier may exclude first-seen offline work behind it without rewriting its original intent.
+- **`attestedMembers`** (default for Tendriller pages): host-attested device admission + admin role management.
+- **`multisigMembers`**: M-of-N threshold quorum governance (`{ threshold, signers, members, proposals }`) with zero host attestation (`admission: null`).
+- **`openMembers`**: open public writers/readers with administrator governance over `$reducers` and `$publications` (`admission: null`).
+- **Frozen vs. self-evolving `$reducers`**: pass `frozenReducers: true` to omit the `$reducers` reducer and freeze rules forever, or leave `$reducers` bound so administrators can upgrade reducers or add topics via signed operations without migration scripts.
 
-## Qualification
+## Guarded operations & reactive views
 
-Verify owner-browser admission, offline CRUD/reload, separate-device admission and convergence; ordinary authorized/denied DDL; mixed schema/data rollback; late earlier DDL revising later outcomes; schema-only reactive invalidation; stale query UI and preserved drafts/focus at desktop/320px. Native/WASM parity needs exact engine source/ABI/artifact evidence; a static or native-only test does not qualify browser SQL. Follow [delivery](AGENT_DELIVERY.md) and report exact tested boundaries.
+Canonical order is solely `(signed authorTimestampMs, author, opId)`. A late earlier operation can revise later SQL outcomes, balances, or schema. Always render from coherent snapshots (`createLiveView` / `session.query`) and keep local drafts separate (`createViewStore`).

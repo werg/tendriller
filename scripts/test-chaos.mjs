@@ -20,6 +20,7 @@ const root = resolve(import.meta.dirname, '..');
 const { values } = parseArgs({ options: {
   seed: { type: 'string' }, steps: { type: 'string' }, duration: { type: 'string' },
   browsers: { type: 'string', default: '3' }, pages: { type: 'string', default: '2' },
+  profile: { type: 'string', default: 'events' },
   'first-app-archive': { type: 'string' }, report: { type: 'string' },
   replay: { type: 'string' }, shrink: { type: 'boolean' }, 'shrink-budget': { type: 'string', default: '40' },
   'shrink-attempts': { type: 'string', default: '1' },
@@ -31,7 +32,7 @@ const { values } = parseArgs({ options: {
   'inject-fault': { type: 'string' }, help: { type: 'boolean' },
 } });
 
-const USAGE = `Usage: npm run test:chaos -- [--seed N] [--steps N | --duration 10m] [--browsers N] [--pages N]
+const USAGE = `Usage: npm run test:chaos -- [--profile events|sql] [--seed N] [--steps N | --duration 10m] [--browsers N] [--pages N]
   [--first-app-archive dist/tendriller-first-app-VERSION.tgz] [--report FILE] [--transport direct|relay]
   [--replay REPORT.json] [--shrink [--shrink-budget N] [--shrink-attempts N]] [--network] [--heal-every N] [--heal-deadline 120s]
   [--no-host-restart] [--keep-going] [--fixture DIR] [--port 8791] [--keep] [--headed] [--no-trace]
@@ -50,14 +51,17 @@ const positive = (name, text) => {
   return value;
 };
 if (!['direct', 'relay'].includes(values.transport)) throw Error('Choose --transport direct or relay.');
+if (!['events', 'sql'].includes(values.profile)) throw Error('Choose --profile events or sql.');
 if (values['inject-fault'] && !INJECTED_FAULTS[values['inject-fault']]) throw Error(`Unknown --inject-fault. ${USAGE}`);
 
 const replayed = values.replay ? JSON.parse(await readFile(resolve(values.replay), 'utf8')) : null;
+const profile = replayed?.config?.profile ?? values.profile;
 const seed = replayed ? replayed.seed : (parseSeed(values.seed) ?? randomSeed());
 const version = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version;
-const firstAppArchive = resolve(values['first-app-archive'] ?? join(root, 'dist', `tendriller-first-app-${version}.tgz`));
+const firstAppArchive = resolve(values['first-app-archive'] ?? join(root, 'dist', profile === 'sql' ? `tendriller-first-app-sql-${version}.tgz` : `tendriller-first-app-${version}.tgz`));
 const durationMs = parseDuration(values.duration);
 const config = replayed ? { ...replayed.config, failFast: !values['keep-going'] } : {
+  profile,
   steps: values.steps ? positive('steps', values.steps) : (Number.isFinite(durationMs) ? Infinity : 60),
   durationMs, browsers: positive('browsers', values.browsers), pages: Math.min(positive('pages', values.pages), 4),
   healEvery: positive('heal-every', values['heal-every']), healDeadlineMs: parseDuration(values['heal-deadline']),
@@ -65,15 +69,17 @@ const config = replayed ? { ...replayed.config, failFast: !values['keep-going'] 
   failFast: !values['keep-going'], injectFault: values['inject-fault'] ?? null,
 };
 if (replayed && values['inject-fault']) config.injectFault = values['inject-fault'];
-const reportPath = resolve(values.report ?? join(root, '.results/chaos', `chaos-${seed}${replayed ? '-replay' : ''}.json`));
+const reportPath = resolve(values.report ?? join(root, '.results/chaos', `chaos-${profile === 'sql' ? 'sql-' : ''}${seed}${replayed ? '-replay' : ''}.json`));
 const evidenceDirectory = reportPath.replace(/\.json$/, '');
 const port = positive('port', values.port);
-console.log(`chaos seed: ${seed}${replayed ? ` (replaying ${replayed.actions.length} entries from ${values.replay})` : ''}`);
+console.log(`chaos seed: ${seed} (profile: ${profile})${replayed ? ` (replaying ${replayed.actions.length} entries from ${values.replay})` : ''}`);
 console.log(`chaos config: ${JSON.stringify({ ...config, durationMs: Number.isFinite(config.durationMs) ? config.durationMs : null })}`);
 if (!existsSync(firstAppArchive)) throw Error(`First-app archive not found: ${firstAppArchive}. Run npm run build:artifacts && npm run release:artifacts.`);
 
 const limits = ['Synthetic local owner session on an isolated packed host; no OAuth provider, Internet or mobile device.',
-  'Events-backed notes pages from the first-app kit; the SQL inventory template is not exercised.',
+  profile === 'sql'
+    ? 'SQLite-CAS + chronolog/sql inventory pages from the SQL first-app kit.'
+    : 'Events-backed notes pages from the first-app kit; run --profile sql to exercise SQLite-CAS inventory.',
   'Actions are sequential (one at a time); concurrency comes from the product (agent program, workers, timers), not overlapping harness actions.'];
 const dispatcher = installLocalDispatcher();
 let faults = null;
@@ -93,11 +99,11 @@ const goldenDirectory = values.fixture ? resolve(values.fixture) : join(work, 'g
 let golden;
 if (existsSync(join(goldenDirectory, 'golden.json'))) {
   golden = JSON.parse(await readFile(join(goldenDirectory, 'golden.json'), 'utf8'));
-  if (golden.port !== port || Object.keys(golden.pages).length !== config.pages)
-    throw Error(`Fixture ${goldenDirectory} was prepared for port ${golden.port} with ${Object.keys(golden.pages).length} pages.`);
+  if (golden.port !== port || Object.keys(golden.pages).length !== config.pages || (golden.profile ?? 'events') !== profile)
+    throw Error(`Fixture ${goldenDirectory} was prepared for profile ${golden.profile ?? 'events'}, port ${golden.port}, ${Object.keys(golden.pages).length} pages.`);
   console.log(`chaos: reusing prepared fixture ${goldenDirectory}`);
 } else {
-  golden = await prepareGolden({ root, firstAppArchive, directory: goldenDirectory, port, pages: config.pages });
+  golden = await prepareGolden({ root, firstAppArchive, directory: goldenDirectory, port, pages: config.pages, profile });
 }
 const harness = harnessIdentity(root);
 

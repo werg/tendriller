@@ -38,7 +38,7 @@ async function fixture(t) {
   for (const role of ['authority','session']) {
     const dir=join(directory,role); await mkdir(join(dir,'package'),{recursive:true});
     await writeFile(join(dir,'package/package.json'),JSON.stringify({name:role==='authority'?'@chronolog/authority':'@chronolog/peer-session'}));
-    await writeFile(join(dir,'package/provenance.json'),JSON.stringify({...chronolog,profile:'chronolog-crdt-v1',format:role==='authority'?'chronolog-authority-package/v1':'chronolog-peer-session-package/v1',sqlEngines:[]}));
+    await writeFile(join(dir,'package/provenance.json'),JSON.stringify({...chronolog,profile:'chronolog-crdt-v2',format:role==='authority'?'chronolog-authority-package/v2':'chronolog-peer-session-package/v2',zeroNativeBuild:true}));
     const file=role+'.tgz',path=join(directory,file);execFileSync('tar',['-czf',path,'-C',dir,'package']);archives[role]=path;
     const bytes=await readFile(path);components.push({role,file,sha256:digest(bytes),size:bytes.length});
   }

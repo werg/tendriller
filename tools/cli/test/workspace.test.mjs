@@ -82,30 +82,42 @@ const PAGE_MODULE = `
 import { existsSync } from 'node:fs';
 import * as p from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
+const NOTES_REDUCER = \`
+export default {
+  reduce(state, tx) {
+    const list = Array.isArray(state?.notes) ? state.notes.concat([tx.payload]) : [tx.payload];
+    return { ok: true, state: { notes: list }, events: [{ topic: 'note', payload: tx.payload }] };
+  },
+  query(state) { return Array.isArray(state?.notes) ? state.notes : []; },
+};
+\`;
 export const definition = p.defineApplication({ id: 'workspace-notes', version: '1', commands: {
-  add: p.defineCommand({ description: 'Add a note', input: { type: 'string' }, prepare: text => p.program(p.emit('note', { text })) }),
-}, queries: { notes: p.defineQuery({ description: 'Read notes', input: { type: 'null' }, read: view => view.readEvents({ topics: ['note'] }).events.map(event => event.payload) }) } });
+  add: p.defineCommand({ description: 'Add a note', input: { type: 'string' }, prepare: text => [{ topic: 'notes', input: { text } }] }),
+}, queries: { notes: p.defineQuery({ description: 'Read notes', input: { type: 'null' }, read: view => view.topic('notes')?.notes ?? [] }) } });
 export async function openPage(context) {
   const device = await context.openDevice({ create: !existsSync(context.devicePath) });
   if (device.identity.publicKey !== context.signer.publicKey) throw Error('SHARED_SIGNER_EXPECTED');
-  const applicationId = context.page.applicationId, signer = device.identity.publicKey;
-  // Authority and data key are retained with the page device, so a reopen (an agent retry) resumes the same signed authority.
-  let retained = await device.store.get('fixture/authority'), key = await device.store.get('fixture/epoch-key');
+  const signer = device.identity.publicKey;
+  let retained = await device.store.get('fixture/genesis-v2');
+  let casNodes = [];
+  let key = await device.store.get('fixture/epoch-key');
   if (!retained) {
-    // The page creator (the shared agent key) is the descriptor authority; the host never signs authority.
-    const authority = device.identity;
-    key = crypto.getRandomValues(new Uint8Array(32));
-    const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
-    const descriptor = await p.signAppDescriptor({ applicationId, rootPrincipal: signer, authorityPublicKey: authority.publicKey,
-      executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), finalityPolicy: { kind: 'none' } }, authority);
-    const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
-      epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key),
-      members: [{ publicKey: signer, wrapKey: context.wrapKey.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }],
-      admission: { mode: 'strict', hostKey: authority.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, authority);
-    retained = p.encodeRecord({ descriptor, memberships: [membership] });
-    await device.store.put('fixture/authority', retained); await device.store.put('fixture/epoch-key', key);
+    const created = await p.createChainGenesis({
+      creator: { publicKey: signer, wrapKey: context.wrapKey.publicKey, reader: true, writer: true, administrator: true, publisher: true, finalizer: true },
+      imports: { 'app/notes': NOTES_REDUCER },
+      topics: { notes: { module: 'app/notes', initialState: { notes: [] } } },
+    });
+    retained = created.genesisBytes;
+    casNodes = created.casNodes;
+    key = created.epoch0Key;
+    await device.store.put('fixture/genesis-v2', retained);
+    await device.store.put('fixture/cas-nodes', p.encodeRecord(casNodes));
+    await device.store.put('fixture/epoch-key', key);
+  } else {
+    const savedCas = await device.store.get('fixture/cas-nodes');
+    if (savedCas) casNodes = p.decodeRecord(savedCas);
   }
-  const session = await p.createApplicationSession({ device, definition, authority: p.decodeRecord(retained), epochKeys: new Map([[0, key]]) });
+  const session = await p.createApplicationSession({ device, definition, genesis: retained, casNodes, epochKeys: new Map([[0, key]]) });
   context.report({ state: 'fixture_opened', hostPage: context.host.base });
   return createApplicationOwner(session);
 }

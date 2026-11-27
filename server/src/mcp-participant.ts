@@ -1,32 +1,40 @@
 /**
- * Opt-in hosted Chronolog MCP participant inside the Tendril Durable Object.
+ * Opt-in hosted Chronolog v2 MCP participant inside the Tendril Durable Object.
  *
- * - Zero plaintext keys at rest: `mcp_connections.wrapped_keys` holds X25519-sealed
- *   `{ signingSeedHex, signingPublicKey, epochKeys }`, and `mcp_store` holds encrypted
- *   Chronolog envelopes only.
- * - On an authenticated `/mcp` call, the OAuth Bearer token delivers `wrapPrivateKey`
- *   in RAM -> unseals keys in RAM -> opens an in-memory Chronolog session (Events or
- *   ephemeral in-memory DoltLite WASM) -> executes signed pure `domain.js` inside QuickJS-WASM
- *   -> persists only encrypted envelopes back to `mcp_store` -> discards all plaintext keys.
+ * - Zero plaintext keys and zero plaintext application data at rest:
+ *   * `mcp_connections.wrapped_keys` holds X25519-sealed `{ signingSeedHex, signingPublicKey, epochKeys }`.
+ *   * `mcp_store` holds encrypted Chronolog v2 operation envelopes (`envelope/<digest>`) and
+ *     seed-sealed private CAS chunks (`priv-cas/<hash>`) only.
+ * - On an authenticated `/mcp` call, the OAuth Bearer token delivers `wrapPrivateKey` in RAM ->
+ *   unseals keys in RAM -> opens an ephemeral in-memory Chronolog v2 `ApplicationSession`
+ *   with static `quickjs-ng` + `sqlite-cas.wasm` -> executes reducers directly from `$reducers`
+ *   (no separate `domain.js` bundle!) -> exports only encrypted envelopes & sealed CAS chunks
+ *   back to `mcp_store` -> discards all plaintext material in `finally`.
  */
+import quickJsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
+import sqliteCasWasm from '@chronolog/peer-session/sqlite-cas.wasm';
 import {
-  createApplicationSession, createAuthorityProvider, decodeRecord, defineApplication,
-  emit, encodeRecord, hexToBytes, importSigningIdentity, openApplicationDevice, parseApplicationInput, platformOp, program, sqlStatement,
+  bytesToHex, createApplicationSession, decodeEncryptedEnvelope, decodeRecord,
+  encryptedEnvelopeDigest, importSigningIdentity, openApplicationDevice,
+  type FinalityCheckpoint, type SessionCasNode,
 } from '@chronolog/peer-session';
+import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
 import { activeGrant } from './accounts/oauth-data';
 import { allows, type PagePrincipal } from './access';
 import { addActivity } from './activity';
 import { notifyRosterChanged, pageAgents, reconcilePrimaryAgent, validAgentBio, validAgentHandle } from './agent-grants';
 import { selectedApplication } from './application';
-import { readAuthorityBundle } from './authority';
-import { fileKey, servedVersion } from './files';
+import {
+  listCheckpointRows, listPublicCasRows, listPublicOpRows, readStoredGenesisBytes,
+  reconcileHostEffects, readControlState,
+} from './authority';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { base64url } from './accounts/oauth-support';
-import { hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, sealHostedRequests, sealSqlCheckpoint, unbase64url, unsealHostedKeys, unsealHostedRequests, unsealSqlCheckpoint } from './mcp-crypto';
-import { createEphemeralSqlMaterializer, doltliteExecutionManifestDigest } from './mcp-sql';
-import { describeDomainBundle, runDomainCommand, runDomainQuery, type SandboxProgramStep, type SandboxReadBridge } from './mcp-sandbox';
+import {
+  hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, sealHostedRequests, unbase64url,
+  unsealHostedKeys, unsealHostedRequests,
+} from './mcp-crypto';
 import { mcpOAuth, REQUEST_LIMIT, requireScope, string, type McpPrincipal } from './mcp-shared';
-import { MemoryBytesStore } from './mcp-store';
 import { notifyMcpSyncWatchers } from './publication-watch';
 import { requireWritesOpen } from './service-state';
 import { notifySetupChanged } from './setup-watch';
@@ -54,10 +62,58 @@ interface McpCapabilities {
 
 const DEFAULT_CAPABILITIES: McpCapabilities = { read: true, write: true, queries: null, commands: null };
 const ENVELOPE_PREFIX = 'envelope/';
-const SQL_CHECKPOINT_PREFIX = 'sql-checkpoint/';
-const REQUESTS_PREFIX = 'hosted-requests/';
-const DEFAULT_SQL_CHECKPOINT_THRESHOLD = 8;
-const MAX_SQL_CHECKPOINT_BYTES = 4 * 1024 * 1024;
+const PRIV_CAS_PREFIX = 'priv-cas/';
+const HOSTED_REQUESTS_PREFIX = 'hosted-requests/';
+
+function validateSchemaInput(schema: any, value: unknown): string | null {
+  if (!schema || typeof schema !== 'object') return null;
+  if (Array.isArray(schema.anyOf)) {
+    for (const option of schema.anyOf) {
+      if (validateSchemaInput(option, value) === null) return null;
+    }
+    return 'Value does not match any allowed schema option';
+  }
+  if (schema.type === 'null') return value === null || value === undefined ? null : 'Expected null';
+  if (schema.type === 'string') return typeof value === 'string' ? null : 'Expected string';
+  if (schema.type === 'boolean') return typeof value === 'boolean' ? null : 'Expected boolean';
+  if (schema.type === 'number') return typeof value === 'number' && Number.isFinite(value) ? null : 'Expected number';
+  if (schema.type === 'integer') return typeof value === 'number' && Number.isSafeInteger(value) ? null : 'Expected integer';
+  if (schema.type === 'array') {
+    if (!Array.isArray(value)) return 'Expected array';
+    if (schema.items) {
+      for (const item of value) {
+        const err = validateSchemaInput(schema.items, item);
+        if (err) return err;
+      }
+    }
+    return null;
+  }
+  if (schema.type === 'object') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'Expected object';
+    const obj = value as Record<string, unknown>;
+    if (Array.isArray(schema.required)) {
+      for (const reqKey of schema.required) {
+        if (!Object.hasOwn(obj, reqKey) || obj[reqKey] === undefined) return `Missing required field "${reqKey}"`;
+      }
+    }
+    if (schema.properties && typeof schema.properties === 'object') {
+      for (const [k, propSchema] of Object.entries(schema.properties)) {
+        if (Object.hasOwn(obj, k) && obj[k] !== undefined) {
+          const err = validateSchemaInput(propSchema, obj[k]);
+          if (err) return `Field "${k}": ${err}`;
+        }
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+async function computeRequestFingerprint(kind: string, name: string, input: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify([kind, name, input ?? null]));
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return bytesToHex(hash);
+}
 
 function asBytes(value: ArrayBuffer | Uint8Array): Uint8Array {
   return value instanceof Uint8Array ? value.slice() : new Uint8Array(value).slice();
@@ -86,84 +142,25 @@ function readStoredCapabilities(row: McpConnectionRow): McpCapabilities {
   catch { return { ...DEFAULT_CAPABILITIES }; }
 }
 
-/** Load the page's published signed `domain.js` bundle from R2 if present in the active version. */
-async function loadPublishedDomainBundle(t: Tendril): Promise<string | null> {
-  const v = servedVersion(t);
-  if (v <= 0) return null;
-  const row = t.db.one<{ hash: string }>(
-    "SELECT hash FROM version_files WHERE version=? AND path IN ('domain.js', '_domain.js', 'domain.mjs')", v,
-  );
-  if (!row) return null;
-  const obj = await t.env.FILES.get(fileKey(t, row.hash));
-  if (!obj) return null;
-  return await obj.text();
-}
-
-/**
- * Validate input against the signed domain bundle's declared schema before any program is prepared, exactly as a
- * Chronolog `defineCommand`/`defineQuery` does for local callers. Invalid input is never signed or stored.
- */
-async function declaredInput(domainBundle: string, kind: 'commands' | 'queries', name: string, input: unknown): Promise<void> {
-  const declared = (await describeDomainBundle(domainBundle))[kind].find(item => item.name === name);
-  if (!declared) throw new HttpError(404, kind === 'commands' ? 'command_not_found' : 'query_not_found', `No declared ${kind === 'commands' ? 'command' : 'query'} ${name}.`);
-  try { parseApplicationInput(declared.input as Parameters<typeof parseApplicationInput>[0], input); }
-  catch (error) {
-    const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
-    throw new HttpError(400, 'invalid_input', `Input does not match the declared schema for ${name}${code ? ` (${code})` : ''}.`);
-  }
-}
-
-/** Convert pure QuickJS-produced steps into a real Chronolog program. */
-function buildChronologProgram(steps: SandboxProgramStep[]) {
-  const built = steps.map(step => {
-    if (step.kind === 'emit') {
-      if (typeof step.topic !== 'string' || !step.topic) throw new HttpError(400, 'invalid_program_step');
-      return emit(step.topic, (step.payload ?? null) as any);
-    }
-    if (step.kind === 'sql') {
-      if (typeof step.sql !== 'string' || !step.sql) throw new HttpError(400, 'invalid_program_step');
-      return sqlStatement(step.sql, Array.isArray(step.params) ? (step.params as any) : []);
-    }
-    if (step.kind === 'platform' && step.spec && typeof step.op === 'string') {
-      const spec = { ...step.spec } as Record<string, unknown>;
-      if (typeof spec.granteeHex === 'string') {
-        spec.grantee = hexToBytes(spec.granteeHex);
-        delete spec.granteeHex;
-      }
-      const fn = (platformOp as Record<string, unknown>)[step.op];
-      if (typeof fn === 'function') return (fn as (input: unknown) => any)(spec);
-    }
-    throw new HttpError(400, 'invalid_program_step');
-  });
-  return program(...built);
-}
-
-/** Minimal Chronolog application definition; hosted MCP submits compiled programs and reads coherent snapshots directly. */
-function builtinDefinition() {
-  return defineApplication({
-    id: 'tendriller-hosted-mcp',
-    version: '1',
-    commands: {},
-    queries: {},
-  });
-}
-
-async function readAllEventsFromView(view: any): Promise<any[]> {
-  const all: any[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < 64; page++) {
-    const batch = await view.readEvents({ limit: 256, ...(cursor ? { cursor } : {}) });
-    all.push(...batch.events);
-    if (!batch.hasMore || !batch.cursor || batch.cursor === cursor) break;
-    cursor = batch.cursor;
-  }
-  return all;
+function prefixUpperBound(prefix: string): string {
+  return prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
 }
 
 function listEnvelopeRows(t: Tendril): Array<{ k: string; v: Uint8Array }> {
   return t.db.all<{ k: string; v: ArrayBuffer | Uint8Array }>(
-    "SELECT k, v FROM mcp_store WHERE k LIKE 'envelope/%' ORDER BY k",
+    'SELECT k, v FROM mcp_store WHERE k >= ? AND k < ? ORDER BY k',
+    ENVELOPE_PREFIX,
+    prefixUpperBound(ENVELOPE_PREFIX),
   ).map(row => ({ k: row.k, v: asBytes(row.v) }));
+}
+
+function listSealedPrivCasRows(t: Tendril, grantId: string): Array<{ hash: string; sealed: Uint8Array }> {
+  const prefix = `${PRIV_CAS_PREFIX}${grantId}/`;
+  return t.db.all<{ k: string; v: ArrayBuffer | Uint8Array }>(
+    'SELECT k, v FROM mcp_store WHERE k >= ? AND k < ? ORDER BY k',
+    prefix,
+    prefixUpperBound(prefix),
+  ).map(row => ({ hash: row.k.slice(prefix.length), sealed: asBytes(row.v) }));
 }
 
 function mcpStoreBytes(t: Tendril): number {
@@ -223,11 +220,9 @@ export async function handlePageMcp(t: Tendril, req: Request, sub: string, princ
     const capabilities = parseCapabilities(body.capabilities);
     const applicationId = selectedApplication(t).id;
 
-    // Ensure handle doesn't collide with another agent on this page.
     const existing = pageAgents(t).agents.find(item => item.handle.toLowerCase() === handle && item.id !== `mcp:${grantId}`);
     if (existing) throw new HttpError(409, 'agent_handle_in_use', `@${handle} is already used by another agent on this page.`);
 
-    // Enforce per-account hosted MCP opted-in page cap (updating an already-connected page does not consume a new slot).
     const alreadyConnectedPage = Boolean(t.db.one('SELECT 1 AS x FROM mcp_connections LIMIT 1'));
     if (!alreadyConnectedPage) {
       const ent = await getAccountEntitlements(t.env, accountId, t.now());
@@ -292,6 +287,9 @@ export async function handlePageMcp(t: Tendril, req: Request, sub: string, princ
     if (!row) throw new HttpError(404, 'not_found', 'No hosted MCP connection for that grant.');
     t.transaction(() => {
       t.db.run('DELETE FROM mcp_connections WHERE grant_id=?', grantId);
+      const privPrefix = `${PRIV_CAS_PREFIX}${grantId}/`;
+      t.db.run('DELETE FROM mcp_store WHERE k >= ? AND k < ?', privPrefix, prefixUpperBound(privPrefix));
+      t.db.run('DELETE FROM mcp_store WHERE k = ?', `${HOSTED_REQUESTS_PREFIX}${grantId}`);
       reconcilePrimaryAgent(t);
       addActivity(t, { kind: 'mcp_disconnect', summary: `Disconnected hosted MCP agent @${row.handle}`, by: `owner:${accountId}` });
       t.afterCommit(() => { notifyRosterChanged(t); notifySetupChanged(t); });
@@ -305,18 +303,19 @@ export async function handlePageMcp(t: Tendril, req: Request, sub: string, princ
 
 /**
  * Blind encrypted-envelope sync for browsers and workspace agents.
- * Validates scope against the page's signed AuthorityBundle WITHOUT needing any decryption key,
- * retaining encrypted Chronolog operation envelopes in `mcp_store` while hosted MCP is idle.
+ * Validates `chainId` against the stored v2 genesis WITHOUT needing any decryption key,
+ * retaining encrypted `EncryptedOperationEnvelope` records keyed by `encryptedEnvelopeDigest`
+ * so rewrapped envelopes reconcile cleanly too.
  */
 export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Response> {
-  const body = await readJson(req, 1024 * 1024);
+  const body = await readJson(req, 2 * 1024 * 1024);
   const incoming = Array.isArray(body.envelopes) ? body.envelopes : [];
   const known = new Set<string>(Array.isArray(body.knownIds) ? body.knownIds.filter((x: unknown): x is string => typeof x === 'string') : []);
   if (incoming.length > 256) throw new HttpError(400, 'too_many_envelopes', 'Sync at most 256 envelopes per call.');
 
-  const bundle = await readAuthorityBundle(t);
-  if (!bundle) throw new HttpError(409, 'application_uninitialized', 'Application authority is not initialized yet.');
-  const appId = selectedApplication(t).id;
+  const genesisBytes = readStoredGenesisBytes(t);
+  if (!genesisBytes) throw new HttpError(409, 'application_uninitialized', 'Application genesis is not initialized yet.');
+  const chainId = selectedApplication(t).id;
 
   const ownerAccount = t.db.get<string | null>('owner_account', null);
   const ent = ownerAccount ? await getAccountEntitlements(t.env, ownerAccount, t.now()) : null;
@@ -325,18 +324,17 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
 
   let stored = 0;
   for (const item of incoming) {
-    if (typeof item !== 'string' || item.length > 128 * 1024) throw new HttpError(400, 'invalid_envelope');
+    if (typeof item !== 'string' || item.length > 256 * 1024) throw new HttpError(400, 'invalid_envelope');
     const raw = unbase64url(item);
-    const decoded = decodeRecord<any>(raw);
-    const payload = decoded?.payload;
-    if (!payload || payload.applicationId !== appId || typeof payload.proposalId !== 'string' || !/^[a-f0-9]{64}$/u.test(payload.proposalId)) {
-      throw new HttpError(400, 'invalid_envelope_scope');
-    }
-    const copy = new Uint8Array(raw.byteLength);
-    copy.set(raw);
-    const exists = t.db.one('SELECT 1 AS x FROM mcp_store WHERE k=?', ENVELOPE_PREFIX + payload.proposalId);
+    let envelope;
+    try { envelope = decodeEncryptedEnvelope(raw); }
+    catch { throw new HttpError(400, 'invalid_envelope'); }
+    if (bytesToHex(envelope.chainId) !== chainId) throw new HttpError(400, 'invalid_envelope_scope');
+    const digest = bytesToHex(encryptedEnvelopeDigest(raw));
+    const key = ENVELOPE_PREFIX + digest;
+    const exists = t.db.one('SELECT 1 AS x FROM mcp_store WHERE k=?', key);
     if (!exists) {
-      if (storeCap !== null && currentStoreBytes + copy.byteLength > storeCap) {
+      if (storeCap !== null && currentStoreBytes + raw.byteLength > storeCap) {
         throw quotaError({
           env: t.env,
           status: 413,
@@ -349,19 +347,21 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
           localAlternative: 'Your local browser and native Chronolog storage are unaffected; run `npm run agent` locally or upgrade for larger hosted MCP retention.',
         });
       }
-      t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + payload.proposalId, copy.buffer);
+      const copy = new Uint8Array(raw.byteLength);
+      copy.set(raw);
+      t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', key, copy.buffer);
       currentStoreBytes += copy.byteLength;
       stored++;
     }
-    known.add(payload.proposalId);
+    known.add(digest);
   }
   if (stored > 0) notifyMcpSyncWatchers(t);
 
-  const missing: Array<{ proposalId: string; envelopeBase64: string }> = [];
+  const missing: Array<{ digest: string; envelopeBase64: string }> = [];
   for (const row of listEnvelopeRows(t)) {
-    const id = row.k.slice(ENVELOPE_PREFIX.length);
-    if (!known.has(id)) {
-      missing.push({ proposalId: id, envelopeBase64: base64url(row.v) });
+    const digest = row.k.slice(ENVELOPE_PREFIX.length);
+    if (!known.has(digest)) {
+      missing.push({ digest, envelopeBase64: base64url(row.v) });
       if (missing.length >= 256) break;
     }
   }
@@ -369,9 +369,9 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
 }
 
 /**
- * Open an ephemeral in-memory Chronolog session for one authenticated `/mcp` request using
- * keys unwrapped strictly in RAM from the OAuth Bearer token. Closes & discards all plaintext
- * material in `finally`.
+ * Open an ephemeral in-memory Chronolog v2 `ApplicationSession` for one authenticated `/mcp`
+ * call using keys unwrapped strictly in RAM from the OAuth Bearer token.
+ * Runs static `quickjs-ng` + `sqlite-cas.wasm` with ZERO plaintext at rest.
  */
 async function withHostedSession<T>(
   t: Tendril,
@@ -379,159 +379,125 @@ async function withHostedSession<T>(
   wrapPublicKey: string,
   wrapPrivateKey: Uint8Array,
   work: (ctx: {
-    session: any;
-    domainBundle: string | null;
-    isSql: boolean;
+    session: Awaited<ReturnType<typeof createApplicationSession>>;
     roster: ReturnType<typeof pageAgents>;
+    requests: Record<string, { fingerprint: string; proposalId: string }>;
+    markRequestsDirty: () => void;
   }) => Promise<T>,
 ): Promise<T> {
   const applicationId = selectedApplication(t).id;
-  const bundle = await readAuthorityBundle(t);
-  if (!bundle) throw new HttpError(409, 'application_uninitialized', 'Open the page in your browser first to initialize Chronolog authority.');
+  const genesisBytes = readStoredGenesisBytes(t);
+  if (!genesisBytes) {
+    throw new HttpError(409, 'application_uninitialized', 'Initialize Chronolog v2 genesis first.');
+  }
 
   const aad = `${t.tid}:${applicationId}:${row.grant_id}`;
   const material = await unsealHostedKeys(wrapPrivateKey, wrapPublicKey, asBytes(row.wrapped_keys), aad);
   if (material.signingPublicKey !== row.public_key) {
     throw new HttpError(403, 'mcp_signer_mismatch', 'Unwrapped signing key does not match this hosted MCP connection.');
   }
-  const signer = await importSigningIdentity({ publicKey: material.signingPublicKey, privateKey: normalizeEd25519Pkcs8Hex(material.signingSeedHex) });
+  const signer = await importSigningIdentity({
+    publicKey: material.signingPublicKey,
+    privateKey: normalizeEd25519Pkcs8Hex(material.signingSeedHex),
+  });
   const epochKeys = new Map<number, Uint8Array>();
   for (const [epochStr, keyHex] of Object.entries(material.epochKeys)) {
     const epoch = Number(epochStr);
     if (Number.isSafeInteger(epoch) && epoch >= 0) epochKeys.set(epoch, parseHex(keyHex));
   }
 
-  // Both authority and session device run strictly in RAM (`MemoryBytesStore`) so ZERO keys,
-  // ZERO plaintext `journal.requests`, and ZERO unencrypted SQLite state ever touch DO SQLite.
-  // Only encrypted Chronolog envelopes (`envelope/<proposalId>`) are persisted in `mcp_store`.
-  const authorityStore = new MemoryBytesStore();
-  const authority = await createAuthorityProvider({
-    store: authorityStore as any,
-    bundle,
-    applicationId,
-    epochKeys,
-  });
-
-  // Pre-collect retained encrypted envelopes from `mcp_store` so any `operation-set/<appId>`
-  // read (regardless of Chronolog's internal storageId key prefix) hydrates directly from them.
-  const hydratedEnvelopes: any[] = [];
-  const hydratedSeen = new Set<string>();
-  for (const envRow of listEnvelopeRows(t)) {
-    try {
-      const envelope = decodeRecord<any>(envRow.v);
-      const id = envelope?.payload?.proposalId;
-      if (typeof id === 'string' && !hydratedSeen.has(id) && envelope?.payload?.applicationId === applicationId) {
-        hydratedEnvelopes.push(envelope);
-        hydratedSeen.add(id);
-      }
-    } catch { /* ignore malformed */ }
-  }
-  const journalSuffix = `operation-set/${applicationId}`;
-  // This hosted identity's own request records (operationId → proposal) let an exact retry reuse its original
-  // signed intent. They are sealed under the identity's wrapped seed and kept only while their envelope is retained.
-  const requestsKey = `${REQUESTS_PREFIX}${row.grant_id}`, requestsContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}`;
-  let hydratedRequests: unknown[] = [];
-  const sealedRequests = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', requestsKey);
-  if (sealedRequests) {
-    const opened = await unsealHostedRequests(material.signingSeedHex, requestsContext, asBytes(sealedRequests.v));
-    if (opened) {
-      try {
-        const records = decodeRecord<unknown[]>(opened);
-        if (Array.isArray(records)) hydratedRequests = records.filter(item => hydratedSeen.has((item as { proposalId?: string })?.proposalId ?? ''));
-      } catch { /* A malformed record is ignored; retries then mint fresh intents. */ }
-    }
-  }
-  const hydratedJournalBytes = hydratedEnvelopes.length > 0
-    ? encodeRecord({ format: 'authored-operation-set-v1', applicationId, envelopes: hydratedEnvelopes, requests: hydratedRequests, retentions: [], finality: [] })
-    : null;
-
-  const store = new MemoryBytesStore(key => (hydratedJournalBytes && (key === journalSuffix || key.endsWith('/' + journalSuffix)) ? hydratedJournalBytes : null));
+  const memStore = new MemoryBytesStore();
   const device = await openApplicationDevice({
-    store: store as any,
+    store: memStore,
     managedSigner: signer,
     create: true,
   });
 
-  const config = t.db.get<{ executionProfile?: string; executionManifestDigest?: string } | null>('application_configuration', null);
-  const sqlDigest = await doltliteExecutionManifestDigest().catch(() => null);
-  const isSql = Boolean(
-    config?.executionProfile?.startsWith('sql') ||
-    (sqlDigest && bundle.descriptor.payload.executionManifestDigest === sqlDigest),
-  );
-
-  // Load optional epoch-key-encrypted SQL checkpoint in RAM so large SQL apps skip replaying
-  // the already-materialized prefix while keeping zero plaintext SQLite on disk.
-  const checkpointKey = SQL_CHECKPOINT_PREFIX + applicationId;
-  const checkpointThreshold = Math.max(1, Number(t.db.get<number>('mcp_sql_checkpoint_threshold', DEFAULT_SQL_CHECKPOINT_THRESHOLD)));
-  let initialSqlBytes: Uint8Array | null = null;
-  let loadedCheckpointCount = 0;
-  if (isSql) {
-    const ckptRow = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', checkpointKey);
-    if (ckptRow) {
-      const opened = await unsealSqlCheckpoint(epochKeys, applicationId, asBytes(ckptRow.v));
-      if (opened) {
-        initialSqlBytes = opened.sqliteBytes;
-        loadedCheckpointCount = opened.envelopeCount;
-      }
+  const publicCas: SessionCasNode[] = listPublicCasRows(t).map(r => ({ hash: r.hash, bytes: r.bytes, partition: 'public' }));
+  const casContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}:cas`;
+  const privCas: SessionCasNode[] = [];
+  const hydratedPrivHashes = new Set<string>();
+  for (const item of listSealedPrivCasRows(t, row.grant_id)) {
+    const opened = await unsealHostedRequests(material.signingSeedHex, `${casContext}:${item.hash}`, item.sealed);
+    if (opened) {
+      privCas.push({ hash: item.hash, bytes: opened, partition: 'private' });
+      hydratedPrivHashes.add(item.hash);
     }
   }
 
-  let latestEnvelopeCount = hydratedEnvelopes.length;
-  const currentEpoch = bundle.memberships.at(-1)?.payload.epoch ?? 0;
-  const currentEpochKey = epochKeys.get(currentEpoch) ?? null;
+  const publicOps = listPublicOpRows(t).map(r => r.raw);
+  const existingPublicOpIds = new Set(listPublicOpRows(t).map(r => r.op_id));
+  const envelopeRows = listEnvelopeRows(t);
+  const hydratedEnvelopeDigests = new Set(envelopeRows.map(r => r.k.slice(ENVELOPE_PREFIX.length)));
+  const checkpoints = listCheckpointRows(t).map(r => decodeRecord<FinalityCheckpoint>(r.raw));
 
   const session = await createApplicationSession({
     device,
-    definition: builtinDefinition(),
-    authority,
-    ...(isSql ? {
-      createMaterializer: async ({ rootPrincipal }: { rootPrincipal: string }) => createEphemeralSqlMaterializer(rootPrincipal, {
-        initialBytes: initialSqlBytes,
-        onCloseBytes: async bytes => {
-          if (!currentEpochKey || bytes.byteLength > MAX_SQL_CHECKPOINT_BYTES) return;
-          if (latestEnvelopeCount < checkpointThreshold || latestEnvelopeCount <= loadedCheckpointCount) return;
-          const sealed = await sealSqlCheckpoint(currentEpochKey, applicationId, currentEpoch, latestEnvelopeCount, bytes);
-          const copy = new Uint8Array(sealed.byteLength);
-          copy.set(sealed);
-          t.db.run('INSERT INTO mcp_store(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', checkpointKey, copy.buffer);
-        },
-      }),
-    } : {}),
-  } as any);
+    genesis: genesisBytes,
+    casNodes: [...publicCas, ...privCas],
+    epochKeys,
+    wasmModule: quickJsWasm,
+    sqliteWasmModule: sqliteCasWasm,
+  });
+
+  const requestsKey = `${HOSTED_REQUESTS_PREFIX}${row.grant_id}`;
+  const requestsContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}:requests`;
+  let requests: Record<string, { fingerprint: string; proposalId: string }> = {};
+  let requestsDirty = false;
+  const savedReqRow = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', requestsKey);
+  if (savedReqRow) {
+    const opened = await unsealHostedRequests(material.signingSeedHex, requestsContext, asBytes(savedReqRow.v));
+    if (opened) {
+      try { requests = JSON.parse(new TextDecoder().decode(opened)); } catch { requests = {}; }
+    }
+  }
 
   try {
-    const domainBundle = await loadPublishedDomainBundle(t);
-    return await work({ session, domainBundle, isSql, roster: pageAgents(t) });
+    if (publicOps.length > 0 || envelopeRows.length > 0 || checkpoints.length > 0) {
+      await session.mergeFacts({
+        publicOps,
+        encryptedEnvelopes: envelopeRows.map(r => r.v),
+        casNodes: [...publicCas, ...privCas],
+        retentions: [],
+        checkpoints,
+      });
+    }
+    return await work({ session, roster: pageAgents(t), requests, markRequestsDirty: () => { requestsDirty = true; } });
   } finally {
-    // Export newly authored encrypted envelopes into shared `envelope/` retention (zero plaintext requests).
     let addedEnvelopes = 0;
     try {
-      for (const [k, rawJournal] of store.entries()) {
-        if (k !== journalSuffix && !k.endsWith('/' + journalSuffix)) continue;
-        const journal = decodeRecord<any>(rawJournal);
-        const envelopes = Array.isArray(journal?.envelopes) ? journal.envelopes : [];
-        const requests = Array.isArray(journal?.requests) ? journal.requests : [];
-        if (requests.length > hydratedRequests.length) {
-          const sealed = await sealHostedRequests(material.signingSeedHex, requestsContext, encodeRecord(requests));
-          const copy = new Uint8Array(sealed.byteLength); copy.set(sealed);
-          t.db.run('INSERT INTO mcp_store(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', requestsKey, copy.buffer);
-        }
-        if (envelopes.length > latestEnvelopeCount) latestEnvelopeCount = envelopes.length;
-        for (const envelope of envelopes) {
-          const id = envelope?.payload?.proposalId;
-          if (typeof id === 'string' && /^[a-f0-9]{64}$/u.test(id)) {
-            if (!hydratedSeen.has(id)) {
-              const bytes = encodeRecord(envelope);
-              const copy = new Uint8Array(bytes.byteLength);
-              copy.set(bytes);
-              t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + id, copy.buffer);
-              hydratedSeen.add(id);
-              addedEnvelopes++;
-            }
-          }
+      if (requestsDirty) {
+        const sealedReq = await sealHostedRequests(material.signingSeedHex, requestsContext, new TextEncoder().encode(JSON.stringify(requests)));
+        const copy = new Uint8Array(sealedReq.byteLength);
+        copy.set(sealedReq);
+        t.db.run('INSERT OR REPLACE INTO mcp_store(k, v) VALUES(?, ?)', requestsKey, copy.buffer);
+      }
+      const exported = await session.exportFacts();
+      for (const rawEnv of exported.encryptedEnvelopes) {
+        const digest = bytesToHex(encryptedEnvelopeDigest(rawEnv));
+        if (!hydratedEnvelopeDigests.has(digest)) {
+          const copy = new Uint8Array(rawEnv.byteLength);
+          copy.set(rawEnv);
+          t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + digest, copy.buffer);
+          hydratedEnvelopeDigests.add(digest);
+          addedEnvelopes++;
         }
       }
-    } catch { /* Journal export best-effort */ }
+      for (const node of exported.casNodes) {
+        if (node.partition === 'private' && !hydratedPrivHashes.has(node.hash)) {
+          const sealed = await sealHostedRequests(material.signingSeedHex, `${casContext}:${node.hash}`, node.bytes);
+          const copy = new Uint8Array(sealed.byteLength);
+          copy.set(sealed);
+          t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', `${PRIV_CAS_PREFIX}${row.grant_id}/${node.hash}`, copy.buffer);
+          hydratedPrivHashes.add(node.hash);
+        }
+      }
+      // Persist any new public control ops (if hosted MCP authored one, e.g. with admin rights).
+      if (exported.publicOps.length > existingPublicOpIds.size) {
+        const state = await readControlState(t);
+        if (state) reconcileHostEffects(t, state);
+      }
+    } catch { /* Best-effort encrypted export */ }
     if (addedEnvelopes > 0) notifyMcpSyncWatchers(t);
     try { await session.close(); } catch { /* ignore */ }
     epochKeys.clear();
@@ -589,7 +555,6 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       localAlternative: 'Run `npm run agent` locally for unlimited zero-host-quota access, or self-host on your own Cloudflare account.',
     });
   }
-  const sandboxTimeoutMs = ent.quotas.mcpSandboxTimeoutMs;
 
   if (method === 'agents_list') {
     await checkGrant('applications:read');
@@ -601,11 +566,15 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
   if (method === 'describe_application') {
     await checkGrant('applications:read');
     t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now()));
-    const domainBundle = await loadPublishedDomainBundle(t);
-    const domain = domainBundle ? await describeDomainBundle(domainBundle) : null;
+    let described: { queries: readonly any[]; commands: readonly any[] } | null = null;
+    if (principal.wrapPrivateKey && readStoredGenesisBytes(t)) {
+      described = await t.serializeMcp(() =>
+        withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => session.describe()),
+      ).catch(() => null);
+    }
     const configTools = t.db.get<{ tools?: { queries?: any[]; commands?: any[] } } | null>('application_configuration', null)?.tools;
-    const rawQueries = domain?.queries ?? configTools?.queries ?? [];
-    const rawCommands = domain?.commands ?? configTools?.commands ?? [];
+    const rawQueries = described?.queries ?? configTools?.queries ?? [];
+    const rawCommands = described?.commands ?? configTools?.commands ?? [];
     const queries = caps.read ? rawQueries.filter(q => !caps.queries || caps.queries.includes(q.name)) : [];
     const commands = caps.write ? rawCommands.filter(c => !caps.commands || caps.commands.includes(c.name)) : [];
     const roster = pageAgents(t);
@@ -623,7 +592,6 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
           keyCustody: 'oauth-token-wrapped',
         },
         roster,
-        hasDomainBundle: Boolean(domainBundle),
         queries,
         commands,
         builtinTools: ['agents_list', 'agent_message', 'agent_feed', 'read_application_events', 'inspect_application_operation'],
@@ -637,6 +605,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
 
   return t.serializeMcp(async () => {
     const meterCall = () => { t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now())); };
+
     if (method === 'read_application_events') {
       await checkGrant('applications:read');
       if (!caps.read) throw new HttpError(403, 'read_not_permitted');
@@ -661,7 +630,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       const operationId = string(params.operationId, 512);
       return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
         const op = await session.operations.get(operationId);
-        return json({ value: { operationId, operation: op ? await op.inspect() : null } });
+        return json({ value: { operationId, operation: op ? op.inspect() : null } });
       });
     }
 
@@ -673,47 +642,33 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       if (method === 'query_application' && caps.queries && !caps.queries.includes(queryName)) {
         throw new HttpError(403, 'operation_not_approved');
       }
-      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session, domainBundle, isSql }) => {
-        const view = await session.readView();
+      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
+        if (method === 'agent_feed') {
+          const view = await session.readView();
+          try {
+            const batch = await view.readEvents({ topics: ['agent/message', 'agent/receipt'], limit: 256 });
+            return json({ value: { revision: view.revision, value: deriveAgentFeed([...batch.events]) } });
+          } finally {
+            await view.release();
+          }
+        }
         try {
-          const allEvents = await readAllEventsFromView(view);
-          if (method === 'agent_feed') {
-            const events = allEvents.filter(ev => ['agent/message', 'agent/receipt'].includes(ev.topic));
-            return json({ value: { revision: view.revision, value: deriveAgentFeed(events) } });
+          let result;
+          try {
+            result = await session.query(queryName, (params.input ?? null) as any);
+          } catch (firstErr) {
+            const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+            if (!firstMsg.startsWith('APPLICATION_QUERY_UNKNOWN') || queryName.includes(':')) throw firstErr;
+            const topics = Object.keys((session.topic('$reducers') as any)?.topics ?? {})
+              .filter(name => !name.startsWith('$') && !name.startsWith('agent/'));
+            if (topics.length !== 1) throw firstErr;
+            result = await session.query(`${topics[0]}:${queryName}`, (params.input ?? null) as any);
           }
-          const runSql = (sql: string, sqlParams: unknown[] = []) => {
-            const res = view.query(sql, sqlParams);
-            return {
-              columns: res.columns,
-              rows: res.rows.map((row: unknown[]) => row.map(v =>
-                typeof v === 'bigint' ? v.toString() : v instanceof Uint8Array ? Array.from(v) : v,
-              )),
-            };
-          };
-          if (!domainBundle) {
-            if (queryName === 'sql' && isSql && isPlainObject(params.input) && typeof params.input.sql === 'string') {
-              const res = runSql(params.input.sql, Array.isArray(params.input.params) ? params.input.params : []);
-              return json({ value: { revision: view.revision, value: res } });
-            }
-            throw new HttpError(409, 'domain_bundle_missing', 'Publish a signed domain.js bundle with your page to run named queries in hosted MCP.');
-          }
-          const bridge: SandboxReadBridge = {
-            readEvents(opts) {
-              const topics = Array.isArray(opts?.topics) ? opts.topics : null;
-              const limit = Math.min(256, Math.max(1, Number(opts?.limit ?? 128)));
-              const offset = opts?.cursor ? Number(opts.cursor) : 0;
-              const filtered = topics ? allEvents.filter(ev => topics.includes(ev.topic)) : allEvents;
-              const slice = filtered.slice(offset, offset + limit);
-              const nextOffset = offset + slice.length;
-              return { events: slice, cursor: String(nextOffset), hasMore: nextOffset < filtered.length };
-            },
-            ...(isSql ? { query: (sql, sqlParams) => runSql(sql, sqlParams) } : {}),
-          };
-          await declaredInput(domainBundle, 'queries', queryName, params.input ?? null);
-          const value = await runDomainQuery(domainBundle, queryName, params.input ?? null, bridge, { timeoutMs: sandboxTimeoutMs });
-          return json({ value: { revision: view.revision, value } });
-        } finally {
-          await view.release();
+          return json({ value: { revision: result.revision, value: result.value } });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.startsWith('APPLICATION_QUERY_UNKNOWN')) throw new HttpError(404, 'query_not_found', `Unknown query "${queryName}".`);
+          throw new HttpError(400, 'invalid_input', msg);
         }
       });
     }
@@ -737,8 +692,39 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       }
       meterCall();
       const operationId = string(params.operationId, 512);
-      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session, domainBundle, roster }) => {
-        let steps: SandboxProgramStep[];
+      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session, roster, requests, markRequestsDirty }) => {
+        const fingerprint = await computeRequestFingerprint(
+          method,
+          method === 'call_application_command' ? string(params.command, 128) : 'agent_message',
+          method === 'call_application_command' ? (params.input ?? null) : {
+            channel: params.channel === 'agents' ? 'agents' : 'chat',
+            text: params.text ?? null,
+            to: params.to ?? [],
+          },
+        );
+        const existingReq = requests[operationId];
+        if (existingReq) {
+          if (existingReq.fingerprint !== fingerprint) {
+            throw new HttpError(409, 'operation_id_conflict', 'operationId was already used for a different request.');
+          }
+          const prior = session.operations.get(existingReq.proposalId);
+          if (prior) {
+            const inspected = prior.inspect();
+            const materialized = inspected.materialized ?? await prior.materialized();
+            return json({
+              value: {
+                operationId,
+                proposalId: prior.id,
+                author: conn.public_key,
+                handle: conn.handle,
+                stored: inspected.stored,
+                materialized,
+                excluded: inspected.excluded ?? false,
+              },
+            });
+          }
+        }
+        let op;
         if (method === 'agent_message') {
           const channel = params.channel === 'agents' ? 'agents' : 'chat';
           const textVal = string(params.text, 8000);
@@ -763,33 +749,55 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             if (!hit) throw new HttpError(404, 'unknown_agent_handle', `No agent @${handle} on this page.`);
             return toHex(hit.public_key);
           });
-          steps = [{
-            kind: 'emit',
-            topic: 'agent/message',
-            payload: {
-              channel,
-              to: resolvedTo,
-              text: textVal,
-              ...(params.data !== undefined ? { data: params.data } : {}),
-              ...(Array.isArray(params.attachments) ? { attachments: params.attachments } : {}),
-              ...(isPlainObject(params.inReplyTo) ? { inReplyTo: params.inReplyTo } : {}),
-              hopCount: typeof params.hopCount === 'number' ? params.hopCount : 0,
-              expectReply: params.expectReply !== false,
-              ...(params.replyToUser === true ? { replyToUser: true } : {}),
-            },
-          }];
+          op = await session.submit({
+            updates: [{
+              topic: 'agent/message',
+              input: {
+                channel,
+                to: resolvedTo,
+                text: textVal,
+                ...(params.data !== undefined ? { data: params.data as any } : {}),
+                ...(Array.isArray(params.attachments) ? { attachments: params.attachments as any } : {}),
+                ...(isPlainObject(params.inReplyTo) ? { inReplyTo: params.inReplyTo as any } : {}),
+                hopCount: typeof params.hopCount === 'number' ? params.hopCount : 0,
+                expectReply: params.expectReply !== false,
+                ...(params.replyToUser === true ? { replyToUser: true } : {}),
+              },
+            }],
+            operationId,
+          });
         } else {
           const commandName = string(params.command, 128);
           if (caps.commands && !caps.commands.includes(commandName)) {
             throw new HttpError(403, 'operation_not_approved');
           }
-          if (!domainBundle) {
-            throw new HttpError(409, 'domain_bundle_missing', 'Publish a signed domain.js bundle with your page to run named commands in hosted MCP.');
+          const described = await session.describe().catch(() => null);
+          const cmdSpec = described?.commands.find(c => c.name === commandName);
+          if (described && described.commands.length > 0 && !cmdSpec) {
+            throw new HttpError(404, 'command_not_found', `Unknown command "${commandName}".`);
           }
-          await declaredInput(domainBundle, 'commands', commandName, params.input);
-          steps = await runDomainCommand(domainBundle, commandName, params.input, { timeoutMs: sandboxTimeoutMs });
+          if (cmdSpec?.input) {
+            const schemaErr = validateSchemaInput(cmdSpec.input, params.input ?? null);
+            if (schemaErr) throw new HttpError(400, 'invalid_input', schemaErr);
+          }
+          try {
+            try {
+              op = await session.command(commandName, (params.input ?? null) as any, { operationId });
+            } catch (firstErr) {
+              const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+              if (!firstMsg.startsWith('APPLICATION_COMMAND_UNKNOWN') || commandName.includes(':')) throw firstErr;
+              const topics = Object.keys((session.topic('$reducers') as any)?.topics ?? {})
+                .filter(name => !name.startsWith('$') && !name.startsWith('agent/'));
+              if (topics.length !== 1) throw firstErr;
+              op = await session.command(`${topics[0]}:${commandName}`, (params.input ?? null) as any, { operationId });
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.startsWith('APPLICATION_COMMAND_UNKNOWN')) throw new HttpError(404, 'command_not_found', `Unknown command "${commandName}".`);
+            throw new HttpError(400, 'invalid_input', msg);
+          }
         }
-        const op = await session.submit({ program: buildChronologProgram(steps), operationId });
+
         const ac = new AbortController();
         const timer = setTimeout(() => ac.abort(new Error('MATERIALIZE_TIMEOUT')), 10_000);
         let materialized;
@@ -798,7 +806,9 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
         } finally {
           clearTimeout(timer);
         }
-        const inspected = await op.inspect();
+        requests[operationId] = { fingerprint, proposalId: op.id };
+        markRequestsDirty();
+        const inspected = op.inspect();
         return json({
           value: {
             operationId,

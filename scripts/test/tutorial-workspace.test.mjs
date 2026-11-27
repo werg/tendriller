@@ -20,7 +20,7 @@ async function kit(t) {
   const directory = await mkdtemp(join(tmpdir(), 'kit-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await cp(join(root, 'docs/tutorial'), directory, { recursive: true });
-  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session'], ['@chronolog', 'authority', 'node_modules/@chronolog/authority']]) {
+  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session'], ['@chronolog', 'authority', 'node_modules/@chronolog/authority'], ['@jitl', 'quickjs-ng-wasmfile-release-sync', 'node_modules/@jitl/quickjs-ng-wasmfile-release-sync']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(join(root, source), join(directory, 'node_modules', scope, name));
   }
@@ -52,10 +52,10 @@ async function hostPeers(applicationId, agentKey) {
       configuration = value; admission ??= await createAdmissionHost({ applicationId, configuration });
       return { ...await page().application(), publicationAuthority: publicationAuthority() };
     },
-    application: async () => admission === null ? { selection: { id: applicationId }, configuration: null, authority: null, publicationAuthority: null }
+    application: async () => admission === null ? { selection: { id: applicationId }, configuration: null, genesis: null, publicationAuthority: null }
       : { ...await page().application(), publicationAuthority: publicationAuthority() },
-    initialize: delegate('initialize'), membership: delegate('membership'), admissions: delegate('admissions'),
-    wrap: delegate('wrap'), wraps: delegate('wraps'), enrollAgent: delegate('enrollAgent'),
+    initialize: delegate('initialize'), syncControl: delegate('syncControl'), admissions: delegate('admissions'),
+    enrollAgent: delegate('enrollAgent'),
     publication: async () => null,
     publish: async (publication, assets) => { published.push({ publication, assets }); return { publication, version: published.length }; },
     exchange: unavailable,
@@ -99,38 +99,48 @@ test('a renamed events page prepares publication with the shared agent key, crea
   const directory = await kit(t), slug = 'field';
   await cp(join(directory, 'templates/notes'), join(directory, 'pages', slug), { recursive: true });
   await writeFile(join(directory, 'pages', slug, 'domain.mjs'), `
-import { defineApplication, defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+export const reducerSource = \`
+export default {
+  reduce(state, tx) {
+    const items = Array.isArray(state) ? [...state] : [];
+    items.push({ id: tx.operationId, text: tx.payload.text });
+    return { ok: true, state: items, events: [{ topic: 'observation', payload: { text: tx.payload.text } }] };
+  },
+  query(state) { return Array.isArray(state) ? state : []; },
+};
+\`;
+export const imports = { 'app/field': reducerSource };
+export const topics = { observations: { module: 'app/field' } };
 // The starter page derives its list through this export, so a renamed domain keeps it.
-export async function deriveNotes(view) { return view.readEvents({ topics: ['observation'] }).events.map(event => ({ id: event.operationId, text: event.payload.text })); }
+export async function deriveNotes(view) { return (await view.readEvents({ topics: ['observation'] })).events.map(event => ({ id: event.operationId, text: event.payload.text })); }
 export const definition = defineApplication({
   id: 'field-observations', version: '7',
   commands: { record: defineCommand({ description: 'Record one observation',
     input: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-    prepare: ({text}) => program(emit('observation', {text})) }) },
+    prepare: ({text}) => [{ topic: 'observations', input: { text } }] }) },
   queries: { entries: defineQuery({ description: 'Read retained observations', input: {type:'null'},
-    read: view => view.readEvents({topics:['observation']}).events.map(event => event.payload.text) }) },
+    read: async view => (await view.readEvents({topics:['observation']})).events.map(event => event.payload.text) }) },
 });
 `);
   const { context, reports, peers } = await pageContext(directory, slug);
   const page = join(directory, 'pages', slug), module = name => import(pathToFileURL(join(page, name)).href);
   const setup = await module('setup.mjs');
-  // Agent-first init: the shared agent key creates the descriptor, genesis membership and first epoch key.
+  // Agent-first init: the shared agent key creates the v2 genesis block and first epoch key.
   const prepared = await setup.initializePage(context);
   assert.equal(prepared.prepared, true); assert.equal(prepared.creator, 'agent'); assert.equal(prepared.created, true); assert.equal(prepared.dataInitialized, true);
   assert.equal((await context.readPrivate('initialized.json')).creator, 'agent', 'the running agent program opens the page from this marker');
   await access(context.devicePath);
   const configuration = await context.readPrivate('host-configuration.json');
   assert.deepEqual(configuration.publisherKeys, [context.signer.publicKey], 'the shared agent key is the independent publisher');
-  const { decodeRecord } = await import('@chronolog/peer-session'), { authorityRecordBytes } = await import(pathToFileURL(join(root, 'contract/authority.mjs')).href);
-  const stored = (await peers.application()).authority, genesis = decodeRecord(authorityRecordBytes(stored));
-  assert.equal(genesis.descriptor.payload.rootPrincipal, context.signer.publicKey);
-  assert.equal(genesis.descriptor.payload.authorityPublicKey, context.signer.publicKey, 'the creator key, never the host, is the descriptor authority');
-  const head = genesis.memberships[0].payload;
-  assert.equal(head.admission.hostKey, peers.host().host.publicKey, 'genesis pins the host attestation key');
-  assert(head.admission.accounts.includes('acct_owner'), 'genesis authorizes the owner account for attested admission');
-  assert.deepEqual(head.members.map(member => [member.publicKey, member.wrapKey, member.administrator]), [[context.signer.publicKey, context.wrapKey.publicKey, true]]);
+  const { decodeGenesisBlock } = await import('@chronolog/peer-session'), { authorityRecordBytes } = await import(pathToFileURL(join(root, 'contract/authority.mjs')).href);
+  const stored = (await peers.application()).genesis, genesis = decodeGenesisBlock(authorityRecordBytes(stored));
+  const perms = genesis.initialTopics.$permissions;
+  assert.equal(perms.admission.hostKey, peers.host().host.publicKey, 'genesis pins the host attestation key');
+  assert(perms.admission.accounts.includes('acct_owner'), 'genesis authorizes the owner account for attested admission');
+  assert.deepEqual(perms.members.map(member => [member.publicKey, member.wrapKey, member.administrator]), [[context.signer.publicKey, context.wrapKey.publicKey, true]]);
   assert.deepEqual({ ...await setup.initializePage(context), created: true }, prepared, 'initializing again resumes the same retained page data');
-  assert.deepEqual((await peers.application()).authority, stored, 'a retry never creates a second genesis');
+  assert.deepEqual((await peers.application()).genesis, stored, 'a retry never creates a second genesis');
   await assert.rejects(setup.initializePage(context, { requestedFinality: { kind: 'threshold' } }), /Retained preparation differs/);
   assert.deepEqual(await context.readPrivate('host-configuration.json'), configuration);
 
@@ -175,7 +185,7 @@ test('browser-first init prepares publication only: no agent device, data root o
   const setup = await import(pathToFileURL(join(directory, 'pages', slug, 'setup.mjs')).href);
   const prepared = await setup.initializePage(context, { browserFirst: true });
   assert.equal(prepared.prepared, true); assert.equal(prepared.creator, 'browser'); assert.equal(prepared.dataInitialized, false);
-  assert.equal((await peers.application()).authority, null, 'the host holds no page data before the first browser');
+  assert.equal((await peers.application()).genesis, null, 'the host holds no page data before the first browser');
   await assert.rejects(access(context.devicePath), { code: 'ENOENT' }, 'browser-first init creates no agent device or keys');
   assert.equal((await context.readPrivate('initialized.json')).creator, 'browser', 'the agent program opens the page and waits for admission');
 });

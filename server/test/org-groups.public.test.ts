@@ -1,20 +1,22 @@
 import { expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import {
+  bytesToHex,
+  createChainGenesis,
   createSigningIdentity,
+  encodeGenesisBlock,
   encodeRecord,
-  epochKeyCommitment,
-  signAppDescriptor,
-  signEnrollmentRequest,
-  signMembership,
+  genesisChainId,
   signRecord,
-} from '@chronolog/authority';
+} from '@chronolog/peer-session';
 import { generateWrapKeyPair } from '../src/mcp-crypto';
 import { authorityRecord } from '../../contract/authority.mjs';
 import { create, inDO, req } from './helpers';
 import { sha256Hex } from '../src/ids';
 import { GROUP_POLICY_DOMAIN, recordGoogleWorkspaceDomain, syncGitHubOrgGroups } from '../src/groups/org-groups';
 import { applyPlanToAccount } from '../src/billing/entitlements';
+
+const ENROLLMENT_REQUEST_DOMAIN = 'chronolog/enrollment-request/v2';
 
 async function hmacHex(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -31,28 +33,8 @@ async function initPageAuthority(h: Awaited<ReturnType<typeof create>>) {
     hostAttestationKey: string;
     admissionAccounts: string[];
   };
-  const digest = 'aa'.repeat(32);
-  await req(`${h.page_url}_tendril/application`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ executionManifestDigest: digest, executionProfile: 'events-v1', publisherKeys: [ownerId.publicKey] }),
-  });
-  const epochKey = crypto.getRandomValues(new Uint8Array(32));
-  const descriptor = await signAppDescriptor({
-    applicationId: appMeta.selection.id,
-    rootPrincipal: ownerId.publicKey,
-    authorityPublicKey: ownerId.publicKey,
-    executionManifestDigest: digest,
-    finalityPolicy: { kind: 'none' },
-  }, ownerId);
-  const membership = await signMembership({
-    applicationId: appMeta.selection.id,
-    revision: 0,
-    previous: null,
-    authorTimeAfterMs: -1n,
-    epoch: 0,
-    epochKeyDigest: await epochKeyCommitment(appMeta.selection.id, 0, epochKey),
-    members: [{
+  const created = await createChainGenesis({
+    creator: {
       publicKey: ownerId.publicKey,
       wrapKey: ownerWrap.publicKeyHex,
       reader: true,
@@ -60,23 +42,34 @@ async function initPageAuthority(h: Awaited<ReturnType<typeof create>>) {
       administrator: true,
       publisher: true,
       finalizer: false,
-    }],
+    },
+    privateChain: true,
+    hostPublicKey: appMeta.hostAttestationKey,
+  });
+  const genesis = structuredClone(created.genesis) as any;
+  genesis.initialTopics.$permissions = {
+    ...(genesis.initialTopics.$permissions as any),
     admission: {
       mode: 'attested',
       hostKey: appMeta.hostAttestationKey,
       accounts: appMeta.admissionAccounts,
       grant: { reader: true, writer: true, administrator: true },
+      invites: [],
     },
-    admitted: [],
-    invites: [],
-  }, ownerId);
+  };
+  const genesisBytes = encodeGenesisBlock(genesis);
+  const applicationId = bytesToHex(genesisChainId(genesisBytes));
   const initRes = await req(`${h.page_url}_tendril/peers/enrollment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'initialize', bundle: authorityRecord(encodeRecord({ descriptor, memberships: [membership] })) }),
+    body: JSON.stringify({
+      action: 'initialize',
+      genesis: authorityRecord(genesisBytes),
+      casNodes: created.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }),
   });
   expect(initRes.status).toBe(200);
-  return { ownerId, ownerWrap, applicationId: appMeta.selection.id, hostKey: appMeta.hostAttestationKey };
+  return { ownerId, ownerWrap, applicationId, hostKey: appMeta.hostAttestationKey };
 }
 
 async function createUserWithGitHub(ghUserId: number, login: string, email: string) {
@@ -207,7 +200,7 @@ it('admin-signed group policy admits verified org members seamlessly on the page
   });
   expect(chalRes.status).toBe(200);
   const { challenge } = await chalRes.json() as { challenge: string };
-  const proof = await signEnrollmentRequest({ applicationId, publicKey: aliceDev.publicKey, wrapKey: aliceWrap.publicKeyHex, challenge }, aliceDev);
+  const proof = await signRecord(ENROLLMENT_REQUEST_DOMAIN, { applicationId, publicKey: aliceDev.publicKey, wrapKey: aliceWrap.publicKeyHex, challenge }, aliceDev);
   const enrollRes = await req(`${h.page_url}_tendril/peers/enrollment`, {
     method: 'POST', anonymous: true,
     headers: { Cookie: alicePageCookie, Origin: aliceOrigin, 'Content-Type': 'application/json' },

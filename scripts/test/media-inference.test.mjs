@@ -238,21 +238,28 @@ test('audio inference rejects oversized or unsupported media before transport an
 
 
 test('recorder MIME parameters cross actual public-session content and signal APIs without changing evidence bytes', { timeout: 20_000 }, async t => {
-  const peer = await import('@chronolog/peer-session'), authority = await import('@chronolog/authority'), cleanup = [];
+  const peer = await import('@chronolog/peer-session'), cleanup = [];
   const { createTestConnection } = await import('../observation-fixture/connection.mjs');
   t.after(async () => { for (const close of cleanup.reverse()) await close(); });
   const store = () => { const values = new Map(); return { async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, value) { values.set(key, value.slice()); } }; };
   const definition = peer.defineApplication({ id: 'audio-inference-content-check', version: '1', commands: {}, queries: {} });
   const [pageDevice, workerDevice] = await Promise.all([0, 1].map(() => peer.openApplicationDevice({ store: store(), create: true })));
-  const host = await authority.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32)), app = 'd7'.repeat(32);
-  const manifest = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
-  const descriptor = await authority.signAppDescriptor({ applicationId: app, rootPrincipal: workerDevice.identity.publicKey, authorityPublicKey: host.publicKey,
-    executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), finalityPolicy: { kind: 'none' } }, host);
-  const membership = await authority.signMembership({ applicationId: app, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0, epochKeyDigest: await authority.epochKeyCommitment(app, 0, key),
-    members: [workerDevice, pageDevice].map(device => ({ publicKey: device.identity.publicKey, wrapKey: null, reader: true, writer: true, administrator: device === workerDevice, publisher: false, finalizer: false })),
-    admission: { mode: 'strict', hostKey: host.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, host);
-  const bundle = { descriptor, memberships: [membership] };
-  const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.createApplicationSession({ device, definition, authority: bundle, epochKeys: new Map([[0, key]]) })));
+  const created = await peer.createChainGenesis({
+    creator: { publicKey: workerDevice.identity.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false },
+    privateChain: true,
+  });
+  const genesis = structuredClone(created.genesis);
+  genesis.initialTopics.$permissions.members.push({
+    publicKey: pageDevice.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false,
+  });
+  const genesisBytes = peer.encodeGenesisBlock(genesis);
+  const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.createApplicationSession({
+    device,
+    definition,
+    genesis: genesisBytes,
+    casNodes: created.casNodes,
+    epochKeys: new Map([[0, created.epoch0Key]]),
+  })));
   cleanup.push(() => pageSession.close(), () => workerSession.close());
   let left, right; left = createTestConnection((lane, bytes) => right.accept(lane, bytes)); right = createTestConnection((lane, bytes) => left.accept(lane, bytes));
   const links = await Promise.all([pageSession.connectPeer({ connection: left.connection, peerIdentity: workerSession.identity.publicKey }), workerSession.connectPeer({ connection: right.connection, peerIdentity: pageSession.identity.publicKey })]);

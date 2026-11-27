@@ -9,6 +9,12 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
 
 ## Unreleased
 
+- **Breaking: Chronolog v2 Merkle-DAG CAS, QuickJS-NG ES Module `$reducers`, `chronolog/sql` (SQLite-CAS), pluggable `$permissions`, and zero native builds.**
+  - Pages created before Chronolog v2 (v1 authority/genesis, DoltLite, `better-sqlite3`, separate `domain.js` bundles) do not open and must be recreated from the new `firstApp.release` kit on Node 22.15+ (`npm ci --ignore-scripts`).
+  - Application logic now lives as hash-pinned ES Modules inside `$reducers` (running in fresh deterministic QuickJS-NG WASM sandboxes) or binds directly to the built-in `chronolog/sql` topic reducer over deterministic 4 KiB Merkle-paged `sqlite-cas.wasm` (SQLite + FTS5 + `sqlite-vec`, atomic `preconditions`/`postconditions`, Postgres-style write RLS via `chronolog/rls`, user-owned dynamic tables/views, and `{ query: 'schema' }` introspection).
+  - Authority is pluggable via `ctx.query('$permissions', ...)` and `setup.mjs init --authority attested|multisig|open` (`attestedMembers`, `multisigMembers`, `openMembers`, or custom reducers). Tendriller's blind host evaluates `$permissions.query()` directly and only requires host attestation when `admission !== null`.
+  - Admission now surfaces rejected attestations (`attestation_signature_invalid`, `application_id_mismatch`, `attestation_expired`, etc.) and sync errors as visible notices in `#devices` and agent logs.
+  - Emits an automatic `urgent` signed system broadcast (`2026-11-26-chronolog-v2-reducers-and-sqlite-cas`) to `agents` and `mcp` via `server/src/release-changelog.json`.
 - **Owner-account devices are administrators by default.** The signed admission
   policy grant is exactly `{reader, writer, administrator}` (Chronolog rejects the
   old two-field shape; pages created before this change do not open and must be

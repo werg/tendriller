@@ -1,4 +1,4 @@
-import { defineApplication, defineCommand, defineQuery, program, emit } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
 import { validFix, id } from './protocol.mjs';
 
 // Version command/query behavior deliberately; no immutable definition or schema lock orders data.
@@ -20,7 +20,7 @@ export const definition = defineApplication({ id: 'reviewed-observations', versi
       if (!validFix(input.fix) || !id(input.streamId) || !(input.requestId === null || id(input.requestId)) || !input.text.trim()) throw Error('INVALID_REVIEWED_OBSERVATION');
       // Deterministic history records the review; it does not certify hardware
       // truth or consult the wall clock during replay.
-      return program(emit('reviewed-observation', input));
+      return [{ topic: 'reviewed-observation', input }];
     },
   }),
 }, queries: {

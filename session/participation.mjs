@@ -1,6 +1,6 @@
 import { createPeerIntroductions } from '../contract/introductions.mjs';
 import { authorityRecordBytes } from '../contract/authority.mjs';
-import { decodeRecord } from '@chronolog/peer-session';
+import { decodeRecord, hexToBytes } from '@chronolog/peer-session';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
 export { PEER_TRANSPORT_POLICY };
@@ -33,7 +33,7 @@ export function participateApplication(session, { peers, openDirectConnection,
     // without adding any periodic polling or idle traffic.
     const timer = setTimeout(() => {
       passiveFallbacks.delete(peer.identity);
-      if (signal.aborted || links.has(peer.identity) || opening.has(peer.identity) || !session.authority.grant(peer.identity)?.reader) return;
+      if (signal.aborted || links.has(peer.identity) || opening.has(peer.identity) || !session.isReader(peer.identity)) return;
       void connect(peer, undefined, false, true);
     }, passiveDialDelayMs);
     timer.unref?.();
@@ -133,11 +133,21 @@ export function participateApplication(session, { peers, openDirectConnection,
       while (dirty && !signal.aborted) {
         dirty = false;
         try {
-          // Cached local authority has already opened. Refresh is untrusted signed evidence, not an opening gate.
-          const metadata = await peers.application({ signal });
-          if (metadata.authority) await session.authority.merge(decodeRecord(authorityRecordBytes(metadata.authority)));
+          // Sync public-control state from the blind host (untrusted signed ops verified by TopicKernel).
+          if (typeof peers.syncControl === 'function') {
+            const synced = await peers.syncControl({}, { signal }).catch(() => null);
+            if (synced && (synced.publicOps?.length || synced.casNodes?.length || synced.checkpoints?.length)) {
+              await session.mergeFacts({
+                publicOps: (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024)),
+                encryptedEnvelopes: [],
+                casNodes: (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' })),
+                retentions: [],
+                checkpoints: (synced.checkpoints ?? []).map(r => decodeRecord(authorityRecordBytes(r, 256 * 1024))),
+              });
+            }
+          }
           const directory = await adapter.discovery.read({ signal });
-          for (const peer of directory) if (session.authority.grant(peer.identity)?.reader) void connect(peer);
+          for (const peer of directory) if (session.isReader(peer.identity)) void connect(peer);
           if (error?.startsWith('discovery:')) error = null;
         } catch (cause) { if (!signal.aborted) { error = `discovery:${failureCode(cause, 'discovery_unavailable')}`; scheduleRetry(); } }
         changed();
@@ -163,8 +173,8 @@ export function participateApplication(session, { peers, openDirectConnection,
     void refresh();
   });
   const invitations = observe('invitations', async invitation => {
-    if (session.authority.grant(invitation.peer.identity)?.reader) void connect(invitation.peer, invitation.token);
-    else void refresh().then(() => { if (session.authority.grant(invitation.peer.identity)?.reader) return connect(invitation.peer, invitation.token); });
+    if (session.isReader(invitation.peer.identity)) void connect(invitation.peer, invitation.token);
+    else void refresh().then(() => { if (session.isReader(invitation.peer.identity)) return connect(invitation.peer, invitation.token); });
   });
   // One report per authenticated link: the session's own counters for each
   // physical connection, annotated with the route this controller selected for
@@ -184,7 +194,7 @@ export function participateApplication(session, { peers, openDirectConnection,
   // the owned session reports the same annotated rows while this controller runs.
   let annotated = false;
   try { Object.defineProperty(session, 'diagnostics', { value: diagnostics, configurable: true, writable: true }); annotated = true; } catch {}
-  const stopAuthority = session.authority.subscribe(() => { void advertise(); void refresh(); });
+  const stopAuthority = session.onChange(() => { void advertise(); void refresh(); });
   const closed = new Promise(resolve => {
     let stopping = false;
     const shutdown = () => {

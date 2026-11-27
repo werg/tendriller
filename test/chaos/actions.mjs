@@ -175,7 +175,7 @@ export const ACTIONS = Object.freeze({
     },
     effect(model, params, result) {
       model.counters.note = Math.max(model.counters.note, params.n + 1);
-      if (result?.outcome || result?.uncertain) model.notes[params.slug].push({ token: params.token, text: params.text, origin: 'native',
+      if (result?.outcome || result?.uncertain) model.notes[params.slug].push({ token: params.token, text: result.retained ?? params.text, origin: 'native',
         step: model.step, operationId: result.operationId ?? null, status: result.outcome === 'accepted' ? 'saved' : 'uncertain' });
     },
   },

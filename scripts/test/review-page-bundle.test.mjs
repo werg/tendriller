@@ -15,7 +15,7 @@ test('the review page and Worker bundle from copied fixture sources using only c
   const project = mkdtempSync(join(tmpdir(), 'review-bundle-')); t.after(() => rmSync(project, { recursive: true, force: true }));
   installReviewFixtureSources(root, project);
   const result = await build({ absWorkingDir: project, entryPoints: { page: 'review-page.mjs', worker: 'review-worker.mjs' }, bundle: true, write: false,
-    splitting: true, outdir: join(project, 'page'), format: 'esm', platform: 'browser', target: 'es2022', outExtension: { '.js': '.mjs' }, logLevel: 'silent', nodePaths: [join(root, 'node_modules')],
+    splitting: true, outdir: join(project, 'page'), format: 'esm', platform: 'browser', target: 'es2022', outExtension: { '.js': '.mjs' }, loader: { '.wasm': 'file' }, logLevel: 'silent', nodePaths: [join(root, 'node_modules')],
     plugins: [{ name: 'public-core', setup(builder) {
       builder.onResolve({ filter: /^@tendriller\/core(\/.*)?$/ }, args => {
         const key = args.path.slice('@tendriller/core'.length + 1);
@@ -23,7 +23,7 @@ test('the review page and Worker bundle from copied fixture sources using only c
         return { path: join(root, core[key]) };
       });
     } }] });
-  const text = result.outputFiles.map(file => file.text).join('\n');
+  const text = result.outputFiles.filter(file => file.path.endsWith('.mjs')).map(file => file.text).join('\n');
   assert.match(text, /completeItem/);
   assert.doesNotMatch(text, /handle\.json|publisher\.json|assistant-key|REVIEW_ACCESS_TOKEN|review-local/, 'no private handle, signer or setup credential enters the public graph');
   assert(result.outputFiles.some(file => file.path.endsWith('page.mjs')) && result.outputFiles.some(file => file.path.endsWith('worker.mjs')));

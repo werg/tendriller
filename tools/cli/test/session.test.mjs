@@ -140,45 +140,37 @@ test('self and endpoint diagnostics expose the actual attachment provenance', as
   assert.deepEqual(await runSessionCommand(owned, 'endpoints', []), [endpoint]);
 });
 
-test('finality close, vote and submit keep exact int64 author times through canonical JSON-safe records', async () => {
+test('finality status, close and submit keep exact int64 author times through canonical JSON-safe records', async () => {
   const { encodeRecord, decodeRecord } = await import('@chronolog/peer-session');
   const { authorityRecordBytes } = await import('@tendriller/core/authority');
   const MAX = 9223372036854775807n, closed = MAX - 1n;
-  // Signed statements carry exact bigint times above Number.MAX_SAFE_INTEGER. This is serialization evidence only:
-  // the stub signatures are not verified and prove nothing about the real finality cryptography.
-  const proofs = [{ payload: { throughMs: MAX, closedThroughMs: closed }, signer: 'a'.repeat(64), signature: 'b'.repeat(128) }];
-  const votes = [{ payload: { throughMs: MAX }, signer: 'c'.repeat(64), signature: 'd'.repeat(128) }];
+  const checkpoint = { payload: { throughMs: MAX, closedThroughMs: closed, stateRoot: 'a'.repeat(64) }, attestation: { kind: 'signatures', signatures: [] } };
   const calls = [];
   const session = { finality: {
-    closeAuthorTime: async input => { calls.push(['close', input]); return { closedThroughMs: closed, proofs }; },
-    voteAuthorTime: async input => { calls.push(['vote', input]); return votes; },
-    submitProofs: async value => { calls.push(['submit', value]); return { admitted: true, closedThroughMs: closed, evidence: value }; },
+    status: () => ({ hasActiveFinality: true, closedThroughMs: closed, checkpoints: [checkpoint] }),
+    createCheckpoint: async input => { calls.push(['close', input]); return checkpoint; },
+    submitCheckpoints: async value => { calls.push(['submit', value]); return { admitted: true, closedThroughMs: closed, checkpoints: value }; },
   } };
   const decoded = wrapped => decodeRecord(authorityRecordBytes(wrapped));
+  const statusResult = await runSessionCommand({ session }, 'finality', ['status'], {});
+  assert.deepEqual(statusResult, { hasActiveFinality: true, closedThroughMs: closed.toString(), checkpoints: 1 });
   const closeResult = await runSessionCommand({ session }, 'finality', ['close'], { through: MAX.toString() });
   assert.deepEqual(calls.shift(), ['close', { throughMs: MAX }], 'the exact int64 frontier reaches the provider');
   assert.equal(closeResult.closedThroughMs, closed.toString(), 'the closed frontier is an exact decimal string');
   assert.doesNotThrow(() => JSON.stringify(closeResult), 'the result is JSON-safe after certification');
-  assert.deepEqual(decoded(closeResult.proofs), proofs, 'signed statements and their bigint times decode exactly from canonical bytes');
-  const unclosed = await runSessionCommand({ session: { finality: { closeAuthorTime: async () => ({ closedThroughMs: null, proofs: [] }) } } }, 'finality', ['close'], { through: '1' });
-  assert.equal(unclosed.closedThroughMs, null); assert.deepEqual(decoded(unclosed.proofs), []);
-  const voteResult = await runSessionCommand({ session }, 'finality', ['vote'], { through: MAX.toString() });
-  assert.deepEqual(calls.shift(), ['vote', { throughMs: MAX }]);
-  assert.doesNotThrow(() => JSON.stringify(voteResult));
-  assert.deepEqual(decoded(voteResult.votes), votes);
-  // Submitting canonical proof bytes decodes them back to the original signed values and returns the provider's raw result.
-  const wrapped = closeResult.proofs, submitted = await runSessionCommand({ session }, 'finality', ['submit', JSON.stringify(wrapped)], {});
+  assert.deepEqual(decoded(closeResult.checkpoint), checkpoint, 'signed checkpoints and their bigint times decode exactly from canonical bytes');
+  const wrapped = closeResult.checkpoint;
+  const submitted = await runSessionCommand({ session }, 'finality', ['submit', JSON.stringify(wrapped)], {});
   const [, handed] = calls.shift();
-  assert.deepEqual(handed, proofs); assert.equal(handed[0].payload.throughMs, MAX);
-  assert.equal(submitted.closedThroughMs, closed, 'submit returns the provider evidence untouched, raw bigints included');
-  assert.deepEqual(submitted.evidence, proofs);
-  assert.equal(encodeRecord(handed).length, encodeRecord(proofs).length, 'no lossy rewrite of the signed statements');
+  assert.deepEqual(handed, [checkpoint]); assert.equal(handed[0].payload.throughMs, MAX);
+  assert.equal(submitted.closedThroughMs, closed);
+  assert.equal(encodeRecord(handed[0]).length, encodeRecord(checkpoint).length);
   await assert.rejects(runSessionCommand({ session }, 'finality', ['close'], { through: (MAX + 1n).toString() }), /exact nonnegative int64/);
   assert.equal(calls.length, 0, 'an out-of-range frontier never reaches the provider');
 });
 
 test('optional finality is an explicit author-time provider request, not a write gate, and none stays explicitly unsupported', async () => {
-  const calls = [], session = { finality: { closeAuthorTime: async input => { calls.push(input); return { closedThroughMs: input.throughMs, proofs: [] }; } } };
+  const calls = [], session = { finality: { createCheckpoint: async input => { calls.push(input); return { payload: { closedThroughMs: input.throughMs }, attestation: { kind: 'signatures', signatures: [] } }; } } };
   const result = await runSessionCommand({ session }, 'finality', ['close'], { through: '123' });
   assert.equal(result.closedThroughMs, '123'); assert.deepEqual(calls, [{ throughMs: 123n }]);
   await assert.rejects(runSessionCommand({ session }, 'finality', ['close'], {}), /--through/);

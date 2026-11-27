@@ -1,77 +1,179 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
+import quickJsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import {
-  createSigningIdentity, epochKeyCommitment, encodeRecord, decodeRecord, signEnrollmentRequest, signPublicationManifest, verifyAuthorityBundle,
-  recordDigest, signParticipantRequest, signFinalityStatement, finalityPolicyDigest, signAppDescriptor, signMembership, verifyHostAttestation,
-  signRecord, bytesToHex, type AuthorityBundle, type Membership, type SignedHostAttestation, type SigningIdentity, type FinalityPolicy, type PageInvite,
-} from '@chronolog/authority';
+  bytesToHex, createChainGenesis, createSigningIdentity, decodeRecord, encodeGenesisBlock, encodeRecord,
+  encodeSignedOperation, genesisChainId, hexToBytes, signFinalityCheckpoint, signOperationCore, signRecord,
+  verifyHostAttestationV2, policyScopeId, computeIncludedSetDigest,
+  type FinalityCheckpoint, type FinalityPolicyV2, type ScheduledFinalityEntry, type SigningIdentity,
+  type TopicUpdate,
+} from '@chronolog/peer-session';
+import { TopicKernel, ContentAddressedStore, MemoryBytesStore, seedStandardModules, operationIdDigest } from '@chronolog/peer-session/kernel';
 import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
+import { PARTICIPANT_REQUEST_DOMAIN } from '../src/peer-participant';
 import { createTestPage } from './public-fixture';
 import { create, api, req, inDO, ownerHeaders, base64urlKey, testWrapKey, joinAccountAgent, grantAgent, BASE } from './helpers';
 import { requireHostAttestationIdentity } from '../src/host-attestation';
+import { sha256Hex } from '../src/ids';
 
-const appId = '51'.repeat(32), executionManifestDigest = '73'.repeat(32);
 const hostKey = JSON.parse(env.HOST_ATTESTATION_KEY!).publicKey as string;
+const ENROLLMENT_REQUEST_DOMAIN = 'chronolog/enrollment-request/v2';
+
 type Send = (method: string, path: string, input?: unknown) => Promise<Response>;
 type Page = Awaited<ReturnType<typeof createTestPage>>;
 interface Device { identity: SigningIdentity; wrapKey: string }
+interface ChainFixture {
+  chainId: string;
+  chainIdBytes: Uint8Array;
+  genesisBytes: Uint8Array;
+  casNodes: Array<{ hash: string; bytes: Uint8Array }>;
+}
+
 const rec = (value: unknown) => authorityRecord(encodeRecord(value));
 const dec = <T = any>(value: unknown): T => decodeRecord<T>(authorityRecordBytes(value));
-async function body(response: Response): Promise<any> { const value = await response.json(); if (!response.ok) throw Error(`${response.status}: ${JSON.stringify(value)}`); return value; }
-async function failure(response: Response): Promise<{ status: number; code: string }> { return { status: response.status, code: ((await response.json()) as any).error?.code }; }
-const device = async (): Promise<Device> => ({ identity: await createSigningIdentity(), wrapKey: testWrapKey() });
-const enrollment = (send: Send) => (input: unknown) => send('POST', 'peers/enrollment', input);
-
-async function prepare(send: Send, suppliedPublisher?: SigningIdentity, extra: Record<string, unknown> = {}) {
-  const publisher = suppliedPublisher ?? await createSigningIdentity();
-  const configuration = { executionManifestDigest, executionProfile: 'events', publisherKeys: [publisher.publicKey], ...extra };
-  return { configuration, metadata: await body(await send('POST', 'application', configuration)), publisher };
+async function body(response: Response): Promise<any> {
+  const value = await response.json();
+  if (!response.ok) throw Error(`${response.status}: ${JSON.stringify(value)}`);
+  return value;
 }
+async function failure(response: Response): Promise<{ status: number; code: string }> {
+  return { status: response.status, code: ((await response.json()) as any).error?.code };
+}
+const device = async (): Promise<Device> => ({ identity: await createSigningIdentity(), wrapKey: testWrapKey() });
+
+interface SignedHostAttestationV2 {
+  readonly payload: {
+    readonly subject: string;
+    readonly pageId: string;
+    readonly applicationId: string;
+    readonly accountId: string;
+    readonly email: string | null;
+    readonly publicKey: string;
+    readonly wrapKey: string;
+    readonly label: string;
+    readonly inviteId: string | null;
+    readonly issuedAt: number;
+    readonly expiresAt: number;
+    readonly nonce: string;
+  };
+  readonly signature: string;
+}
+
+async function buildGenesis(
+  root: Device,
+  options: {
+    accounts: string[];
+    hostKey?: string;
+    mode?: 'attested' | 'strict';
+    finalitySchedule?: readonly ScheduledFinalityEntry[];
+    finalizer?: boolean;
+    publisher?: boolean;
+    extraMembers?: Array<Record<string, unknown>>;
+    salt?: Uint8Array;
+  },
+): Promise<ChainFixture> {
+  const created = await createChainGenesis({
+    creator: {
+      publicKey: root.identity.publicKey,
+      wrapKey: root.wrapKey,
+      reader: true,
+      writer: true,
+      administrator: true,
+      publisher: options.publisher ?? true,
+      finalizer: options.finalizer ?? false,
+    },
+    privateChain: true,
+    hostPublicKey: options.hostKey ?? hostKey,
+    ...(options.finalitySchedule ? { finalitySchedule: options.finalitySchedule } : {}),
+    ...(options.salt ? { salt: options.salt } : {}),
+  });
+  const genesis = structuredClone(created.genesis);
+  const perms = genesis.initialTopics.$permissions as any;
+  if (options.extraMembers?.length) {
+    perms.members = [...perms.members, ...options.extraMembers];
+  }
+  perms.admission = {
+    mode: options.mode ?? 'attested',
+    hostKey: options.hostKey ?? hostKey,
+    accounts: [...options.accounts],
+    grant: { reader: true, writer: true, administrator: true },
+    invites: [],
+  };
+  const genesisBytes = encodeGenesisBlock(genesis);
+  const chainIdBytes = genesisChainId(genesisBytes);
+  return {
+    chainId: bytesToHex(chainIdBytes),
+    chainIdBytes,
+    genesisBytes,
+    casNodes: created.casNodes.map(n => ({ hash: n.hash, bytes: n.bytes })),
+  };
+}
+
+async function signControlOp(
+  chainIdBytes: Uint8Array,
+  signer: SigningIdentity,
+  updates: readonly TopicUpdate[],
+  options: { operationId?: string; authorTimestampMs?: bigint } = {},
+) {
+  const signed = await signOperationCore({
+    version: 1,
+    chainId: chainIdBytes,
+    author: hexToBytes(signer.publicKey),
+    operationId: options.operationId ?? crypto.randomUUID(),
+    authorTimestampMs: options.authorTimestampMs ?? BigInt(Date.now()),
+    nonce: crypto.getRandomValues(new Uint8Array(16)),
+    visibility: 'public',
+    updates,
+  }, signer.privateKey);
+  const raw = encodeSignedOperation(signed);
+  const opId = bytesToHex(operationIdDigest(signed.coreBytes));
+  return { signed, raw, opId, record: authorityRecord(raw) };
+}
+
 /** Challenge + key proof, as a browser device does. Returns the raw enroll response. */
-async function enrollRaw(send: Send, member: Device, invite?: { inviteId: string; secret: string }, alter?: (challenge: string) => string): Promise<Response> {
+async function enrollRaw(
+  send: Send,
+  applicationId: string,
+  member: Device,
+  invite?: { inviteId: string; secret: string },
+  alter?: (challenge: string) => string,
+): Promise<Response> {
   const challenge = await body(await send('POST', 'peers/enrollment', { action: 'challenge', publicKey: member.identity.publicKey }));
-  const proof = await signEnrollmentRequest({ applicationId: appId, publicKey: member.identity.publicKey, wrapKey: member.wrapKey, challenge: alter ? alter(challenge.challenge) : challenge.challenge }, member.identity);
+  const proof = await signRecord(ENROLLMENT_REQUEST_DOMAIN, {
+    applicationId,
+    publicKey: member.identity.publicKey,
+    wrapKey: member.wrapKey,
+    challenge: alter ? alter(challenge.challenge) : challenge.challenge,
+  }, member.identity);
   return send('POST', 'peers/enrollment', { action: 'enroll', proof: rec(proof), ...(invite ? { invite } : {}) });
 }
-async function enroll(send: Send, member: Device, invite?: { inviteId: string; secret: string }): Promise<SignedHostAttestation> {
-  return dec<SignedHostAttestation>((await body(await enrollRaw(send, member, invite))).attestation);
+async function enroll(
+  send: Send,
+  applicationId: string,
+  member: Device,
+  invite?: { inviteId: string; secret: string },
+): Promise<SignedHostAttestationV2> {
+  return dec<SignedHostAttestationV2>((await body(await enrollRaw(send, applicationId, member, invite))).attestation);
 }
-interface GenesisOptions { accounts: string[]; hostKey?: string; signer?: SigningIdentity; finalityPolicy?: FinalityPolicy; finalizer?: boolean; mode?: 'attested' | 'strict' }
-async function genesis(root: Device, options: GenesisOptions): Promise<AuthorityBundle> {
-  const signer = options.signer ?? root.identity, finalityPolicy = options.finalityPolicy ?? { kind: 'none' };
-  const descriptor = await signAppDescriptor({ applicationId: appId, rootPrincipal: root.identity.publicKey, authorityPublicKey: signer.publicKey, executionManifestDigest, finalityPolicy }, signer);
-  const membership = await signMembership({ applicationId: appId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
-    epochKeyDigest: await epochKeyCommitment(appId, 0, crypto.getRandomValues(new Uint8Array(32))),
-    members: [{ publicKey: root.identity.publicKey, wrapKey: root.wrapKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: options.finalizer ?? false }],
-    admission: { mode: options.mode ?? 'attested', hostKey: options.hostKey ?? hostKey, accounts: options.accounts, grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, signer);
-  return { descriptor, memberships: [membership] };
+
+async function ownerRooted(page: Page, options: Partial<Parameters<typeof buildGenesis>[1]> = {}) {
+  const root = await device();
+  const metadata = await body(await page.ownerApi('GET', 'application'));
+  const fixture = await buildGenesis(root, { accounts: metadata.admissionAccounts, ...options });
+  await body(await page.ownerApi('POST', 'peers/enrollment', {
+    action: 'initialize',
+    genesis: authorityRecord(fixture.genesisBytes),
+    casNodes: fixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+  }));
+  return { root, fixture };
 }
-/** One member-signed revision on top of the bundle's head. */
-async function extend(bundle: AuthorityBundle, signer: SigningIdentity, change: (prior: Membership) => Partial<Membership>, at?: bigint): Promise<AuthorityBundle> {
-  const head = bundle.memberships.at(-1)!, prior = head.payload, floor = prior.authorTimeAfterMs + 1n;
-  const next = await signMembership({ ...prior, revision: prior.revision + 1, previous: await recordDigest(head), admitted: [],
-    authorTimeAfterMs: at !== undefined && at > floor ? at : floor, ...change(prior) }, signer);
-  return { descriptor: bundle.descriptor, memberships: [...bundle.memberships, next] };
-}
-/** An attested (or invited) admission exactly as any reader member may sign it. */
-function admit(bundle: AuthorityBundle, signer: SigningIdentity, attestation: SignedHostAttestation, grant = { reader: true, writer: true, administrator: true }, via: 'attested' | 'invited' = 'attested') {
-  return extend(bundle, signer, prior => ({
-    members: [...prior.members, { publicKey: attestation.payload.publicKey, wrapKey: attestation.payload.wrapKey, ...grant, publisher: false, finalizer: false }],
-    admitted: [{ publicKey: attestation.payload.publicKey, via, attestation }],
-  }), attestation.payload.issuedAt);
-}
-async function invite(bundle: AuthorityBundle, root: SigningIdentity, binding: PageInvite['binding'], extra: Partial<PageInvite> = {}) {
-  const secret = bytesToHex(crypto.getRandomValues(new Uint8Array(32))), inviteId = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
-  const secretDigest = bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(secret.match(/../g)!, byte => parseInt(byte, 16)))));
-  const entry: PageInvite = { inviteId, role: 'writer', binding, expiresAt: BigInt(Date.now() + 86_400_000), secretDigest, revoked: false, ...extra };
-  return { bundle: await extend(bundle, root, prior => ({ invites: [...prior.invites, entry] })), redemption: { inviteId, secret } };
-}
-/** A prepared, claimed page whose owner browser device is the genesis root. */
-async function ownerRooted(page: Page, options: Partial<GenesisOptions> = {}) {
-  const root = await device(), metadata = await body(await page.ownerApi('GET', 'application'));
-  const bundle = await genesis(root, { accounts: metadata.admissionAccounts, ...options });
-  await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'initialize', bundle: rec(bundle) }));
-  return { root, bundle };
+
+async function syncOps(send: Send, ops: Array<{ record: unknown }>, checkpoints: unknown[] = []) {
+  return send('POST', 'peers/enrollment', {
+    action: 'sync',
+    publicOps: ops.map(o => o.record),
+    ...(checkpoints.length ? { checkpoints } : {}),
+  });
 }
 
 describe('host attestation key and published metadata', () => {
@@ -81,328 +183,528 @@ describe('host attestation key and published metadata', () => {
     expect((await body(await req(`${BASE}/api/service`, { anonymous: true }))).attestationKey).toBe(hostKey);
     const readiness = await body(await req(`${BASE}/api/readiness`, { anonymous: true }));
     expect(readiness.attestation).toMatchObject({ available: true, key: hostKey, code: null });
-    const page = await createTestPage({ application: { id: appId } });
+    const page = await createTestPage();
     const metadata = await body(await page.api('GET', 'application'));
     expect(metadata.hostAttestationKey).toBe(hostKey);
-    expect(metadata).not.toHaveProperty('provisioningRequired');
+    expect(metadata.genesis).toBeNull();
     const owner = await inDO((await body(await page.api('GET', ''))).id, t => t.db.get<string>('owner_account', ''));
     expect(metadata.admissionAccounts).toEqual([owner, expect.stringMatching(/^email:owner-.*@example\.com$/)]);
-    const unclaimed = await create({ claim: false, application: { id: appId } });
+    const unclaimed = await create({ claim: false });
     expect((await body(await api(unclaimed, 'GET', 'application'))).admissionAccounts).toEqual([`email:${await inDO(unclaimed.id, t => t.db.get<string>('intended_owner', ''))}`]);
   });
+
   it('fails closed with attestation_unconfigured without a valid secret', async () => {
-    for (const secret of [undefined, '{}', JSON.stringify({ publicKey: '00'.repeat(32), privateKey: JSON.parse(env.HOST_ATTESTATION_KEY!).privateKey })])
+    for (const secret of [undefined, '{}', JSON.stringify({ publicKey: '00'.repeat(32), privateKey: JSON.parse(env.HOST_ATTESTATION_KEY!).privateKey })]) {
       await expect(requireHostAttestationIdentity({ ...env, HOST_ATTESTATION_KEY: secret } as typeof env)).rejects.toMatchObject({ status: 503, code: 'attestation_unconfigured' });
+    }
   });
 });
 
 describe('browser device enrollment', () => {
-  it('signs exactly the attested fields with the published key, before any authority exists', async () => {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.ownerApi);
-    const member = await device(), signed = await enroll(page.ownerApi, member);
+  it('signs exact attested v2 fields with the published host key', async () => {
+    const page = await createTestPage();
+    const { fixture } = await ownerRooted(page);
+    const member = await device();
+    const signed = await enroll(page.ownerApi, fixture.chainId, member);
     const pageId = (await body(await page.api('GET', ''))).id as string;
     const owner = await inDO(pageId, t => t.db.get<string>('owner_account', ''));
-    const payload = await verifyHostAttestation(signed, { hostKey, applicationId: appId, pageId });
-    expect(signed.signer).toBe(hostKey);
-    expect(Object.keys(payload).sort()).toEqual(['accountId', 'applicationId', 'email', 'expiresAt', 'inviteId', 'issuedAt', 'label', 'nonce', 'pageId', 'publicKey', 'subject', 'wrapKey']);
-    expect(payload).toMatchObject({ subject: 'device', pageId, applicationId: appId, accountId: owner, publicKey: member.identity.publicKey, wrapKey: member.wrapKey, label: 'Browser device', inviteId: null });
-    expect(payload.email).toMatch(/^owner-.*@example\.com$/);
-    expect(payload.expiresAt - payload.issuedAt).toBe(3_600_000n);
-    expect(payload.nonce).toMatch(/^[0-9a-f]{64}$/);
-    for (const forged of [{ ...payload, accountId: 'someone-else' }, { ...payload, wrapKey: testWrapKey() }, { ...payload, expiresAt: payload.expiresAt + 1n }])
-      await expect(verifyHostAttestation({ ...signed, payload: forged }, { hostKey, applicationId: appId })).rejects.toThrow();
+    expect(await verifyHostAttestationV2(signed, hostKey)).toBe(true);
+    expect(signed.payload).toMatchObject({
+      subject: 'device',
+      pageId,
+      applicationId: fixture.chainId,
+      accountId: owner,
+      publicKey: member.identity.publicKey,
+      wrapKey: member.wrapKey,
+      label: 'Browser device',
+      inviteId: null,
+    });
+    expect(signed.payload.email).toMatch(/^owner-.*@example\.com$/);
+    expect(signed.payload.expiresAt - signed.payload.issuedAt).toBe(3_600_000);
+    expect(signed.payload.nonce).toMatch(/^[0-9a-f]{64}$/);
+    for (const forged of [
+      { ...signed.payload, accountId: 'someone-else' },
+      { ...signed.payload, wrapKey: testWrapKey() },
+      { ...signed.payload, expiresAt: signed.payload.expiresAt + 1 },
+    ]) {
+      expect(await verifyHostAttestationV2({ ...signed, payload: forged }, hostKey)).toBe(false);
+    }
     const admissions = await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'admissions' }));
-    expect(admissions.pending.map((record: unknown) => dec<SignedHostAttestation>(record).payload).filter((item: any) => item.subject === 'device').map((item: any) => item.publicKey)).toEqual([member.identity.publicKey]);
-    expect(admissions.wrapped).toEqual({});
-    expect((await body(await page.ownerApi('GET', 'application'))).authority).toBeNull();
+    expect(admissions.pending.map((r: unknown) => dec<SignedHostAttestationV2>(r).payload)
+      .filter((item: any) => item.subject === 'device')
+      .map((item: any) => item.publicKey)).toEqual([member.identity.publicKey]);
   });
+
   it('rejects unauthenticated, display, wrong-origin and challenge-mismatched enrollment; agents cannot enroll browser keys', async () => {
-    const handle = await create({ application: { id: appId } }); await prepare((method, path, input) => api(handle, method, path, input));
-    const member = await device(), endpoint = `${handle.page_url}_tendril/peers/enrollment`, json = { 'Content-Type': 'application/json' };
+    const handle = await create();
+    const send: Send = (method, path, input) => req(`${handle.page_url}_tendril/${path}`, {
+      method,
+      headers: { ...ownerHeaders(handle.page_url), 'Content-Type': 'application/json' },
+      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+    });
+    const root = await device();
+    const meta = await body(await send('GET', 'application'));
+    const fixture = await buildGenesis(root, { accounts: meta.admissionAccounts });
+    await body(await send('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(fixture.genesisBytes),
+      casNodes: fixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+
+    const member = await device();
+    const endpoint = `${handle.page_url}_tendril/peers/enrollment`;
+    const jsonHdr = { 'Content-Type': 'application/json' };
     const challenge = { action: 'challenge', publicKey: member.identity.publicKey };
-    expect((await req(endpoint, { method: 'POST', anonymous: true, headers: { ...json, Origin: new URL(handle.page_url).origin }, body: JSON.stringify(challenge) })).status).toBe(401);
-    expect((await req(endpoint, { method: 'POST', headers: { ...ownerHeaders(handle.page_url), ...json, Origin: 'https://evil.example' }, body: JSON.stringify(challenge) })).status).toBe(403);
+    expect((await req(endpoint, { method: 'POST', anonymous: true, headers: { ...jsonHdr, Origin: new URL(handle.page_url).origin }, body: JSON.stringify(challenge) })).status).toBe(401);
+    expect((await req(endpoint, { method: 'POST', headers: { ...ownerHeaders(handle.page_url), ...jsonHdr, Origin: 'https://evil.example' }, body: JSON.stringify(challenge) })).status).toBe(403);
     const display = await inDO(handle.id, async t => t.renderLink(await t.createLink('display', 'wall', null)));
-    const displayed = await req(`${display.url}_tendril/peers/enrollment`, { method: 'POST', anonymous: true, headers: { ...json, Origin: new URL(display.url).origin }, body: JSON.stringify(challenge) });
+    const displayed = await req(`${display.url}_tendril/peers/enrollment`, { method: 'POST', anonymous: true, headers: { ...jsonHdr, Origin: new URL(display.url).origin }, body: JSON.stringify(challenge) });
     expect(displayed.status).toBe(403);
     expect((await api(handle, 'POST', 'peers/enrollment', challenge)).status).toBe(403);
-    const send: Send = (method, path, input) => req(`${handle.page_url}_tendril/${path}`, { method, headers: { ...ownerHeaders(handle.page_url), ...json }, ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
-    expect(await failure(await enrollRaw(send, member, undefined, value => value + 'x'))).toEqual({ status: 403, code: 'enrollment_challenge_invalid' });
-    // A proof bound to another key's challenge is not this key's proof.
-    const other = await device(), otherChallenge = await body(await send('POST', 'peers/enrollment', { action: 'challenge', publicKey: other.identity.publicKey }));
-    const crossed = await signEnrollmentRequest({ applicationId: appId, publicKey: member.identity.publicKey, wrapKey: member.wrapKey, challenge: otherChallenge.challenge }, member.identity);
+    expect(await failure(await enrollRaw(send, fixture.chainId, member, undefined, value => value + 'x'))).toEqual({ status: 403, code: 'enrollment_challenge_invalid' });
+    const other = await device();
+    const otherChallenge = await body(await send('POST', 'peers/enrollment', { action: 'challenge', publicKey: other.identity.publicKey }));
+    const crossed = await signRecord(ENROLLMENT_REQUEST_DOMAIN, {
+      applicationId: fixture.chainId, publicKey: member.identity.publicKey, wrapKey: member.wrapKey, challenge: otherChallenge.challenge,
+    }, member.identity);
     expect(await failure(await send('POST', 'peers/enrollment', { action: 'enroll', proof: rec(crossed) }))).toEqual({ status: 403, code: 'enrollment_challenge_invalid' });
-    expect((await enrollRaw(send, member)).status).toBe(200);
-    expect(await inDO(handle.id, t => t.db.get('application_device_accounts', null))).toBeNull();
+    expect((await enrollRaw(send, fixture.chainId, member)).status).toBe(200);
   });
 });
 
-describe('genesis initialization', () => {
-  it('stores a member-signed genesis from the owner browser and rejects every unpinned variant', async () => {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.ownerApi);
-    const root = await device(), metadata = await body(await page.ownerApi('GET', 'application')), accounts = metadata.admissionAccounts;
-    const initialize = (bundle: AuthorityBundle, send: Send = page.ownerApi) => send('POST', 'peers/enrollment', { action: 'initialize', bundle: rec(bundle) });
+describe('v2 genesis initialization', () => {
+  it('stores a member-created Chronolog v2 genesis once, rejects unpinned variants, and never holds a host authority key', async () => {
+    const page = await createTestPage();
+    const root = await device();
+    const metadata = await body(await page.ownerApi('GET', 'application'));
+    const accounts = metadata.admissionAccounts as string[];
+    const init = (fixture: ChainFixture, send: Send = page.ownerApi) => send('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(fixture.genesisBytes),
+      casNodes: fixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    });
+
     const outsider = await createSigningIdentity();
-    expect(await failure(await initialize(await genesis(root, { accounts, hostKey: outsider.publicKey })))).toEqual({ status: 400, code: 'admission_host_key_mismatch' });
-    expect(await failure(await initialize(await genesis(root, { accounts: ['email:someone@example.com'] })))).toEqual({ status: 400, code: 'admission_accounts_mismatch' });
-    expect(await failure(await initialize(await genesis(root, { accounts, signer: outsider })))).toEqual({ status: 400, code: 'authority_root_mismatch' });
-    expect(await failure(await initialize(await genesis(root, { accounts, finalityPolicy: { kind: 'signed-frontier', signer: root.identity.publicKey, scopes: [{ id: '01'.repeat(32), authorTimeAfterMs: -1n }] } })))).toEqual({ status: 400, code: 'authority_finality_mismatch' });
+    expect(await failure(await init(await buildGenesis(root, { accounts, hostKey: outsider.publicKey })))).toEqual({ status: 400, code: 'admission_host_key_mismatch' });
+    expect(await failure(await init(await buildGenesis(root, { accounts: ['email:someone@example.com'] })))).toEqual({ status: 400, code: 'admission_accounts_mismatch' });
     const guest = await page.participant();
-    expect(await failure(await initialize(await genesis(root, { accounts }), guest.api))).toEqual({ status: 403, code: 'owner_required' });
-    const bundle = await genesis(root, { accounts: [...accounts, 'email:extra@example.com'] });
-    const stored = await body(await initialize(bundle));
-    await verifyAuthorityBundle(dec(stored.authority));
-    expect(dec(stored.authority)).toEqual(bundle);
-    expect((await body(await initialize(bundle))).authority).toEqual(stored.authority);
-    expect(await failure(await initialize(await genesis(root, { accounts })))).toEqual({ status: 409, code: 'application_initialized' });
-    // The host has no authority identity; every stored signature is a member's.
+    expect(await failure(await init(await buildGenesis(root, { accounts }), guest.api))).toEqual({ status: 403, code: 'owner_required' });
+
+    const valid = await buildGenesis(root, { accounts: [...accounts, 'email:extra@example.com'] });
+    const stored = await body(await init(valid));
+    expect(bytesToHex(genesisChainId(authorityRecordBytes(stored.genesis)))).toBe(valid.chainId);
+    expect(stored.genesis).toEqual(authorityRecord(valid.genesisBytes));
+    // Exact retry is idempotent.
+    expect((await body(await init(valid))).genesis).toEqual(stored.genesis);
+    // Different genesis is rejected with 409.
+    expect(await failure(await init(await buildGenesis(root, { accounts, salt: crypto.getRandomValues(new Uint8Array(16)) })))).toEqual({ status: 409, code: 'application_initialized' });
+    // The host has no authority identity.
     expect(await inDO((await body(await page.api('GET', ''))).id, t => t.db.one("SELECT 1 FROM participant_records WHERE key='authority/identity'"))).toBeNull();
-    expect([dec<AuthorityBundle>(stored.authority).descriptor.signer, ...dec<AuthorityBundle>(stored.authority).memberships.map(item => item.signer)]).toEqual([root.identity.publicKey, root.identity.publicKey]);
   });
-  it('lets only the agent whose registered key is the root initialize, including before claim', async () => {
+
+  it('lets only the agent whose registered key is a root administrator initialize, including before claim', async () => {
     const agent = await device();
-    const handle = await create({ claim: false, application: { id: appId }, agentKeys: { publicKey: base64urlKey(agent.identity.publicKey), wrapKey: agent.wrapKey } });
+    const handle = await create({ claim: false, agentKeys: { publicKey: base64urlKey(agent.identity.publicKey), wrapKey: agent.wrapKey } });
     const send: Send = (method, path, input) => api(handle, method, path, input);
-    const unprepared = await genesis(agent, { accounts: (await body(await send('GET', 'application'))).admissionAccounts });
-    expect(await failure(await send('POST', 'peers/enrollment', { action: 'initialize', bundle: rec(unprepared) }))).toEqual({ status: 409, code: 'application_unprepared' });
-    await prepare(send);
     const accounts = (await body(await send('GET', 'application'))).admissionAccounts as string[];
     expect(accounts).toEqual([expect.stringMatching(/^email:owner-/)]);
     const stranger = await device();
-    expect(await failure(await send('POST', 'peers/enrollment', { action: 'initialize', bundle: rec(await genesis(stranger, { accounts })) }))).toEqual({ status: 403, code: 'initializer_root_required' });
-    const root = await genesis(agent, { accounts });
-    expect((await body(await send('POST', 'peers/enrollment', { action: 'initialize', bundle: rec(root) }))).authority).toEqual(rec(root));
+    const badFixture = await buildGenesis(stranger, { accounts });
+    expect(await failure(await send('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(badFixture.genesisBytes),
+      casNodes: badFixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }))).toEqual({ status: 403, code: 'initializer_root_required' });
+
+    const goodFixture = await buildGenesis(agent, { accounts });
+    const initialized = await body(await send('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(goodFixture.genesisBytes),
+      casNodes: goodFixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+    expect(bytesToHex(genesisChainId(authorityRecordBytes(initialized.genesis)))).toBe(goodFixture.chainId);
   });
 });
 
 describe('agent attestation', () => {
   it('attests the creator and newly granted agents automatically, and on enroll-agent', async () => {
     const creatorKeys = await device();
-    const handle = await create({ application: { id: appId }, agentKeys: { publicKey: base64urlKey(creatorKeys.identity.publicKey), wrapKey: creatorKeys.wrapKey } });
+    const handle = await create({ agentKeys: { publicKey: base64urlKey(creatorKeys.identity.publicKey), wrapKey: creatorKeys.wrapKey } });
     const send: Send = (method, path, input) => api(handle, method, path, input);
-    const pending = async () => (await body(await send('POST', 'peers/enrollment', { action: 'admissions' }))).pending.map((record: unknown) => dec<SignedHostAttestation>(record).payload);
+    const pending = async () => (await body(await send('POST', 'peers/enrollment', { action: 'admissions' }))).pending.map((r: unknown) => dec<SignedHostAttestationV2>(r).payload);
     const owner = handle.account!;
     expect(await pending()).toEqual([expect.objectContaining({ subject: 'agent', accountId: owner, publicKey: creatorKeys.identity.publicKey, wrapKey: creatorKeys.wrapKey, label: '@maintainer', inviteId: null })]);
     const enrolled = await body(await send('POST', 'peers/enrollment', { action: 'enroll-agent' }));
-    const signed = dec<SignedHostAttestation>(enrolled.attestation);
-    expect(await verifyHostAttestation(signed, { hostKey, applicationId: appId, pageId: handle.id })).toMatchObject({ subject: 'agent', accountId: owner, email: expect.stringMatching(/^owner-/) });
+    const signed = dec<SignedHostAttestationV2>(enrolled.attestation);
+    expect(await verifyHostAttestationV2(signed, hostKey)).toBe(true);
+    expect(signed.payload).toMatchObject({ subject: 'agent', accountId: owner, pageId: handle.id, email: expect.stringMatching(/^owner-/) });
     const helperKeys = await device();
     const helper = await joinAccountAgent(handle, 'helper', '', { publicKey: base64urlKey(helperKeys.identity.publicKey), wrapKey: helperKeys.wrapKey });
     await grantAgent(handle, helper);
     expect((await pending()).map((item: any) => [item.publicKey, item.label])).toEqual(expect.arrayContaining([[helperKeys.identity.publicKey, '@helper'], [creatorKeys.identity.publicKey, '@maintainer']]));
-    // A browser cannot request agent evidence.
-    expect(await failure(await req(`${handle.page_url}_tendril/peers/enrollment`, { method: 'POST', headers: { ...ownerHeaders(handle.page_url), 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'enroll-agent' }) })))
-      .toEqual({ status: 403, code: 'agent_required' });
+    expect(await failure(await req(`${handle.page_url}_tendril/peers/enrollment`, {
+      method: 'POST', headers: { ...ownerHeaders(handle.page_url), 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'enroll-agent' }),
+    }))).toEqual({ status: 403, code: 'agent_required' });
   });
-  it('binds an unclaimed page agent to the intended owner placeholder', async () => {
-    const handle = await create({ claim: false, application: { id: appId } });
+
+  it('binds an unclaimed page agent to the intended owner placeholder and requires wrap keys at registration', async () => {
+    const handle = await create({ claim: false });
     const { attestation } = await body(await api(handle, 'POST', 'peers/enrollment', { action: 'enroll-agent' }));
-    expect(dec<SignedHostAttestation>(attestation).payload).toMatchObject({ accountId: `pending:${handle.id}`, email: expect.stringMatching(/^owner-.*@example\.com$/) });
-  });
-  it('requires a wrap key at every registration path', async () => {
-    const response = await req('/api/agents', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.18.40.1' },
-      body: JSON.stringify({ owner: 'wrap-owner@example.com', handle: 'nowrap', publicKey: base64urlKey('ab'.repeat(32)) }) });
+    expect(dec<SignedHostAttestationV2>(attestation).payload).toMatchObject({ accountId: `pending:${handle.id}`, email: expect.stringMatching(/^owner-.*@example\.com$/) });
+    const response = await req('/api/agents', {
+      method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.18.40.1' },
+      body: JSON.stringify({ owner: 'wrap-owner@example.com', handle: 'nowrap', publicKey: base64urlKey('ab'.repeat(32)) }),
+    });
     expect(await failure(response)).toEqual({ status: 400, code: 'invalid_wrap_key' });
   });
 });
 
-describe('membership extension', () => {
-  it('admits attested devices by any reader, rejects host-unsignable revisions and stale heads, and prunes pending evidence', async () => {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.ownerApi);
-    const { root, bundle } = await ownerRooted(page);
-    const membership = (value: AuthorityBundle) => page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(value) });
-    const laptop = await device(), laptopEvidence = await enroll(page.ownerApi, laptop);
-    // The root administrator may choose any grant: the laptop joins as a non-administrator editor.
-    const one = await admit(bundle, root.identity, laptopEvidence, { reader: true, writer: true, administrator: false });
-    await body(await membership(one));
-    expect((await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'admissions' }))).pending.filter((record: unknown) => dec<SignedHostAttestation>(record).payload.publicKey === laptop.identity.publicKey)).toEqual([]);
-    // A non-administrator reader may append another attested device with exactly the policy grant (administrator by default)...
-    const phone = await device(), phoneEvidence = await enroll(page.ownerApi, phone);
-    expect(one.memberships.at(-1)!.payload.admission.grant).toEqual({ reader: true, writer: true, administrator: true });
-    const two = await admit(one, laptop.identity, phoneEvidence);
-    // ...but not any other grant, and a non-member signer can never extend the chain.
-    expect((await membership(await admit(one, laptop.identity, phoneEvidence, { reader: true, writer: true, administrator: false }))).status).toBe(403);
-    expect((await membership(await admit(one, laptop.identity, phoneEvidence, { reader: true, writer: false, administrator: true }))).status).toBe(403);
-    const stranger = await createSigningIdentity();
-    expect((await membership(await extend(one, stranger, prior => ({ members: [...prior.members, { publicKey: stranger.publicKey, wrapKey: testWrapKey(), reader: true, writer: true, administrator: true, publisher: false, finalizer: false }] })))).status).toBe(403);
-    const forged = await extend(one, root.identity, prior => ({ members: prior.members.map(member => ({ ...member, writer: false })) }));
-    const tampered = { ...forged, memberships: [...forged.memberships.slice(0, -1), { ...forged.memberships.at(-1)!, payload: { ...forged.memberships.at(-1)!.payload, members: [...forged.memberships.at(-1)!.payload.members, { publicKey: stranger.publicKey, wrapKey: null, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }] } }] };
-    expect((await membership(tampered)).status).toBe(403);
-    expect(await failure(await membership(await extend(two, root.identity, () => ({}))))).toEqual({ status: 400, code: 'membership_extension_required' });
-    await body(await membership(two));
-    expect(await failure(await membership(forged))).toEqual({ status: 409, code: 'membership_head_changed' });
-    const stored = dec<AuthorityBundle>((await body(await page.ownerApi('GET', 'application'))).authority);
-    expect(stored.memberships.map(item => item.signer)).toEqual([root.identity.publicKey, root.identity.publicKey, laptop.identity.publicKey]);
-    expect(stored.memberships.flatMap(item => item.signer)).not.toContain(hostKey);
-  });
-});
+describe('public-control sync, invites, and late-revocation host reconciliation', () => {
+  it('merges member-signed $permissions ops, prunes pending admissions, and enforces invite rules', async () => {
+    const page = await createTestPage();
+    const { root, fixture } = await ownerRooted(page);
+    const laptop = await device();
+    const laptopAtt = await enroll(page.ownerApi, fixture.chainId, laptop);
 
-describe('invites', () => {
-  async function invited(binding: PageInvite['binding'], extra: Partial<PageInvite> = {}) {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.ownerApi);
-    const { root, bundle } = await ownerRooted(page);
-    const issued = await invite(bundle, root.identity, binding, extra);
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(issued.bundle) }));
-    return { page, root, ...issued };
-  }
-  it('redeems an open invite once per account, idempotently for that account, and the redeemer can be admitted by any reader', async () => {
-    const { page, root, bundle, redemption } = await invited({ kind: 'open' });
-    const guest = await page.participant(), other = await page.participant(), first = await device();
-    const evidence = await enroll(guest.api, first, redemption);
-    expect(evidence.payload).toMatchObject({ accountId: guest.account, inviteId: redemption.inviteId, email: `${guest.account}@example.test` });
-    expect((await enroll(guest.api, await device(), redemption)).payload.inviteId).toBe(redemption.inviteId);
-    expect(await failure(await enrollRaw(other.api, await device(), redemption))).toEqual({ status: 409, code: 'invite_redeemed' });
-    const admitted = await admit(bundle, root.identity, evidence, { reader: true, writer: true, administrator: false }, 'invited');
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(admitted) }));
-  });
-  it('rejects a bad secret, another email, an exhausted public invite, and expired or revoked invites', async () => {
-    const bound = await invited({ kind: 'email', email: 'invitee@example.com' });
-    const guest = await bound.page.participant();
-    expect(await failure(await enrollRaw(guest.api, await device(), { ...bound.redemption, secret: 'ff'.repeat(32) }))).toEqual({ status: 403, code: 'invite_secret_invalid' });
-    expect(await failure(await enrollRaw(guest.api, await device(), bound.redemption))).toEqual({ status: 403, code: 'invite_email_mismatch' });
-    expect(await failure(await enrollRaw(guest.api, await device(), { inviteId: 'ab'.repeat(16), secret: 'ab'.repeat(32) }))).toEqual({ status: 404, code: 'invite_unknown' });
-    const open = await invited({ kind: 'public', max: 2 });
-    for (let index = 0; index < 2; index++) await enroll((await open.page.participant()).api, await device(), open.redemption);
-    expect(await failure(await enrollRaw((await open.page.participant()).api, await device(), open.redemption))).toEqual({ status: 409, code: 'invite_exhausted' });
-    const expiring = await invited({ kind: 'open' }, { expiresAt: BigInt(Date.now() + 60_000) });
-    await expiring.page.advance(120_000);
-    expect(await failure(await enrollRaw((await expiring.page.participant()).api, await device(), expiring.redemption))).toEqual({ status: 410, code: 'invite_expired' });
-    const revoked = await invited({ kind: 'open' }, { revoked: true });
-    expect(await failure(await enrollRaw((await revoked.page.participant()).api, await device(), revoked.redemption))).toEqual({ status: 410, code: 'invite_revoked' });
-  });
-  it('accepts an email-bound invite for the account that verified that address', async () => {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.ownerApi);
-    const { root, bundle } = await ownerRooted(page), guest = await page.participant();
-    const issued = await invite(bundle, root.identity, { kind: 'email', email: `${guest.account}@example.test` });
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(issued.bundle) }));
-    expect((await enroll(guest.api, await device(), issued.redemption)).payload.email).toBe(`${guest.account}@example.test`);
-  });
-});
+    const admitOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+      topic: '$permissions',
+      input: {
+        action: 'setMember',
+        member: { publicKey: laptop.identity.publicKey, wrapKey: laptop.wrapKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
+        attestation: laptopAtt as any,
+      },
+    }]);
+    const synced = await body(await syncOps(page.ownerApi, [admitOp]));
+    expect(synced.addedOps).toBe(1);
+    const pendingAfter = (await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'admissions' }))).pending;
+    expect(pendingAfter.map((r: unknown) => dec<SignedHostAttestationV2>(r).payload.publicKey)).not.toContain(laptop.identity.publicKey);
 
-describe('key wraps', () => {
-  it('accepts wraps only between reader members at the signed wrap key, keeps four per recipient and reports coverage', async () => {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.ownerApi);
-    const { root, bundle } = await ownerRooted(page);
-    const laptop = await device(), one = await admit(bundle, root.identity, await enroll(page.ownerApi, laptop));
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(one) }));
-    const wrap = async (signer: SigningIdentity, recipient: string, wrapKey: string, epochs: number[]) => rec(await signRecord('key-wrap', {
-      applicationId: appId, descriptorId: await recordDigest(one.descriptor), membershipId: await recordDigest(one.memberships.at(-1)), recipient, wrapKey, epochs,
-      authority: one, encrypted: { encapsulatedKey: new Uint8Array(32), ciphertext: new Uint8Array(48) } }, signer));
-    const send = (value: unknown) => page.ownerApi('POST', 'peers/enrollment', { action: 'wrap', wrap: value });
-    const stranger = await device();
-    expect(await failure(await send(await wrap(stranger.identity, laptop.identity.publicKey, laptop.wrapKey, [0])))).toEqual({ status: 403, code: 'key_wrap_member_required' });
-    expect(await failure(await send(await wrap(root.identity, stranger.identity.publicKey, stranger.wrapKey, [0])))).toEqual({ status: 403, code: 'key_wrap_member_required' });
-    expect(await failure(await send(await wrap(root.identity, laptop.identity.publicKey, stranger.wrapKey, [0])))).toEqual({ status: 409, code: 'key_wrap_recipient_mismatch' });
-    const forged = dec(await wrap(root.identity, laptop.identity.publicKey, laptop.wrapKey, [0]));
-    expect((await send(rec({ ...forged, payload: { ...forged.payload, epochs: [0, 1] } }))).status).toBe(403);
-    for (const epochs of [[0], [0, 1], [0, 1, 2], [0, 1, 2, 3], [0, 1, 2, 3, 4]]) await body(await send(await wrap(root.identity, laptop.identity.publicKey, laptop.wrapKey, epochs)));
-    const delivered = await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'wraps', recipient: laptop.identity.publicKey }));
-    expect(delivered.wraps.map((record: unknown) => Math.max(...dec(record).payload.epochs))).toEqual([4, 3, 2, 1]);
-    expect((await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'admissions' }))).wrapped).toEqual({ [laptop.identity.publicKey]: 4 });
-    expect((await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'wraps', recipient: root.identity.publicKey }))).wraps).toEqual([]);
-    // Removing a member drops its mailbox.
-    const removed = await extend(one, root.identity, prior => ({ members: prior.members.filter(member => member.publicKey !== laptop.identity.publicKey), epoch: 1,
-      epochKeyDigest: '00'.repeat(32) }));
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(removed) }));
-    expect((await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'wraps', recipient: laptop.identity.publicKey }))).wraps).toEqual([]);
-  });
-});
+    // Issue an open invite + an email invite + a public(max=2) invite via $permissions public-control ops.
+    const makeInvite = async (binding: any, extra: Record<string, unknown> = {}) => {
+      const secret = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+      const inviteId = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+      const secretDigest = await sha256Hex(hexToBytes(secret));
+      return {
+        entry: { inviteId, role: 'writer', binding, expiresAt: Date.now() + 86_400_000, secretDigest, revoked: false, ...extra },
+        redemption: { inviteId, secret },
+      };
+    };
+    const openInv = await makeInvite({ kind: 'open' });
+    const emailInv = await makeInvite({ kind: 'email', email: 'invitee@example.com' });
+    const pubInv = await makeInvite({ kind: 'public', max: 2 });
+    const revokedInv = await makeInvite({ kind: 'open' }, { revoked: true });
+    const expiredInv = await makeInvite({ kind: 'open' }, { expiresAt: Date.now() - 1000 });
+    const meta = await body(await page.ownerApi('GET', 'application'));
+    const invOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+      topic: '$permissions',
+      input: {
+        action: 'setAdmission',
+        admission: {
+          mode: 'attested',
+          hostKey,
+          accounts: meta.admissionAccounts,
+          grant: { reader: true, writer: true, administrator: true },
+          invites: [openInv.entry, emailInv.entry, pubInv.entry, revokedInv.entry, expiredInv.entry],
+        },
+      },
+    }]);
+    await body(await syncOps(page.ownerApi, [invOp]));
 
-describe('publication and participant control', () => {
-  it('prepares and publishes signed UI before any data key is known', async () => {
-    const page = await createTestPage({ application: { id: appId } }), { metadata, publisher } = await prepare(page.api);
-    expect(metadata.authority).toBeNull();
-    const bytes = new TextEncoder().encode('<!doctype html><html><title>Browser first</title><body>Ready</body></html>');
-    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
-    const publication = await signPublicationManifest({ applicationId: appId, membershipId: metadata.publicationAuthority.grantId, author: publisher.publicKey, operationId: 'pre-owner-publication', revision: 0, previous: null, executionManifestDigest, entry: 'index.html', files: [{ path: 'index.html', hash, size: bytes.length, type: 'text/html' }] }, publisher);
-    const receipt = await body(await page.api('POST', 'peers/publication', { action: 'publish', publication, assets: [{ hash, bytes: btoa(String.fromCharCode(...bytes)) }] }));
-    expect(receipt.publication.id).toBe(publication.id);
-    await page.restart();
-    expect((await body(await page.api('POST', 'peers/publication', { action: 'read' }))).publication.id).toBe(publication.id);
-    const authored = await page.asset();
-    expect(authored.status).toBe(200);
-    expect(await authored.text()).toContain('Browser first');
+    const guest = await page.participant();
+    const other = await page.participant();
+    const guestAtt = await enroll(guest.api, fixture.chainId, await device(), openInv.redemption);
+    expect(guestAtt.payload).toMatchObject({ accountId: guest.account, inviteId: openInv.redemption.inviteId });
+    expect((await enroll(guest.api, fixture.chainId, await device(), openInv.redemption)).payload.inviteId).toBe(openInv.redemption.inviteId);
+    expect(await failure(await enrollRaw(other.api, fixture.chainId, await device(), openInv.redemption))).toEqual({ status: 409, code: 'invite_redeemed' });
+
+    expect(await failure(await enrollRaw(guest.api, fixture.chainId, await device(), { ...emailInv.redemption, secret: 'ff'.repeat(32) }))).toEqual({ status: 403, code: 'invite_secret_invalid' });
+    expect(await failure(await enrollRaw(guest.api, fixture.chainId, await device(), emailInv.redemption))).toEqual({ status: 403, code: 'invite_email_mismatch' });
+    expect(await failure(await enrollRaw(guest.api, fixture.chainId, await device(), { inviteId: 'ab'.repeat(16), secret: 'ab'.repeat(32) }))).toEqual({ status: 404, code: 'invite_unknown' });
+    for (let i = 0; i < 2; i++) await enroll((await page.participant()).api, fixture.chainId, await device(), pubInv.redemption);
+    expect(await failure(await enrollRaw((await page.participant()).api, fixture.chainId, await device(), pubInv.redemption))).toEqual({ status: 409, code: 'invite_exhausted' });
+    expect(await failure(await enrollRaw((await page.participant()).api, fixture.chainId, await device(), expiredInv.redemption))).toEqual({ status: 410, code: 'invite_expired' });
+    expect(await failure(await enrollRaw((await page.participant()).api, fixture.chainId, await device(), revokedInv.redemption))).toEqual({ status: 410, code: 'invite_revoked' });
   });
-  it('a prepared application reports configured, is not downgradable to ad hoc while an unprepared one is', async () => {
-    const page = await createTestPage({ application: { id: appId } });
-    expect((await body(await page.api('GET', ''))).configured).toBe(false);
-    expect((await page.api('PATCH', '', { lifetime: 'resident' })).status).toBe(200);
-    expect((await page.api('PATCH', '', { lifetime: 'ad_hoc' })).status).toBe(200);
-    await prepare(page.api);
-    expect((await body(await page.api('GET', ''))).configured).toBe(true);
-    expect(await failure(await page.api('PATCH', '', { lifetime: 'ad_hoc' }))).toEqual({ status: 409, code: 'application_requires_resident' });
+
+  it('publishes signed $publications releases and rolls back a provisional release on late earlier revocation', async () => {
+    const page = await createTestPage();
+    const pub2 = await device();
+    const { root, fixture } = await ownerRooted(page, {
+      extraMembers: [{
+        publicKey: pub2.identity.publicKey,
+        wrapKey: pub2.wrapKey,
+        reader: true,
+        writer: true,
+        administrator: false,
+        publisher: true,
+        finalizer: false,
+      }],
+    });
+
+    // Helper to publish one signed HTML release at an explicit authorTimestampMs.
+    const publishHtml = async (signer: SigningIdentity, html: string, tsMs: bigint) => {
+      const bytes = new TextEncoder().encode(html);
+      const hash = await sha256Hex(bytes);
+      const op = await signControlOp(fixture.chainIdBytes, signer, [{
+        topic: '$publications',
+        input: {
+          action: 'publish',
+          entry: 'index.html',
+          files: [{ path: 'index.html', hash, size: bytes.length, type: 'text/html' }],
+        },
+      }], { authorTimestampMs: tsMs });
+      return body(await page.ownerApi('POST', 'peers/publication', {
+        action: 'publish',
+        op: op.record,
+        assets: [{ hash, bytes: btoa(String.fromCharCode(...bytes)) }],
+      }));
+    };
+
+    const t0 = BigInt(Date.now());
+    const r1 = await publishHtml(root.identity, '<!doctype html><html><title>Release 1</title><body>Safe v1</body></html>', t0 + 100n);
+    expect(r1.version).toBe(1);
+    expect(await (await page.asset()).text()).toContain('Safe v1');
+
+    // pub2 publishes Release 2 at t0 + 300 (provisional under finality: none).
+    const r2 = await publishHtml(pub2.identity, '<!doctype html><html><title>Release 2</title><body>From pub2</body></html>', t0 + 300n);
+    expect(r2.version).toBe(2);
+    expect(await (await page.asset()).text()).toContain('From pub2');
+
+    // Now a LATE-ARRIVING earlier revocation signed by root at t0 + 200 arrives (before pub2's release at t0 + 300)!
+    const revokeOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+      topic: '$permissions',
+      input: { action: 'removeMember', publicKey: pub2.identity.publicKey },
+    }], { authorTimestampMs: t0 + 200n });
+    await body(await syncOps(page.ownerApi, [revokeOp]));
+
+    // Blind host deterministically replays authored-time order -> pub2's release at t0+300 is now unauthorized ->
+    // `reconcileHostEffects` immediately rolls served `current` back to Release 1!
+    const afterRollback = await page.asset();
+    expect(afterRollback.status).toBe(200);
+    expect(await afterRollback.text()).toContain('Safe v1');
+    const head = await body(await page.ownerApi('POST', 'peers/publication', { action: 'read' }));
+    expect(head.opId).toBe(r1.opId);
+    expect(head.version).toBe(1);
   });
-  it('admits only signed control actions from members, never raw or encoded application programs', async () => {
-    const page = await createTestPage({ application: { id: appId } }); await prepare(page.api);
-    const { root } = await ownerRooted(page);
-    const read = await signParticipantRequest({ applicationId: appId, requestId: 'read-authority', action: 'authority.read' }, root.identity);
-    expect(dec(await body(await page.ownerApi('POST', 'peers/participant', rec(read)))).authority.descriptor.payload.applicationId).toBe(appId);
-    const outsider = await signParticipantRequest({ applicationId: appId, requestId: 'outsider', action: 'authority.read' }, await createSigningIdentity());
+
+  it('admits only signed member control.sync participant requests and rejects non-control ops or unknown signers', async () => {
+    const page = await createTestPage();
+    const { root, fixture } = await ownerRooted(page);
+    const syncReq = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
+      applicationId: fixture.chainId,
+      requestId: 'sync-1',
+      action: 'control.sync',
+    }, root.identity);
+    const reply = dec(await body(await page.ownerApi('POST', 'peers/participant', rec(syncReq))));
+    expect(reply.applicationId).toBe(fixture.chainId);
+    expect(reply.genesis).toEqual(authorityRecord(fixture.genesisBytes));
+
+    const outsider = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
+      applicationId: fixture.chainId,
+      requestId: 'outsider',
+      action: 'control.sync',
+    }, await createSigningIdentity());
     expect(await failure(await page.ownerApi('POST', 'peers/participant', rec(outsider)))).toEqual({ status: 403, code: 'participant_member_required' });
     expect((await page.ownerApi('POST', 'peers/participant', { program: 'host-must-not-execute-this' })).status).toBe(400);
-    const forbidden = await signParticipantRequest({ applicationId: appId, requestId: 'forbidden-data', action: 'data.submit' as any }, root.identity);
-    expect((await page.ownerApi('POST', 'peers/participant', rec(forbidden))).status).toBe(403);
-    const extra = await signParticipantRequest({ applicationId: appId, requestId: 'smuggled-program', action: 'authority.read', program: 'not a control field' } as any, root.identity);
-    expect((await page.ownerApi('POST', 'peers/participant', rec(extra))).status).toBe(400);
-  });
-  it('verifies full historical authority when reading finality, deduplicates evidence and rejects a revoked finalizer', async () => {
-    const page = await createTestPage({ application: { id: appId } });
-    await prepare(page.api, undefined, { requestedFinality: { kind: 'browser-signed-frontier' } });
-    const owner = await device(), accounts = (await body(await page.ownerApi('GET', 'application'))).admissionAccounts;
-    const bundle = await genesis(owner, { accounts, finalizer: true, finalityPolicy: { kind: 'signed-frontier', signer: owner.identity.publicKey, scopes: [{ id: await recordDigest(['initial-scope', appId]), authorTimeAfterMs: -1n }] } });
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'initialize', bundle: rec(bundle) }));
-    const descriptor = bundle.descriptor.payload, head = await recordDigest(bundle.memberships[0]); let requests = 0;
-    const exchange = async (action: 'finality.read' | 'finality.publish', proof?: any) => {
-      const request = await signParticipantRequest({ applicationId: appId, requestId: `finality-${requests++}`, action, ...(proof ? { proof } : {}) }, owner.identity);
-      return page.ownerApi('POST', 'peers/participant', rec(request));
-    };
-    const policy = descriptor.finalityPolicy as Extract<FinalityPolicy, { kind: 'signed-frontier' }>;
-    for (const scope of [policy.scopes[0].id, head]) {
-      const statement = { applicationId: appId, policyDigest: await finalityPolicyDigest(policy), authorityHead: head, scope, sequence: 0, previous: null, inclusions: [], closedThroughMs: 10n, blockers: [] };
-      const proof = { statement, signatures: [await signFinalityStatement(statement, owner.identity)] };
-      expect((await exchange('finality.publish', proof)).status).toBe(200);
-      expect((await exchange('finality.publish', proof)).status).toBe(200);
-    }
-    const first = dec(await body(await exchange('finality.read')));
-    expect(first.proofs).toHaveLength(2);
-    const revoked = await extend(bundle, owner.identity, prior => ({ members: prior.members.map(member => ({ ...member, finalizer: false })) }), 11n);
-    await body(await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: rec(revoked) }));
-    const statement = { ...first.proofs[0].statement, sequence: 1, previous: await recordDigest(first.proofs[0].statement), closedThroughMs: 12n };
-    expect((await exchange('finality.publish', { statement, signatures: [await signFinalityStatement(statement, owner.identity)] })).status).toBe(403);
-    expect(dec(await body(await exchange('finality.read'))).proofs).toEqual(first.proofs);
-  });
-});
 
-it('rejects invalid finality before freezing configuration and accepts canonical fractional tool bounds idempotently', async () => {
-  const page = await createTestPage({ application: { id: appId } }), publisher = await createSigningIdentity();
-  const configuration = { executionManifestDigest, executionProfile: 'events', publisherKeys: [publisher.publicKey] };
-  for (const requestedFinality of [null, { kind: 'browser-signed-frontier', extra: true }, rec({ kind: 'fixed-validator', validators: [], threshold: 0, scopes: [] })]) {
-    expect((await page.api('POST', 'application', { ...configuration, requestedFinality })).status).toBe(400);
-    expect((await body(await page.api('GET', 'application'))).configuration).toBeNull();
-  }
-  const tools = { id: 'fractional-tools', version: '1', commands: [{ name: 'measure', description: 'A bounded fractional input', input: { type: 'number', minimum: 0.25, maximum: 1.75 } }], queries: [] };
-  const first = await body(await page.api('POST', 'application', { ...configuration, tools }));
-  const retry = await body(await page.api('POST', 'application', { tools, publisherKeys: configuration.publisherKeys, executionProfile: 'events', executionManifestDigest }));
-  expect(retry.publicationAuthority).toEqual(first.publicationAuthority);
-  expect(retry.configuration.tools.commands[0].input.minimum).toBe(0.25);
-  expect((await page.api('POST', 'application', { ...configuration, tools: { ...tools, commands: [{ ...tools.commands[0], input: { type: 'number', minimum: 0.5, maximum: 1.75 } }] } })).status).toBe(409);
-});
-it('returns structured 400 for malformed canonical records at untrusted request boundaries', async () => {
-  const page = await createTestPage({ application: { id: appId } }), publisher = await createSigningIdentity();
-  const response = await page.api('POST', 'application', { executionManifestDigest, executionProfile: 'events', publisherKeys: [publisher.publicKey], requestedFinality: { record: '00' } });
-  expect(response.status, 'malformed requested finality is client input, not internal corruption').toBe(400);
-  await prepare(page.api, publisher); await ownerRooted(page);
-  for (const [path, input] of [['peers/enrollment', { action: 'enroll', proof: { record: '00' } }], ['peers/enrollment', { action: 'membership', bundle: { record: '00' } }],
-    ['peers/enrollment', { action: 'initialize', bundle: { record: '00' } }], ['peers/enrollment', { action: 'wrap', wrap: { record: '00' } }], ['peers/participant', { record: '00' }]] as const) {
-    const answer = await page.ownerApi('POST', path, input);
-    expect(answer.status, `${path} ${JSON.stringify(input)}`).toBe(400);
-    expect((await answer.json<any>()).error.code).toBe('authority_record_invalid');
-  }
-});
-it('does not relabel persisted authority corruption as malformed caller input', async () => {
-  const page = await createTestPage({ application: { id: appId } }); await prepare(page.api); await ownerRooted(page);
-  await inDO((await body(await page.api('GET', ''))).id, t => t.db.set('application_authority', { record: '00' }));
-  const response = await page.ownerApi('POST', 'peers/enrollment', { action: 'membership', bundle: { record: '7b7d' } });
-  expect(response.status).toBe(500);
-  expect((await response.json<any>()).error.code).not.toBe('authority_record_invalid');
+    // Blind host refuses non-control application topic updates.
+    const appOp = await signOperationCore({
+      version: 1,
+      chainId: fixture.chainIdBytes,
+      author: hexToBytes(root.identity.publicKey),
+      operationId: 'forbidden-app-topic',
+      authorTimestampMs: BigInt(Date.now()),
+      nonce: crypto.getRandomValues(new Uint8Array(16)),
+      visibility: 'public',
+      updates: [{ topic: 'notes', input: { text: 'must not enter blind host' } }],
+    }, root.identity.privateKey);
+    expect(await failure(await page.ownerApi('POST', 'peers/enrollment', {
+      action: 'sync',
+      publicOps: [authorityRecord(encodeSignedOperation(appOp))],
+    }))).toEqual({ status: 400, code: 'control_topic_required' });
+  });
+
+  it('verifies v2 finality checkpoints and waits for finalized releases when $finality is active', async () => {
+    const page = await createTestPage();
+    const root = await device();
+    const meta = await body(await page.ownerApi('GET', 'application'));
+    const policy: FinalityPolicyV2 = { kind: 'signed-frontier', signer: root.identity.publicKey };
+    const fixture = await buildGenesis(root, {
+      accounts: meta.admissionAccounts,
+      finalizer: true,
+      finalitySchedule: [{ effectiveAfterMs: -1n, policy }],
+    });
+    await body(await page.ownerApi('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(fixture.genesisBytes),
+      casNodes: fixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+
+    // Publish a release while finality is active -> stored, NOT served provisionally until finalized by checkpoint!
+    const html = new TextEncoder().encode('<!doctype html><html><title>Finalized</title><body>Finalized UI</body></html>');
+    const hash = await sha256Hex(html);
+    const pubTs = BigInt(Date.now());
+    const pubOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+      topic: '$publications',
+      input: { action: 'publish', entry: 'index.html', files: [{ path: 'index.html', hash, size: html.length, type: 'text/html' }] },
+    }], { authorTimestampMs: pubTs });
+    const receipt = await body(await page.ownerApi('POST', 'peers/publication', {
+      action: 'publish',
+      op: pubOp.record,
+      assets: [{ hash, bytes: btoa(String.fromCharCode(...html)) }],
+    }));
+    expect(receipt.finalized).toBe(false);
+    // Served release is not yet active before checkpoint!
+    expect(await body(await page.ownerApi('POST', 'peers/publication', { action: 'read' }))).toBeNull();
+
+    // Compute exact deterministic snapshot using TopicKernel and sign a valid FinalityCheckpoint!
+    const cas = new ContentAddressedStore({ store: new MemoryBytesStore() });
+    await seedStandardModules(cas);
+    for (const n of fixture.casNodes) await cas.put(n.bytes, [], 'public');
+    const kernel = new TopicKernel({ genesis: fixture.genesisBytes, cas, blindHostMode: true, wasmModule: quickJsWasm });
+    await kernel.materialize([{ opId: operationIdDigest(pubOp.signed.coreBytes), core: (await import('@chronolog/peer-session/kernel')).decodeOperationCore(pubOp.signed.coreBytes) }]);
+    const snap = kernel.snapshot();
+    const scopeId = await policyScopeId(fixture.chainId, { effectiveAfterMs: -1n, policy });
+    const checkpointPayload = {
+      chainId: fixture.chainId,
+      policyScopeId: scopeId,
+      closedThroughMs: pubTs + 10n,
+      includedSetDigest: computeIncludedSetDigest([pubOp.opId]),
+      historyDigest: snap.historyDigest,
+      stateRoot: snap.stateRoot,
+      inclusions: [{ opId: pubOp.opId, authorTimestampMs: pubTs, author: root.identity.publicKey }],
+    };
+    const sig = await signFinalityCheckpoint(checkpointPayload, root.identity);
+    const checkpoint: FinalityCheckpoint = { payload: checkpointPayload, attestation: { kind: 'signatures', signatures: [sig] } };
+
+    // A checkpoint signed by an unauthorized key is rejected.
+    const rogue = await createSigningIdentity();
+    const rogueSig = await signFinalityCheckpoint(checkpointPayload, rogue);
+    expect(await failure(await syncOps(page.ownerApi, [], [rec({ payload: checkpointPayload, attestation: { kind: 'signatures', signatures: [rogueSig] } })])))
+      .toEqual({ status: 403, code: 'checkpoint_unverified' });
+
+    // Valid checkpoint promotes the finalized release!
+    const synced = await body(await syncOps(page.ownerApi, [], [rec(checkpoint)]));
+    expect(synced.addedCheckpoints).toBe(1);
+    const head = await body(await page.ownerApi('POST', 'peers/publication', { action: 'read' }));
+    expect(head.opId).toBe(pubOp.opId);
+    expect(head.finalized).toBe(true);
+    expect(await (await page.asset()).text()).toContain('Finalized UI');
+  });
+
+  it('returns structured 400 for malformed canonical records at untrusted request boundaries', async () => {
+    const fresh = await createTestPage();
+    const badInit = await fresh.ownerApi('POST', 'peers/enrollment', { action: 'initialize', genesis: { record: '00' } });
+    expect(badInit.status).toBe(400);
+    expect((await badInit.json<any>()).error.code).toBe('authority_genesis_invalid');
+
+    const page = await createTestPage();
+    await ownerRooted(page);
+    for (const [path, input] of [
+      ['peers/enrollment', { action: 'enroll', proof: { record: '00' } }],
+      ['peers/participant', { record: '00' }],
+    ] as const) {
+      const answer = await page.ownerApi('POST', path, input);
+      expect(answer.status, `${path} ${JSON.stringify(input)}`).toBe(400);
+      expect((await answer.json<any>()).error.code).toBe('authority_record_invalid');
+    }
+  });
+
+  it('initializes and syncs non-host-attested multisigMembers (2-of-3 quorum) and openMembers chains via $permissions.query()', async () => {
+    const s1 = await device();
+    const s2 = await device();
+    const s3 = await device();
+    const newcomer = await device();
+
+    // 1. Multisig 2-of-3 governance with ZERO host attestation and map-shaped members state!
+    const msPage = await createTestPage();
+    const msCreated = await createChainGenesis({
+      creator: { publicKey: s1.identity.publicKey, wrapKey: s1.wrapKey, reader: true, writer: true, administrator: true },
+      privateChain: true,
+      topics: {
+        $permissions: {
+          module: 'chronolog/permissions',
+          export: 'multisigMembers',
+          initialState: {
+            threshold: 2,
+            signers: [s1.identity.publicKey, s2.identity.publicKey, s3.identity.publicKey],
+            members: {},
+            proposals: {},
+          },
+        },
+        inventory: { module: 'chronolog/sql' },
+      },
+    });
+
+    await body(await msPage.ownerApi('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(msCreated.genesisBytes),
+      casNodes: msCreated.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+
+    // Newcomer is NOT yet a reader -> participant sync rejected!
+    const makeParticipantSync = async (signer: Device, chainId: string) => {
+      const signed = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
+        applicationId: chainId,
+        requestId: crypto.randomUUID(),
+        action: 'control.sync',
+      }, signer.identity);
+      return msPage.ownerApi('POST', 'peers/participant', rec(signed));
+    };
+    expect(await failure(await makeParticipantSync(newcomer, msCreated.chainId))).toEqual({ status: 403, code: 'participant_member_required' });
+
+    // Signer 1 proposes admitting newcomer (1/2 approvals — still not admitted)
+    const chainIdBytes = hexToBytes(msCreated.chainId);
+    const propOp = await signControlOp(chainIdBytes, s1.identity, [{
+      topic: '$permissions',
+      input: {
+        action: 'propose',
+        proposalId: 'add-newcomer',
+        kind: 'setMember',
+        member: { publicKey: newcomer.identity.publicKey, wrapKey: newcomer.wrapKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
+      },
+    }], { authorTimestampMs: 1000n });
+    await body(await syncOps(msPage.ownerApi, [propOp]));
+    expect(await failure(await makeParticipantSync(newcomer, msCreated.chainId))).toEqual({ status: 403, code: 'participant_member_required' });
+
+    // Signer 2 approves -> 2/2 quorum executes atomically; blind host recognizes newcomer via $permissions.query()!
+    const approveOp = await signControlOp(chainIdBytes, s2.identity, [{
+      topic: '$permissions',
+      input: { action: 'approve', proposalId: 'add-newcomer' },
+    }], { authorTimestampMs: 2000n });
+    await body(await syncOps(msPage.ownerApi, [approveOp]));
+    expect((await makeParticipantSync(newcomer, msCreated.chainId)).status).toBe(200);
+
+    // 2. Open-read / open-write chain (zero host attestation): stranger can sync immediately!
+    const openPage = await createTestPage();
+    const openCreated = await createChainGenesis({
+      creator: { publicKey: s1.identity.publicKey, wrapKey: s1.wrapKey, reader: true, writer: true, administrator: true },
+      privateChain: false,
+      topics: {
+        $permissions: {
+          module: 'chronolog/permissions',
+          export: 'openMembers',
+          initialState: {
+            admins: [s1.identity.publicKey],
+            members: [],
+            openRead: true,
+            openWrite: true,
+            admission: null,
+          },
+        },
+        board: { module: 'chronolog/sql' },
+      },
+    });
+    await body(await openPage.ownerApi('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(openCreated.genesisBytes),
+      casNodes: openCreated.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+    const strangerSync = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
+      applicationId: openCreated.chainId,
+      requestId: crypto.randomUUID(),
+      action: 'control.sync',
+    }, newcomer.identity);
+    expect((await openPage.ownerApi('POST', 'peers/participant', rec(strangerSync))).status).toBe(200);
+  });
 });

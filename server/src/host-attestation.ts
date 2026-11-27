@@ -1,5 +1,8 @@
-import { importSigningIdentity, signRecord, verifyRecord, type AuthorityBundle, type Signed, type SigningIdentity } from '@chronolog/authority';
-export { signRecord, verifyRecord, type AuthorityBundle, type Signed };
+import {
+  importSigningIdentity, signRecord, verifyRecord, signHostAttestationV2, verifyHostAttestationV2,
+  type Signed, type SigningIdentity,
+} from '@chronolog/authority';
+export { signRecord, verifyRecord, signHostAttestationV2, verifyHostAttestationV2, type Signed, type SigningIdentity };
 import type { Env } from './env';
 import { HttpError } from './http';
 
@@ -7,7 +10,7 @@ import { HttpError } from './http';
  * The host's Ed25519 attestation key (Worker secret `HOST_ATTESTATION_KEY`,
  * `{"publicKey":"<64 hex>","privateKey":"<pkcs8 hex>"}`). It signs only
  * host attestations — evidence that an authenticated account proved a key —
- * and never descriptors, memberships or epoch keys.
+ * and never chain genesis, permissions, or epoch keys.
  */
 interface Parsed { publicKey: string; privateKey: string }
 const KEY_RE = /^[0-9a-f]{64}$/, PRIVATE_RE = /^(?:[0-9a-f]{2}){16,256}$/;
@@ -38,8 +41,9 @@ export function loadHostAttestationIdentity(env: Env): Promise<SigningIdentity |
       if (!value) return null;
       try {
         const identity = await importSigningIdentity(value);
-        // signRecord verifies its own signature against the declared public key.
-        await signRecord('host-attestation-key-check', { check: true }, identity);
+        // Verify signing key matches the declared public key.
+        const check = await signHostAttestationV2({ check: true }, identity);
+        if (!await verifyHostAttestationV2(check, value.publicKey)) return null;
         return identity;
       } catch { return null; }
     })();

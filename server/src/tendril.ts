@@ -310,6 +310,7 @@ export class Tendril extends DurableObject<Env> {
       }
       this.db.set("lifetime", "ad_hoc");
       this.db.set("application", applicationSelection(body.application ?? { id: Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("") }));
+      if (body.application !== undefined) this.db.set("application_pinned", true);
       this.db.set("created_at", now);
       this.db.set("next_cleanup", now + DAY);
       this.db.run(

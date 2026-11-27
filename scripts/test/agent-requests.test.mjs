@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as p from '@chronolog/peer-session';
-import { authorityForDevices } from '../../collaboration/test/physical-fixture.mjs';
+import { genesisForDevices } from '../../collaboration/test/physical-fixture.mjs';
 import { openNativeDevice } from '@chronolog/peer-session/native';
 import {
   agentRequestCommands,
@@ -16,6 +16,28 @@ import {
   readAgentFeed,
   shouldAgentRespond,
 } from '../../docs/tutorial/shared/helpers/agent-requests.mjs';
+
+const AGENT_MESSAGE_REDUCER = `
+export default {
+  reduce(state, tx) {
+    return { ok: true, state: { count: ((state && state.count) || 0) + 1 }, events: [{ topic: 'agent/message', payload: tx.payload }] };
+  },
+};
+`;
+const AGENT_RECEIPT_REDUCER = `
+export default {
+  reduce(state, tx) {
+    return { ok: true, state: { count: ((state && state.count) || 0) + 1 }, events: [{ topic: 'agent/receipt', payload: tx.payload }] };
+  },
+};
+`;
+const agentBusGenesisOptions = {
+  imports: { 'app/agent-message': AGENT_MESSAGE_REDUCER, 'app/agent-receipt': AGENT_RECEIPT_REDUCER },
+  topics: {
+    'agent/message': { module: 'app/agent-message' },
+    'agent/receipt': { module: 'app/agent-receipt' },
+  },
+};
 
 const definition = p.defineApplication({
   id: 'agent-bus-test',
@@ -32,8 +54,8 @@ async function fixture(t) {
     try { if (session) await session.close(); else await device.close(); }
     finally { await rm(directory, { recursive: true, force: true }); }
   });
-  const { authority, key: epochKey } = await authorityForDevices([device], { applicationId: '73'.repeat(32) });
-  const open = async () => p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
+  const { genesisBytes, casNodes, key: epoch0Key } = await genesisForDevices([device], agentBusGenesisOptions);
+  const open = async () => p.createApplicationSession({ device, definition, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, epoch0Key]]) });
   session = await open();
   return {
     get session() { return session; },
@@ -229,10 +251,10 @@ async function pair(t, applicationId = '74'.repeat(32)) {
     const device = await openNativeDevice({ path: join(directory, name + '.sqlite'), create: true });
     devices.push(device); cleanup.push(() => device.close());
   }
-  const { authority, key: epochKey } = await authorityForDevices(devices, { applicationId });
+  const { genesisBytes, casNodes, key: epochKey } = await genesisForDevices(devices, agentBusGenesisOptions);
   const sessions = [];
   for (const device of devices) {
-    const session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
+    const session = await p.createApplicationSession({ device, definition, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, epochKey]]) });
     sessions.push(session); cleanup.push(() => session.close());
   }
   const [user, agent] = sessions;

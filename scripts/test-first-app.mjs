@@ -222,7 +222,6 @@ try {
   assert.equal(authorityProof.sourceTree, sessionProof.sourceTree, 'Authority and session must share a source tree');
   report.chronolog = { source: sessionProof.source, dirty: sessionProof.dirty, sha256: sha256(await readFile(sessionArchive)) };
   report.profile = selectedProfile;
-  if (sqlBrowser) { if(nativeWorkspace){assert.ok(sessionProof.sqlEngines?.includes('native')&&sessionProof.sqlEngines.includes('browser'),'Explicit native SQL qualification requires the full native+browser archive');}else assert.deepEqual(sessionProof.sqlEngines,['browser'],'The SQL kit is a portable browser profile, not a native SQL install'); assert.ok(sessionProof.wasmEngine); report.chronolog.wasmEngine = sessionProof.wasmEngine; }
 
 
   const preload = await writeLocalNetworkPreload(join(directory, 'local-network.mjs'));
@@ -246,11 +245,11 @@ try {
   if(nativeWorkspace&&!sqlBrowser)await prepareWorkspaceQualification({app,slug,feedback:feedbackQualification,network:networkLab});
   // The browser baseline lets the owner's first browser create the page data; the journal page is agent-first.
   await setup(['init',slug,'--browser-first',...(values['browser-finalizer']?['--browser-finalizer']:[])]);
-  assert.equal((await requestHost('application')).authority,null,'A browser-first page has no data until its first browser creates it');
+  assert.equal((await requestHost('application')).genesis,null,'A browser-first page has no data until its first browser creates it');
   const prepared=await jsonFile(join(app,'.tendriller/pages',created.id,'prepared.json')),secondPrepared=await jsonFile(join(app,'.tendriller/pages',journal.id,'prepared.json'));
   assert.equal(prepared.publisherKey,secondPrepared.publisherKey,'Every page uses the SAME registered workspace signer, never per-page signing keys');
   const publication=await setup(['deploy',slug]);assert.match(publication.publicationId,/^[a-f0-9]{64}$/);
-  assert.equal((await requestHost('application')).authority,null,'Publication precedes the first browser-created data key');
+  assert.equal((await requestHost('application')).genesis,null,'Publication precedes the first browser-created data key');
   assert.equal((await setup(['deploy',slug])).publicationId,publication.publicationId,'Lost/uncertain publication replies reuse the original signed graph');
   for(const path of await files(join(project,'dist')))assert.doesNotMatch(path,/\.tendriller|device\.sqlite|identity\.sqlite|publisher\.json/);
   report.workspace={agentId:workspaceFile.agent.id,pages:[created.id,journal.id],oneSharedPublisher:true,nativeProcessBeforeBrowser:false};
@@ -344,7 +343,7 @@ try {
     const selectedCaret=values['ux-second-pass']?await page.locator('#note').evaluate(node=>[node.selectionStart,node.selectionEnd]):null;
     await page.evaluate(async () => {
       const operation = await window.tendril.application.backend.submit({ operationId: 'late-earlier-note', authorTimestampMs: 0n,
-        program: { version: 3, steps: [{ op: 'emit', topic: 'note.put', payload: { noteId: 'earlier-stable-id', text: 'late earlier note' } }] } });
+        updates: [{ topic: 'notes', input: { action: 'putNote', noteId: 'earlier-stable-id', text: 'late earlier note' } }] });
       await operation.materialized();
     });
     await expect(page.locator('#notes li')).toHaveCount(2);
@@ -517,7 +516,7 @@ try {
     await expect.poll(() => page.evaluate(async id => (await (await window.tendril.application.backend.operations.get(id)).inspect()).finalized, originalOperation), { timeout: 30_000 }).toBe(true);
     const excluded = await page.evaluate(async timestamp => {
       const operation = await window.tendril.application.backend.submit({ operationId: 'explicit-late-behind-frontier', authorTimestampMs: BigInt(timestamp),
-        program: { version: 3, steps: [{ op: 'emit', topic: 'late.excluded', payload: { explanation: 'keep this original signed intent' } }] } });
+        updates: [{ topic: 'notes', input: { action: 'putNote', noteId: 'late-excluded', text: 'keep this original signed intent' } }] });
       return { proposalId: operation.id, operationId: operation.operationId };
     }, through);
     await expect.poll(() => page.evaluate(async id => (await (await window.tendril.application.backend.operations.get(id)).inspect()).excluded, excluded.operationId), { timeout: 30_000 }).toBe(true);

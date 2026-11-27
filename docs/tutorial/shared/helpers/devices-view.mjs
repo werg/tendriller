@@ -14,7 +14,12 @@ const WAITING = {
   removed: 'This browser was removed from the page. Its earlier local data stays here, but new changes are no longer shared with it.',
 };
 const REASONS = { strict_mode: 'Needs approval (strict mode)', account_not_authorized: 'Another account — approve only if you know them',
-  invite_invalid: 'Invite revoked, expired or for another email', invite_already_redeemed: 'Invite already used — possible double redemption', previously_removed: 'Was removed earlier — approve to readmit' };
+  invite_invalid: 'Invite revoked, expired or for another email', invite_already_redeemed: 'Invite already used — possible double redemption', previously_removed: 'Was removed earlier — approve to readmit',
+  attestation_signature_invalid: 'Host attestation signature did not match this page’s pinned host key',
+  application_id_mismatch: 'Host attestation was issued for a different chain',
+  attestation_expired: 'Host attestation expired before admission',
+  host_key_missing: 'Page permissions do not pin a host attestation key',
+  attestation_malformed: 'Host attestation record could not be decoded' };
 const element = (tag, { dataset, ariaLabel, ...props } = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
   for (const [key, value] of Object.entries(dataset ?? {})) node.dataset[key] = value;
@@ -80,7 +85,10 @@ export function mountDevices({ root, session, pageUrl = location.href, storage }
     if (value.error && value.phase !== 'admitted') banner.textContent += ` (Last attempt: ${value.error}.)`;
     renderList(notices, value.notices.filter(item => !seen.has(item.id) && item.kind !== 'removed' || item.kind === 'removed' && item.self), item => item.id, item => element('li', {},
       item.kind === 'new-device' ? `New ${item.subject === 'agent' ? 'agent' : 'device'} signed in: ${item.label ?? 'device'} (${short(item.publicKey)}).`
-        : item.kind === 'pending' ? `${item.label ?? 'A device'} (${short(item.publicKey)}) is waiting: ${REASONS[item.reason] ?? item.reason}.` : 'This device was removed.',
+        : item.kind === 'pending' ? `${item.label ?? 'A device'} (${short(item.publicKey)}) is waiting: ${REASONS[item.reason] ?? item.reason}.`
+          : item.kind === 'rejected' ? `Rejected sign-in from ${item.label ?? 'a device'}${item.publicKey ? ` (${short(item.publicKey)})` : ''}: ${REASONS[item.reason] ?? item.reason}.`
+            : item.kind === 'error' ? `Admission sync error: ${item.error ?? 'unknown error'}.`
+              : 'This device was removed.',
       button('Dismiss', () => { seen.add(item.id); try { storage?.setItem('admission:seen', JSON.stringify([...seen].slice(-50))); } catch {} render(state); }, { dataset: { action: 'dismiss' } })));
     const admins = value.members.filter(member => member.administrator).length;
     summary.textContent = `${value.members.length} with access · ${admins} administrator${admins === 1 ? '' : 's'}${value.administrator ? ' (including this one)' : ''}`;

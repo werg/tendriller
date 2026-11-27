@@ -15,7 +15,7 @@ import { createNativeFrames } from '../../session/native-transport.mjs';
 import { diagnosticFinding, transportCauseSummary } from '../../session/diagnostics.mjs';
 import { operationReference } from '../protocol.mjs';
 import { createViewStore } from '../local.mjs';
-import { p, native, worker, browser, definition, peerModule, openRetainedOwner, authorityForDevices } from './native-fixture.mjs';
+import { p, native, worker, browser, definition, peerModule, openRetainedOwner, genesisForDevices } from './native-fixture.mjs';
 
 async function fixture(t, { publisher = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'native-owner-'));
@@ -23,17 +23,17 @@ async function fixture(t, { publisher = false } = {}) {
   const devicePath = join(root, 'device.sqlite'), ownerDirectory = join(root, 'owner');
   const device = await native.openNativeDevice({ path: devicePath, create: true });
   const deviceId = device.identity.publicKey;
-  const { authority, key } = await authorityForDevices([device], { applicationId: '73'.repeat(32) });
+  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices([device]);
   await device.close();
   let opened = 0;
   const openOwner = async () => {
     opened++;
-    return openRetainedOwner({ devicePath, authority, key });
+    return openRetainedOwner({ devicePath, genesisBytes, casNodes, key });
   };
   const attach = (token, options = {}) => attachNativeSession({ directory: ownerDirectory, token,
-    applicationId: authority.descriptor.payload.applicationId,
+    applicationId: chainId,
     connect: browser.connectApplicationOwner, timeoutMs: 1500, ...options });
-  return { root, ownerDirectory, devicePath, deviceId, authority, key, openOwner, attach, opened: () => opened };
+  return { root, ownerDirectory, devicePath, deviceId, applicationId: chainId, genesisBytes, casNodes, key, openOwner, attach, opened: () => opened };
 }
 
 test('publication-only supervisor capability composes with Chronolog and bounds concurrent control calls', async t => {
@@ -163,9 +163,11 @@ test('native collaboration full references survive a lost response, reconnect an
 });
 
 const nativeModule = new URL('../../session/native.mjs', import.meta.url).href;
-function child(t, source, data) {
+async function child(t, source, data) {
+  const dataPath = `${data.ownerDirectory}-${Math.random().toString(16).slice(2)}.bin`;
+  await writeFile(dataPath, p.encodeRecord(data));
   const process = spawn(globalThis.process.execPath, ['--input-type=module', '-e', source], {
-    env: { ...globalThis.process.env, TENDRILLER_NATIVE_TEST: p.bytesToHex(p.encodeRecord(data)) }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...globalThis.process.env, TENDRILLER_NATIVE_TEST_FILE: dataPath }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => { if (process.exitCode === null && process.signalCode === null) process.kill('SIGKILL'); });
   let output = '', error = '';
@@ -191,7 +193,7 @@ test('two actual terminal processes attach without reopening storage and retain 
 import {connectApplicationOwner} from ${JSON.stringify(peerModule('browser'))};
 export function attach({signal}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
 token:process.env.TENDRILLER_NATIVE_ATTACHMENT_KEY,connect:connectApplicationOwner,signal,context:{runId:process.env.FIXTURE_RUN},
-applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)}});}`);
+applicationId:${JSON.stringify(f.applicationId)}});}`);
   const cli = fileURLToPath(new URL('../../tools/cli/test/support/run-cli.mjs', import.meta.url));
   const run = (token, text) => {
     const process = spawn(globalThis.process.execPath, [cli, '--fixture', bootstrap, '--page', 'retained-main',
@@ -212,13 +214,14 @@ applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)}});
 
 test('process crash releases the fence and a successor resumes the same signer and exact stored authored proposal', { timeout: 20_000 }, async t => {
   const f = await fixture(t), token = createNativeAttachmentKey();
-  const script = `import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
+  const script = `import {readFileSync} from 'node:fs';
+import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
 import {p,openRetainedOwner} from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
-const data=p.decodeRecord(p.hexToBytes(process.env.TENDRILLER_NATIVE_TEST));
+const data=p.decodeRecord(new Uint8Array(readFileSync(process.env.TENDRILLER_NATIVE_TEST_FILE)));
 const supervisor=await createNativeSessionSupervisor({directory:data.ownerDirectory,profileId:'retained-main',
 openOwner:()=>openRetainedOwner(data),bindings:[{id:'retained-agent',token:data.token}]});
 process.stdout.write(JSON.stringify({deviceId:supervisor.profile.publicKey,ownerInstanceId:supervisor.ownerInstanceId})+'\\n');`;
-  const old = child(t, script, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, authority: f.authority, key: [...f.key], token });
+  const old = await child(t, script, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, genesisBytes: [...f.genesisBytes], casNodes: f.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })), key: [...f.key], token });
   const previous = await old.ready();
   assert.equal(previous.deviceId, f.deviceId);
   await assert.rejects(createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner }),
@@ -278,20 +281,21 @@ test('private directory and immutable profile identity are enforced before expos
     error => error.code === 'SUPERVISOR_PRIVATE_PATH_REQUIRED');
   assert.equal(f.opened(), 0);
   await chmod(f.ownerDirectory, 0o700);
-  await writeFile(join(f.ownerDirectory, 'profile.json'), JSON.stringify({ version: 1, profileId: 'retained-main', applicationId: f.authority.descriptor.payload.applicationId, publicKey: 'ab'.repeat(32) }), { mode: 0o600 });
+  await writeFile(join(f.ownerDirectory, 'profile.json'), JSON.stringify({ version: 1, profileId: 'retained-main', applicationId: f.applicationId, publicKey: 'ab'.repeat(32) }), { mode: 0o600 });
   await assert.rejects(createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner }),
     error => error.code === 'SUPERVISOR_PROFILE_CHANGED');
 });
 
 test('CLI watch reports a crashed owner and snapshot cursors cannot silently cross a revised projection', { timeout: 20_000 }, async t => {
   const f = await fixture(t), token = createNativeAttachmentKey();
-  const source = `import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
+  const source = `import {readFileSync} from 'node:fs';
+import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
 import {p,openRetainedOwner} from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
-const data=p.decodeRecord(p.hexToBytes(process.env.TENDRILLER_NATIVE_TEST));
+const data=p.decodeRecord(new Uint8Array(readFileSync(process.env.TENDRILLER_NATIVE_TEST_FILE)));
 const supervisor=await createNativeSessionSupervisor({directory:data.ownerDirectory,profileId:'retained-main',
 openOwner:()=>openRetainedOwner(data),bindings:[{id:'listener',token:data.token}]});
 console.log(JSON.stringify({ready:true}));`;
-  const owner = child(t, source, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, authority: f.authority, key: [...f.key], token });
+  const owner = await child(t, source, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, genesisBytes: [...f.genesisBytes], casNodes: f.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })), key: [...f.key], token });
   await owner.ready();
   const writer = await f.attach(token); t.after(() => writer.detach());
   await (await writer.session.command('add', 'before crash', { operationId: 'before-crash' })).materialized();
@@ -300,7 +304,7 @@ console.log(JSON.stringify({ready:true}));`;
 import {connectApplicationOwner} from ${JSON.stringify(peerModule('browser'))};
 export function attach({signal}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
 token:process.env.TENDRILLER_NATIVE_ATTACHMENT_KEY,connect:connectApplicationOwner,signal,
-applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)}});}`);
+applicationId:${JSON.stringify(f.applicationId)}});}`);
   // The real executable lifecycle with this attachment in place of tendril agent run.
   const cli = fileURLToPath(new URL('../../tools/cli/test/support/run-cli.mjs', import.meta.url));
   const invoke = args => {
@@ -354,7 +358,7 @@ applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)}});
 // (definition/publication/publicationOperation/preparePublication/publish). It signs with the workspace
 // signer, retains each signed intent by its scoped operation ID and talks to a fake HTTP-level host.
 async function publicationHarness(f, { grant = true } = {}) {
-  const signer = await p.createSigningIdentity(), applicationId = f.authority.descriptor.payload.applicationId;
+  const signer = await p.createSigningIdentity(), applicationId = f.applicationId;
   const state = { fault: 'healthy', records: [], submissions: [] }, intents = new Map();
   const causes = ['EAI_AGAIN', 'ECONNRESET', 'ENETUNREACH', 'ETIMEDOUT'];
   const networkFailure = () => new TypeError('fetch failed', { cause: new AggregateError(causes.map(code =>
@@ -364,8 +368,7 @@ async function publicationHarness(f, { grant = true } = {}) {
   const peers = {
     async application() {
       if (state.fault === 'preparation') throw networkFailure();
-      return { publicationAuthority: { applicationId, grantId: 'ab'.repeat(32), publisherKeys: grant ? [signer.publicKey] : [],
-        executionManifestDigest: f.authority.descriptor.payload.executionManifestDigest } };
+      return { selection: { id: applicationId }, publisherKeys: grant ? [signer.publicKey] : [] };
     },
     async publication(id) {
       if (state.fault === 'selection' && id === undefined) throw networkFailure();
@@ -396,11 +399,32 @@ async function publicationHarness(f, { grant = true } = {}) {
         if (saved.payload.entry !== entry || JSON.stringify(saved.payload.files) !== JSON.stringify(files)) throw Object.assign(Error('PEER_PUBLICATION_OPERATION_REUSED'), { code: 'PEER_PUBLICATION_OPERATION_REUSED' });
         return saved;
       }
-      const [metadata, previous] = await Promise.all([peers.application(), peers.publication()]), scope = metadata.publicationAuthority;
-      if (scope?.applicationId !== applicationId || !scope.publisherKeys.includes(signer.publicKey)) throw Error('Independent publisher grant required');
-      const publication = await p.signPublicationManifest({ applicationId, membershipId: scope.grantId, author: signer.publicKey, operationId,
-        revision: previous === null ? 0 : previous.publication.payload.revision + 1, previous: previous?.publication.id ?? null,
-        executionManifestDigest: scope.executionManifestDigest, entry, files }, signer);
+      const [metadata, previous] = await Promise.all([peers.application(), peers.publication()]);
+      if (metadata.selection?.id !== applicationId || !metadata.publisherKeys.includes(signer.publicKey)) throw Error('Independent publisher grant required');
+      const signedOp = await p.signOperationCore({
+        version: 1,
+        chainId: p.hexToBytes(applicationId),
+        author: p.hexToBytes(signer.publicKey),
+        operationId,
+        authorTimestampMs: BigInt(Date.now()),
+        nonce: crypto.getRandomValues(new Uint8Array(16)),
+        visibility: 'public',
+        updates: [{ topic: '$publications', input: { action: 'publish', entry, files } }],
+      }, signer.privateKey);
+      const id = p.bytesToHex(p.operationIdDigest(signedOp.coreBytes));
+      const publication = {
+        id,
+        payload: {
+          applicationId,
+          author: signer.publicKey,
+          operationId,
+          revision: previous === null ? 0 : previous.publication.payload.revision + 1,
+          previous: previous?.publication.id ?? null,
+          entry,
+          files,
+        },
+        rawOp: p.encodeSignedOperation(signedOp),
+      };
       intents.set(operationId, publication);
       return publication;
     },
@@ -623,7 +647,7 @@ test('raw authenticated publication uploads bound fragments, files and aggregate
     if (!attached) { attached = true; transport.send({ type: 'attach', protocol: 'tendriller.native-owner.v1', token, hello: frame }); }
     else transport.send({ type: 'frame', value: frame });
   } });
-  const session = await browser.connectApplicationOwner(endpoint, { applicationId: f.authority.descriptor.payload.applicationId });
+  const session = await browser.connectApplicationOwner(endpoint, { applicationId: f.applicationId });
   t.after(async () => { try { await session.detach(); } finally { transport.close(); socket.destroy(); await supervisor.close(); } });
   const call = (method, args) => new Promise((resolve, reject) => {
     const id = ++sequence; waiting.set(id, { resolve, reject }); transport.send({ type: 'control', id, method, args });
@@ -631,7 +655,7 @@ test('raw authenticated publication uploads bound fragments, files and aggregate
   const hash = 'aa'.repeat(32), slice = 'A'.repeat(512 * 1024);
   await assert.rejects(call('publishStage', ['invalid', hash, '', false]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
   await assert.rejects(call('publishCommit', ['invalid', {}]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
-  for (let i = 0; i < 128; i++) await call('publishStage', ['files', i.toString(16).padStart(64, '0'), '', true]);
+  for (let i = 0; i < 256; i++) await call('publishStage', ['files', i.toString(16).padStart(64, '0'), '', true]);
   await assert.rejects(call('publishStage', ['files', hash, '', true]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
   await assert.rejects(call('publishCommit', ['files', {}]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
   await call('publishStage', ['incomplete', hash, slice, false]);
@@ -657,18 +681,18 @@ test('one workspace socket attaches to pages that share one managed signer but k
     return native.openNativeDevice({ path: join(root, applicationId.slice(0, 4), 'device.sqlite'), managedSigner: signer, ...(create ? { create: true } : {}) });
   };
   const pages = {};
-  for (const [page, applicationId] of [['aaaaaaaaaaaa', '74'.repeat(32)], ['bbbbbbbbbbbb', '75'.repeat(32)]]) {
-    const device = await openPage(applicationId, true);
+  for (const [page, dirName] of [['aaaaaaaaaaaa', 'p1'], ['bbbbbbbbbbbb', 'p2']]) {
+    const device = await openPage(dirName, true);
     assert.equal(device.identity.publicKey, signer.publicKey);
-    const { authority, key } = await authorityForDevices([device], { applicationId });
+    const { chainId, genesisBytes, casNodes, key } = await genesisForDevices([device]);
     await device.close();
-    pages[page] = { applicationId, authority, key };
+    pages[page] = { dirName, applicationId: chainId, genesisBytes, casNodes, key };
   }
   const token = createNativeAttachmentKey(), directory = join(root, 'owner');
   const supervisor = await createNativeWorkspaceSupervisor({ directory, workspaceId: 'workspace', bindings: [{ id: 'terminal', token }] });
   t.after(() => supervisor.close());
-  for (const [page, { applicationId, authority, key }] of Object.entries(pages)) {
-    const session = await p.createApplicationSession({ device: await openPage(applicationId), definition, authority, epochKeys: new Map([[0, key]]) });
+  for (const [page, { dirName, genesisBytes, casNodes, key }] of Object.entries(pages)) {
+    const session = await p.createApplicationSession({ device: await openPage(dirName), definition, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]) });
     const profile = await supervisor.addPage(page, worker.createApplicationOwner(session));
     assert.equal(profile.publicKey, signer.publicKey);
   }

@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { captureCollaborationReader } from '../paging.mjs';
 
-const revision={digest:'a'.repeat(64),view:'local',executionManifestDigest:'b'.repeat(64),policyDigest:'c'.repeat(64)};
+const revision={digest:'a'.repeat(64),view:'local',stateRoot:'b'.repeat(64),historyDigest:'c'.repeat(64),orderLength:0};
 function fixture(query) {
   let opened=0,released=0,closed=0,detached=0;
   const lifetime=new AbortController(),calls=[];
-  const view={revision:structuredClone(revision),async query(sql,...args){calls.push(sql);
-    if(query)return query(sql,...args);
+  const view={revision:structuredClone(revision),async query(topic,input){
+    const sql=typeof input==='object'&&input!==null?input.sql:topic;
+    const params=typeof input==='object'&&input!==null?input.params:[];
+    calls.push(sql);
+    if(query)return query(sql,params);
     return{rows:sql==='SELECT 1'?[[1]]:sql.startsWith('SELECT COUNT(*)')?[[0]]:[]};
   },release(){released++;}};
   return {view,calls,lifetime,session:{applicationId:'d'.repeat(64),signal:lifetime.signal,async readView(){opened++;return view;},close(){closed++;},detach(){detached++;}},

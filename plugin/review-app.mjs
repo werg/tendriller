@@ -8,9 +8,8 @@ import { existsSync } from 'node:fs';
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bytesToHex, eventExecutionManifest, executionManifestArtifacts } from '@chronolog/peer-session';
 import { adoptWorkspace, workspaceKey } from '@tendriller/tools/workspace';
-import { definition } from './review-domain.mjs';
+import { definition, imports, topics } from './review-domain.mjs';
 import { createReviewPage, registerAgentThroughMcp } from './review-setup.mjs';
 import * as local from './review-local.mjs';
 import { initializePageData } from './support/page-data.mjs';
@@ -32,13 +31,11 @@ if (mode === 'setup') {
     await writeFile(file, JSON.stringify(result), { mode: 0o600, flag: 'w' });
     try { await adoptWorkspace(root, { service: origin, credential: file }); } finally { await rm(file, { force: true }); }
   }
-  // The central helper retains the exact creation intent first and resumes only that application ID; a lost reply never mints a second page.
   await createReviewPage(await local.workspace(), name);
   const context = await local.pageContext();
-  // The agent program imports this page's module; it stays a thin entry over the copied consumer sources.
   await mkdir(context.page.source, { recursive: true });
   const entry = join(context.page.source, 'agent.mjs');
-  if (!existsSync(entry)) await writeFile(entry, "export { definition, openPage } from '../../review-agent.mjs';\n", { flag: 'wx' });
+  if (!existsSync(entry)) await writeFile(entry, "export { definition, imports, topics, openPage } from '../../review-agent.mjs';\n", { flag: 'wx' });
   console.log(JSON.stringify({ pageUrl: context.page.pageUrl, applicationId: context.page.applicationId }));
   process.exit(0);
 }
@@ -47,35 +44,42 @@ const context = await local.pageContext();
 const print = value => console.log(JSON.stringify(value));
 
 if (mode === 'init') {
-  const executionManifestDigest = bytesToHex((await executionManifestArtifacts(await eventExecutionManifest())).executionManifestDigest);
-  // Browser-first: preparation only; the owner's first browser creates the descriptor, membership and keys.
-  // The marker lets `tendril agent run` open the page and wait until a member admits it from its signed grant.
-  const prepared = await prepareHost(context, { definition, executionManifestDigest, executionProfile: 'events' });
-  print({ ...prepared, ...await initializePageData(context, { executionManifestDigest, browserFirst: true }) });
+  const prepared = await prepareHost(context, { definition, executionProfile: 'chronolog-v2' });
+  print({ ...prepared, ...await initializePageData(context, { imports, topics, browserFirst: true }) });
   process.exit(0);
 }
 if (mode === 'build') {
-  // The bundler is a build-time tool, not a runtime dependency of the signed page or the native participant.
   const { build } = await import(process.env.REVIEW_ESBUILD_MODULE ?? 'esbuild');
-  const configuration = await context.readPrivate('host-configuration.json'), output = new URL('./page/', import.meta.url);
+  const output = new URL('./page/', import.meta.url);
   await rm(output, { recursive: true, force: true });
   try {
     await mkdir(output);
-    await writeFile(new URL('configuration.json', output), JSON.stringify({ applicationId: context.page.applicationId, page_url: context.page.pageUrl,
-      serviceOrigin: context.service, pageId: context.page.id, executionManifestDigest: configuration.executionManifestDigest }, null, 2) + '\n');
+    await writeFile(new URL('configuration.json', output), JSON.stringify({
+      applicationId: context.page.applicationId,
+      page_url: context.page.pageUrl,
+      serviceOrigin: context.service,
+      pageId: context.page.id,
+    }, null, 2) + '\n');
     await copyFile(new URL('./review-index.html', import.meta.url), new URL('index.html', output));
-    await build({ absWorkingDir: root, entryPoints: { page: 'review-page.mjs', worker: 'review-worker.mjs' }, outdir: fileURLToPath(output),
-      bundle: true, splitting: true, format: 'esm', platform: 'browser', target: 'es2022', outExtension: { '.js': '.mjs' }, chunkNames: 'chunks/[name]-[hash]' });
-    // Hosted MCP runs declared queries and commands from this signed, self-contained domain bundle; Chronolog's DSL is provided by the host sandbox.
-    await build({ absWorkingDir: root, entryPoints: ['review-domain.mjs'], outfile: fileURLToPath(new URL('domain.js', output)),
-      bundle: true, format: 'esm', platform: 'neutral', target: 'es2022', external: ['@chronolog/peer-session'] });
+    await build({
+      absWorkingDir: root,
+      entryPoints: { page: 'review-page.mjs', worker: 'review-worker.mjs' },
+      outdir: fileURLToPath(output),
+      bundle: true,
+      splitting: true,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+      outExtension: { '.js': '.mjs' },
+      chunkNames: 'chunks/[name]-[hash]',
+      assetNames: 'assets/[name]-[hash]',
+      loader: { '.wasm': 'file' },
+    });
   } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
   console.log('Built the complete page/ graph. Publish it before the owner browser key exists.');
   process.exit(0);
 }
 if (mode === 'publish') {
-  // Signed with the workspace's shared signer under the page's explicit publication grant; no separate page publisher exists.
   print(await publishPage(context, { root: new URL('./page/', import.meta.url) }));
   process.exit(0);
 }
-

@@ -11,7 +11,7 @@ const profileId = browserProfileId(configuration.applicationId);
 
 let attachment, callUi;
 
-async function connect(takeover = false) {
+async function connect(takeover = 'auto') {
   try {
     attachment = await openBrowserOwner({
       workerUrl: new URL('./worker.mjs', import.meta.url),

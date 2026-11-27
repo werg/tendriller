@@ -14,7 +14,7 @@ function fixture(t) {
   };
   for (const name of ['scripts', 'server/src', 'runtime/src', 'contract', 'dist/sdk']) mkdirSync(join(root, name), { recursive: true });
   copyFileSync(resolve(import.meta.dirname, '../check-boundaries.mjs'), join(root, 'scripts/check-boundaries.mjs'));
-  write('server/src/authority.ts', "import {verifyAuthorityBundle} from '@chronolog/authority';\n");
+  write('server/src/authority.ts', "import {verifyFinalityV2} from '@chronolog/authority';\n");
   write('dist/engine/inputs.json', ['server/src/index.ts', 'node_modules/@chronolog/authority/index.mjs']);
   write('dist/engine/worker.mjs', 'export default {};\n');
   write('dist/sdk/client.mjs', 'export const client = true;\n');
@@ -30,8 +30,8 @@ test('portable authority is allowed in declared host controls and tools consume 
 
 for (const [name, file, source] of [
   ['host cannot import an application session', 'server/src/authority.ts', "import {createApplicationSession} from '@chronolog/peer-session';"],
-  ['unrelated host files cannot import authority', 'server/src/unrelated.ts', "import {verifyAuthorityBundle} from '@chronolog/authority';"],
-  ['browser runtime cannot import authority', 'runtime/src/kernel.ts', "import {createAuthorityProvider} from '@chronolog/authority';"],
+  ['unrelated host files cannot import authority', 'server/src/unrelated.ts', "import {verifyFinalityV2} from '@chronolog/authority';"],
+  ['browser runtime cannot import authority', 'runtime/src/kernel.ts', "import {verifyFinalityV2} from '@chronolog/authority';"],
   ['retired ordering packages are not authority', 'server/src/authority.ts', "import {select} from '@chronolog/peer-generation/control';"],
   ['host cannot import tools', 'server/src/authority.ts', "import {pack} from '../../tools/pack.mjs';"],
 ]) test(name, t => {
@@ -40,7 +40,7 @@ for (const [name, file, source] of [
 });
 
 for (const [name, path] of [
-  ['host cannot bundle an application engine', 'node_modules/@chronolog/materializer-doltlite/index.mjs'],
+  ['host cannot bundle native engine', 'node_modules/@chronolog/peer-session/native.mjs'],
   ['host cannot bundle a source checkout', '../chronolog-db/packages/peer-session/src/session.ts'],
   ['host cannot bundle retired controls', 'node_modules/@chronolog/peer-generation/control.mjs'],
 ]) test(name, t => {

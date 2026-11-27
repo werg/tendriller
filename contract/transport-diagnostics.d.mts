@@ -57,7 +57,7 @@ export interface TransportDiagnosticReport {
 }
 export interface TransportDiagnosticSource {
   readonly status?: unknown;
-  diagnostics?(): Promise<readonly unknown[]>;
+  diagnostics?(): readonly unknown[] | Promise<readonly unknown[]>;
   onStatus?(listener: (status: unknown) => void): () => void;
   /** Owner extensions. When the owner composes page admission, the runtime reads its
    * `admission.state` locally to name links; peer keys never leave this page. */

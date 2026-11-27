@@ -4,11 +4,25 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as p from '@chronolog/peer-session';
+import { ContentAddressedStore, MemoryBytesStore, TopicKernel, computeCasHash, decodeCasNode, hashCasNode, seedStandardModules } from '@chronolog/peer-session/kernel';
 import { openNativeDevice } from '@chronolog/peer-session/native';
-import { createAdmission, deviceWrapKey, openPageAuthority } from '../../session/admission.mjs';
+import { createAdmission, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
 import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
 import { pageConnectionCommands, pageConnectionQueries, rekeyAllPageConnections } from '../../docs/tutorial/shared/helpers/connections.mjs';
 import { generateConnectionKey } from '../../contract/connections.mjs';
+
+const CONNECTION_REDUCER = `
+export default {
+  reduce(state, tx) {
+    const map = state && typeof state === 'object' ? { ...state } : {};
+    const payload = tx.payload ?? {};
+    if (!payload.connectionKey) delete map[payload.connectionId];
+    else map[payload.connectionId] = { ...payload, updatedBy: tx.author };
+    return { ok: true, state: map, events: [{ topic: 'connections/page-key', payload }] };
+  },
+  query(state) { return state ?? {}; },
+};
+`;
 
 const definition = p.defineApplication({
   id: 'org-admission-test',
@@ -17,45 +31,91 @@ const definition = p.defineApplication({
   queries: pageConnectionQueries,
 });
 
-function createInMemoryHost({ applicationId, executionManifestDigest, hostIdentity, ownerAccount }) {
-  let bundle = null;
+const imports = { 'app/connections': CONNECTION_REDUCER };
+const topics = { 'connections/page-key': { module: 'app/connections' } };
+
+function createInMemoryHost({ hostIdentity, ownerAccount }) {
+  let chainId = '88'.repeat(32);
+  let genesis = null;
+  let genesisBytes = null;
   let groupPolicy = null;
+  let controlPerms = { members: [], admission: null };
+  const publicOps = new Map();
+  const publicCas = new Map();
   const pending = new Map();
-  const wraps = new Map();
   const groupAttestations = new Map();
   const departures = new Map();
 
   const encode = v => authorityRecord(p.encodeRecord(v));
   const decode = v => p.decodeRecord(authorityRecordBytes(v));
 
+  async function replay() {
+    if (!genesisBytes) return;
+    const cas = new ContentAddressedStore({ store: new MemoryBytesStore() });
+    await seedStandardModules(cas);
+    for (const [hash, bytes] of publicCas.entries()) {
+      if (hashCasNode(bytes) === hash) { decodeCasNode(bytes); await cas.putRaw(hash, bytes, 'public'); }
+      else await cas.put(bytes, [], 'public');
+    }
+    const kernel = new TopicKernel({ genesis: genesisBytes, cas, blindHostMode: true });
+    await kernel.materialize([...publicOps.values()].map(o => o.kernelInput));
+    controlPerms = kernel.topics.$permissions ?? { members: [], admission: null };
+  }
+
+  const isMember = pk => (controlPerms.members ?? []).some(m => m.publicKey === pk);
+
+  const metadata = () => ({
+    selection: { id: chainId },
+    configuration: null,
+    genesis,
+    hostAttestationKey: hostIdentity.publicKey,
+    admissionAccounts: [ownerAccount],
+  });
+
   const peersFor = accountId => ({
-    async application() {
+    async application() { return metadata(); },
+    async initialize({ genesis: rec, casNodes = [] }) {
+      genesisBytes = authorityRecordBytes(rec, 1024 * 1024);
+      genesis = rec;
+      chainId = p.bytesToHex(p.genesisChainId(genesisBytes));
+      for (const n of casNodes) {
+        const bytes = p.hexToBytes(n.bytes);
+        if (computeCasHash(bytes) !== n.hash) throw new Error('cas_hash_mismatch');
+        publicCas.set(n.hash, bytes);
+      }
+      await replay();
+      return metadata();
+    },
+    async syncControl(input = {}) {
+      for (const n of input.casNodes ?? []) {
+        const bytes = p.hexToBytes(n.bytes);
+        publicCas.set(n.hash, bytes);
+      }
+      for (const opRec of input.publicOps ?? []) {
+        const raw = authorityRecordBytes(opRec, 256 * 1024);
+        const signed = p.decodeSignedOperation(raw);
+        const { core, opId } = await p.verifySignedOperation(signed);
+        publicOps.set(p.bytesToHex(opId), { raw, kernelInput: { opId, core } });
+      }
+      await replay();
+      for (const pk of pending.keys()) if (isMember(pk)) pending.delete(pk);
       return {
-        selection: { id: applicationId },
-        configuration: { executionManifestDigest, executionProfile: 'events-v1', publisherKeys: [] },
-        authority: bundle ? encode(bundle) : null,
-        hostAttestationKey: hostIdentity.publicKey,
-        admissionAccounts: [ownerAccount],
+        ...metadata(),
+        publicOps: [...publicOps.values()].map(v => authorityRecord(v.raw)),
+        casNodes: [...publicCas.entries()].map(([hash, bytes]) => ({ hash, bytes: p.bytesToHex(bytes) })),
+        checkpoints: [],
       };
     },
-    async initialize(rec) {
-      bundle = decode(rec);
-      return this.application();
-    },
-    async membership(rec) {
-      bundle = decode(rec);
-      return this.application();
-    },
     async challenge(publicKey) {
-      return { applicationId, publicKey, challenge: '11'.repeat(32), expiresAt: Date.now() + 60_000 };
+      return { applicationId: chainId, publicKey, challenge: '11'.repeat(32), expiresAt: Date.now() + 60_000 };
     },
     async enroll(proofRec) {
       const proof = decode(proofRec);
-      const now = BigInt(Date.now());
-      const att = await p.signHostAttestation({
+      const now = Date.now();
+      const att = await p.signHostAttestationV2({
         subject: 'device',
         pageId: 'aaaaaaaaaaaa',
-        applicationId,
+        applicationId: chainId,
         accountId,
         email: `${accountId}@acme.test`,
         publicKey: proof.payload.publicKey,
@@ -63,41 +123,30 @@ function createInMemoryHost({ applicationId, executionManifestDigest, hostIdenti
         label: `Device (${accountId})`,
         inviteId: null,
         issuedAt: now,
-        expiresAt: now + 60_000n,
+        expiresAt: now + 60_000,
         nonce: p.bytesToHex(crypto.getRandomValues(new Uint8Array(32))),
       }, hostIdentity);
       pending.set(proof.payload.publicKey, att);
       if (accountId === 'alice_org') {
         const ga = await p.signRecord('tendriller-group-attestation-v1', {
           pageId: 'aaaaaaaaaaaa',
-          applicationId,
+          applicationId: chainId,
           accountId,
           publicKey: proof.payload.publicKey,
           wrapKey: proof.payload.wrapKey,
           group: 'github-team:acme/eng',
           ruleId: 'r_eng',
           role: 'writer',
-          issuedAt: Date.now(),
-          expiresAt: Date.now() + 60_000,
+          issuedAt: now,
+          expiresAt: now + 60_000,
         }, hostIdentity);
         groupAttestations.set(proof.payload.publicKey, ga);
       }
-      return { ...(await this.application()), attestation: encode(att) };
+      return { ...metadata(), attestation: encode(att) };
     },
     async admissions() {
-      const members = new Set(bundle?.memberships.at(-1)?.payload.members.map(m => m.publicKey) ?? []);
-      const pendingList = [...pending.values()].filter(a => !members.has(a.payload.publicKey)).map(encode);
-      const wrapped = Object.fromEntries([...wraps.entries()].map(([k, v]) => [k, v.maxEpoch]));
-      return { pending: pendingList, wrapped };
-    },
-    async wrap(rec) {
-      const w = decode(rec);
-      wraps.set(w.payload.recipient, { record: rec, maxEpoch: Math.max(...w.payload.epochs) });
-      return { stored: true, wrapped: {} };
-    },
-    async wraps(recipient) {
-      const entry = wraps.get(recipient);
-      return { wraps: entry ? [entry.record] : [] };
+      const pendingList = [...pending.values()].filter(a => !isMember(a.payload.publicKey)).map(encode);
+      return { pending: pendingList };
     },
     async groups() {
       return {
@@ -121,7 +170,7 @@ function createInMemoryHost({ applicationId, executionManifestDigest, hostIdenti
     async emitDeparture(accountId, publicKey, group = 'github-team:acme/eng') {
       const dep = await p.signRecord('tendriller-org-departure-v1', {
         pageId: 'aaaaaaaaaaaa',
-        applicationId,
+        applicationId: chainId,
         accountId,
         publicKey,
         group,
@@ -139,24 +188,36 @@ test('createAdmission seamlessly admits org members via admin-signed group polic
   const dir = await mkdtemp(join(tmpdir(), 'org-admission-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
-  const applicationId = '88'.repeat(32);
-  const executionManifestDigest = p.bytesToHex((await p.executionManifestArtifacts(await p.eventExecutionManifest())).executionManifestDigest);
   const hostIdentity = await p.createSigningIdentity();
-  const host = createInMemoryHost({ applicationId, executionManifestDigest, hostIdentity, ownerAccount: 'owner_acc' });
+  const host = createInMemoryHost({ hostIdentity, ownerAccount: 'owner_acc' });
 
   // 1. Owner creates genesis page authority & signs group policy for github-team:acme/eng
   const ownerDev = await openNativeDevice({ path: join(dir, 'owner.sqlite'), create: true });
   const ownerWrap = await deviceWrapKey(ownerDev.store);
   const ownerPeers = host.peersFor('owner_acc');
-  const { authority: ownerAuth } = await openPageAuthority({
-    store: ownerDev.store, identity: ownerDev.identity, wrapKey: ownerWrap,
-    peers: ownerPeers, applicationId, executionManifestDigest, create: true,
+  const ownerGenesis = await openPageGenesis({
+    store: ownerDev.store,
+    identity: ownerDev.identity,
+    wrapKey: ownerWrap,
+    peers: ownerPeers,
+    imports,
+    topics,
+    create: true,
   });
-  const ownerSession = await p.createApplicationSession({ device: ownerDev, definition, authority: ownerAuth });
+  const ownerSession = await p.createApplicationSession({
+    device: ownerDev,
+    definition,
+    genesis: ownerGenesis.genesisBytes,
+    casNodes: ownerGenesis.casNodes,
+    publicOps: ownerGenesis.publicOps,
+    epochKeys: new Map([[0, ownerGenesis.epoch0Key]]),
+  });
   const ownerEvents = [];
   const rotatedEpochs = [];
   const ownerAdm = createAdmission(ownerSession, {
-    peers: ownerPeers, wrapKey: ownerWrap, store: ownerDev.store,
+    peers: ownerPeers,
+    wrapKey: ownerWrap,
+    store: ownerDev.store,
     onEvent: ev => ownerEvents.push(ev),
     onEpochRotated: info => rotatedEpochs.push(info),
   });
@@ -170,18 +231,27 @@ test('createAdmission seamlessly admits org members via admin-signed group polic
   const aliceDev = await openNativeDevice({ path: join(dir, 'alice.sqlite'), create: true });
   const aliceWrap = await deviceWrapKey(aliceDev.store);
   const alicePeers = host.peersFor('alice_org');
-  const { authority: aliceAuth } = await openPageAuthority({
-    store: aliceDev.store, identity: aliceDev.identity, wrapKey: aliceWrap,
-    peers: alicePeers, applicationId, executionManifestDigest, create: false,
+  const aliceGenesis = await openPageGenesis({
+    store: aliceDev.store,
+    identity: aliceDev.identity,
+    wrapKey: aliceWrap,
+    peers: alicePeers,
+    create: false,
   });
-  const aliceSession = await p.createApplicationSession({ device: aliceDev, definition, authority: aliceAuth });
+  const aliceSession = await p.createApplicationSession({
+    device: aliceDev,
+    definition,
+    genesis: aliceGenesis.genesisBytes,
+    casNodes: aliceGenesis.casNodes,
+    publicOps: aliceGenesis.publicOps,
+  });
   const aliceAdm = createAdmission(aliceSession, { peers: alicePeers, wrapKey: aliceWrap, store: aliceDev.store });
   t.after(async () => { aliceAdm.close(); await aliceSession.close(); });
 
   await aliceAdm.refresh();
   assert.equal(aliceAdm.state.phase, 'waiting-admission');
 
-  // Owner refreshes -> automatically verifies signed policy + companion host group attestation -> admits Alice & wraps epoch 0!
+  // Owner refreshes -> automatically verifies signed policy + companion host group attestation -> admits Alice & seals epoch 0 lockbox!
   await ownerAdm.refresh();
   assert.ok(ownerEvents.some(e => e.kind === 'org-admitted' && e.publicKey === aliceDev.identity.publicKey));
   await aliceAdm.refresh();

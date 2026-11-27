@@ -106,7 +106,7 @@ export function createFirstAppPublicationGate({ timeoutMs = 40_000, decodePublic
       try {
         message = await request.clone().json();
         if (message?.action !== 'publish') return;
-        publication = await decodePublication(message.publication);
+        publication = await decodePublication(message.op);
       } catch { return; } // Malformed/unmatched bytes still reach the packed host unchanged.
       if (current !== gate || gate.phase !== 'armed' ||
         publication?.author !== gate.author || publication.previous !== gate.previous ||

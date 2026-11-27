@@ -6,11 +6,12 @@ import { route } from '../src/router';
 import { CORE_RELEASE } from '../../contract/index.mjs';
 import { base64url, challengeFor, oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
-import { bytesToHex, eventExecutionManifest, executionManifestArtifacts, exportSigningIdentity } from '@chronolog/peer-session';
-import { createSigningIdentity, signAppDescriptor, signMembership, epochKeyCommitment, encodeRecord, recordDigest } from '@chronolog/authority';
+import {
+  bytesToHex, createChainGenesis, createSigningIdentity, encodeGenesisBlock,
+  exportSigningIdentity, genesisChainId,
+} from '@chronolog/peer-session';
 import { authorityRecord } from '../../contract/authority.mjs';
 import { sealHostedKeys } from '../src/mcp-crypto';
-import { doltliteExecutionManifestDigest } from '../src/mcp-sql';
 import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
 import { create, inDO, ownerHeaders } from './helpers';
 
@@ -107,47 +108,47 @@ async function mcpCall(settings: Env, token: string, name: string, args: Record<
   return { response, body, result: body?.result, value: body?.result?.structuredContent };
 }
 
-async function seedPageAuthorityAndDomain(
+async function seedPageGenesisV2(
   page: { id: string; application: { id: string } },
   writers: readonly string[],
-  epochKey: Uint8Array,
-  manifestDigest: string,
-  executionProfile: string,
-  domainSource: string,
+  imports: Record<string, string>,
+  topics: Record<string, { module: string; initialState?: any }>,
 ) {
-  const signer = await createSigningIdentity();
-  const descriptor = await signAppDescriptor({
-    applicationId: page.application.id,
-    rootPrincipal: writers[0],
-    authorityPublicKey: signer.publicKey,
-    executionManifestDigest: manifestDigest,
-    finalityPolicy: { kind: 'none' },
-  }, signer);
-  const membership = await signMembership({
-    applicationId: page.application.id,
-    revision: 0,
-    previous: null,
-    authorTimeAfterMs: -1n,
-    epoch: 0,
-    epochKeyDigest: await epochKeyCommitment(page.application.id, 0, epochKey),
-    members: writers.map(publicKey => ({ publicKey, wrapKey: null, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })),
-    admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [],
-  }, signer);
-  const bundle = { descriptor, memberships: [membership] };
-  const configuration = { executionManifestDigest: manifestDigest, executionProfile, publisherKeys: [signer.publicKey] };
-  const configurationDigest = await recordDigest(configuration);
-  const domainBytes = new TextEncoder().encode(domainSource);
-  const domainHash = await sha256Hex(domainSource);
-  await env.FILES.put(`t/${page.id}/files/${domainHash}`, domainBytes, { httpMetadata: { contentType: 'text/javascript; charset=utf-8' } });
-  await inDO(page.id, t => {
-    t.db.set('application_configuration', configuration);
-    t.db.set('application_configuration_digest', configurationDigest);
-    t.db.set('application_authority', authorityRecord(encodeRecord(bundle)));
-    t.db.run("INSERT OR REPLACE INTO versions(version, created_at, runtime_id, runtime_version, runtime_features, entry, message) VALUES(1, ?, 'test-rt', '1', '[]', 'index.html', 'test')", t.now());
-    t.db.run("INSERT OR REPLACE INTO version_files(version, path, hash, type, size) VALUES(1, 'domain.js', ?, 'text/javascript; charset=utf-8', ?)", domainHash, domainBytes.byteLength);
-    t.db.set('current', 1);
+  const hostKey = JSON.parse(env.HOST_ATTESTATION_KEY!).publicKey as string;
+  const created = await createChainGenesis({
+    creator: {
+      publicKey: writers[0],
+      wrapKey: '11'.repeat(32),
+      reader: true,
+      writer: true,
+      administrator: true,
+      publisher: true,
+      finalizer: false,
+    },
+    privateChain: true,
+    hostPublicKey: hostKey,
+    imports,
+    topics,
   });
-  return { bundle, signer };
+  const genesis = structuredClone(created.genesis);
+  const perms = genesis.initialTopics.$permissions as any;
+  for (const pk of writers.slice(1)) {
+    perms.members.push({ publicKey: pk, wrapKey: '22'.repeat(32), reader: true, writer: true, administrator: false, publisher: false, finalizer: false });
+  }
+  const genesisBytes = encodeGenesisBlock(genesis);
+  const chainId = bytesToHex(genesisChainId(genesisBytes));
+  await inDO(page.id, t => {
+    t.db.set('application', { id: chainId });
+    t.db.set('application_pinned', true);
+    t.db.set('v2_genesis', authorityRecord(genesisBytes));
+    for (const node of created.casNodes) {
+      const copy = new Uint8Array(node.bytes.byteLength);
+      copy.set(node.bytes);
+      t.db.run('INSERT OR IGNORE INTO v2_public_cas(hash, bytes) VALUES(?, ?)', node.hash, copy.buffer);
+    }
+  });
+  page.application.id = chainId;
+  return { chainId, genesisBytes, epoch0Key: created.epoch0Key! };
 }
 
 it('first-party OAuth stays disabled until explicitly configured and remains on the service origin', async () => {
@@ -499,7 +500,7 @@ it('register_agent over /mcp registers a handle + bio and rotates on repeat hand
   expect(invalid.result.isError).toBe(true);
 });
 
-it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys, zero plaintext keys at rest, multi-agent messaging, HTTP gateway, and revocation', async () => {
+it('executes hosted MCP v2 ES Module reducer in QuickJS-WASM with OAuth-wrapped keys, zero domain.js, zero plaintext at rest, multi-agent messaging, HTTP gateway, and revocation', async () => {
   const f = await hostFixture();
   const issued = await tokens(f);
   const restore = await inDO(f.page.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
@@ -518,35 +519,60 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
     expect(grantInfo.wrap_public_key).toMatch(/^[a-f0-9]{64}$/u);
 
     const hostedIdentity = await exportSigningIdentity(await createSigningIdentity());
-    const epochKey = crypto.getRandomValues(new Uint8Array(32));
-    const eventsDomain = `
+    const notesReducer = `
       export default {
-        id: 'notes-hosted-test',
-        version: '1',
-        commands: {
-          putNote: {
-            description: 'Save a note',
-            input: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] },
-            prepare: ({ id, text }) => ({ steps: [{ kind: 'emit', topic: 'note', payload: { id, text } }] }),
-          },
+        reduce(state, tx) {
+          const input = tx.payload;
+          const notes = Array.isArray(state?.notes) ? [...state.notes] : [];
+          if (input?.action === 'putNote') {
+            if (typeof input.id !== 'string' || typeof input.text !== 'string') return { ok: false, code: 'invalid_note' };
+            const next = notes.filter(n => n.id !== input.id).concat([{ id: input.id, text: input.text }]);
+            return { ok: true, state: { notes: next }, events: [{ topic: 'note', payload: { id: input.id, text: input.text } }] };
+          }
+          return { ok: false, code: 'unknown_action' };
         },
-        queries: {
-          notes: {
-            description: 'List saved notes',
-            input: { type: 'null' },
-            read: (view) => view.readEvents({ topics: ['note'] }).events.map(e => e.payload),
-          },
+        query(state, input) {
+          if (!input || input.query === 'notes') return Array.isArray(state?.notes) ? state.notes : [];
+          throw new Error('UNKNOWN_QUERY');
+        },
+        describe() {
+          return {
+            commands: [{
+              name: 'putNote',
+              description: 'Save a note',
+              input: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] },
+            }],
+            queries: [{
+              name: 'notes',
+              description: 'List saved notes',
+              input: { type: 'null' },
+            }],
+          };
         },
       };
     `;
-    const eventManifest = await executionManifestArtifacts(await eventExecutionManifest());
-    await seedPageAuthorityAndDomain(f.page, [hostedIdentity.publicKey], epochKey, bytesToHex(eventManifest.executionManifestDigest), 'event-v1', eventsDomain);
+    const agentMsgReducer = `
+      export default {
+        reduce(state, tx) {
+          return { ok: true, state: state ?? {}, events: [{ topic: 'agent/message', payload: tx.payload }] };
+        },
+      };
+    `;
+    const { epoch0Key } = await seedPageGenesisV2(
+      f.page,
+      [hostedIdentity.publicKey],
+      { 'app/notes': notesReducer, 'app/agent-msg': agentMsgReducer },
+      {
+        notes: { module: 'app/notes', initialState: { notes: [] } },
+        'agent/message': { module: 'app/agent-msg', initialState: {} },
+      },
+    );
 
     const aad = `${f.page.id}:${f.page.application.id}:${issued.grantId}`;
     const wrapped = await sealHostedKeys(grantInfo.wrap_public_key, {
       signingSeedHex: hostedIdentity.privateKey,
       signingPublicKey: hostedIdentity.publicKey,
-      epochKeys: { '0': bytesToHex(epochKey) },
+      epochKeys: { '0': bytesToHex(epoch0Key) },
     }, aad);
 
     const connectResp = await request(pageBase + '_tendril/mcp/connect', f.settings, {
@@ -578,12 +604,11 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
     expect(promoteResp.status).toBe(200);
     expect((await promoteResp.json() as { primary_agent_id: string }).primary_agent_id).toBe(`mcp:${issued.grantId}`);
 
-    // list_tendrils + describe_application + agents_list
+    // list_tendrils + describe_application (directly from in-chain $reducers — no domain.js!) + agents_list
     const listed = await mcpCall(f.settings, issued.access_token, 'list_tendrils');
     expect(listed.value.applications).toContainEqual(expect.objectContaining({ applicationId: f.page.application.id, handle: 'chatgpt', label: 'Hosted Notes' }));
 
     const described = await mcpCall(f.settings, issued.access_token, 'describe_application', { applicationId: f.page.application.id });
-    expect(described.value.hasDomainBundle).toBe(true);
     expect(described.value.hostedParticipant).toMatchObject({ handle: 'chatgpt', isPrimary: true, keyCustody: 'oauth-token-wrapped' });
     expect(described.value.commands.map((c: any) => c.name)).toContain('putNote');
     expect(described.value.queries.map((q: any) => q.name)).toContain('notes');
@@ -601,7 +626,7 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
     expect(write.value, JSON.stringify(write.result)).toMatchObject({ materialized: { outcome: 'accepted' } });
     expect(write.result.isError).not.toBe(true);
 
-    // An exact retry reuses the original signed intent; a changed program under that operationId is refused.
+    // An exact retry reuses the original signed intent; a changed input under that operationId is refused.
     const retry = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
       applicationId: f.page.application.id, command: 'putNote', input: { id: 'n1', text: 'Zero plaintext keys at rest!' }, operationId: 'op-note-1',
     });
@@ -611,7 +636,8 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
       applicationId: f.page.application.id, command: 'putNote', input: { id: 'n1', text: 'changed' }, operationId: 'op-note-1',
     });
     expect(reused.result.isError).toBe(true);
-    // Input is validated against the declared schema before any program is prepared or signed.
+
+    // Input is validated against describe() schema before signing.
     const malformed = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
       applicationId: f.page.application.id, command: 'putNote', input: { id: 'n2' }, operationId: 'op-note-malformed',
     });
@@ -662,7 +688,7 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
       body: JSON.stringify({ envelopes: [], knownIds: [] }),
     });
     expect(syncResp.status).toBe(200);
-    const synced = await syncResp.json() as { envelopes: Array<{ proposalId: string; envelopeBase64: string }> };
+    const synced = await syncResp.json() as { envelopes: Array<{ digest: string; envelopeBase64: string }> };
     expect(synced.envelopes.length).toBeGreaterThanOrEqual(2);
 
     // Zero plaintext signing seed or epoch key stored anywhere in DO SQLite
@@ -675,7 +701,7 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
       ].join('\n');
       return {
         hasSeed: text.includes(hostedIdentity.privateKey),
-        hasEpoch: text.includes(bytesToHex(epochKey)),
+        hasEpoch: text.includes(bytesToHex(epoch0Key)),
         hasPlaintext: text.includes('Zero plaintext keys at rest!'),
         keys: storeRows.map(r => r.k),
       };
@@ -717,7 +743,7 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
   }
 });
 
-it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory DoltLite WASM (MEMFS)', async () => {
+it('executes hosted MCP chronolog:sqlite reducer with static sqlite-cas.wasm, sealed private CAS, live mcp-sync push, and DO eviction recovery', async () => {
   const f = await hostFixture();
   const issued = await tokens(f);
   const restore = await inDO(f.page.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
@@ -734,51 +760,52 @@ it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory D
     const grantInfo = grantsData.grants.find(g => g.id === issued.grantId)!;
 
     const hostedIdentity = await exportSigningIdentity(await createSigningIdentity());
-    const epochKey = crypto.getRandomValues(new Uint8Array(32));
-    const sqlDomain = `
+    const sqlReducer = `
+      import { openDb } from 'chronolog:sqlite';
       export default {
-        id: 'inventory-hosted-sql-test',
-        version: '1',
-        commands: {
-          init: {
-            description: 'Create items table',
-            input: { type: 'null' },
-            prepare: () => ({
-              steps: [
-                { kind: 'sql', sql: 'CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, qty INTEGER NOT NULL)', params: [] },
-              ],
-            }),
-          },
-          addItem: {
-            description: 'Insert an item',
-            input: { type: 'object', properties: { id: { type: 'string' }, qty: { type: 'integer' } }, required: ['id', 'qty'] },
-            prepare: ({ id, qty }) => ({
-              steps: [
-                { kind: 'sql', sql: 'INSERT INTO items (id, qty) VALUES (?, ?)', params: [id, qty] },
-              ],
-            }),
-          },
+        reduce(state, tx) {
+          const input = tx.payload;
+          const db = openDb(state?.dbRoot ?? null);
+          if (input?.action === 'init') {
+            db.exec('CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, qty INTEGER NOT NULL)');
+          } else if (input?.action === 'addItem') {
+            db.exec('INSERT OR REPLACE INTO items (id, qty) VALUES (?, ?)', [input.id, input.qty]);
+          } else {
+            return { ok: false, code: 'unknown_action' };
+          }
+          return { ok: true, state: { dbRoot: db.commit() } };
         },
-        queries: {
-          items: {
-            description: 'List all items',
-            input: { type: 'null' },
-            read: (view) => {
-              const res = view.query('SELECT id, qty FROM items ORDER BY id');
-              return res.rows.map(([id, qty]) => ({ id, qty }));
-            },
-          },
+        query(state) {
+          if (!state?.dbRoot) return [];
+          const db = openDb(state.dbRoot);
+          const res = db.query('SELECT id, qty FROM items ORDER BY id');
+          return res.rows.map(([id, qty]) => ({ id, qty }));
+        },
+        describe() {
+          return {
+            commands: [
+              { name: 'init', description: 'Create items table', input: { type: 'null' } },
+              { name: 'addItem', description: 'Insert an item', input: { type: 'object', properties: { id: { type: 'string' }, qty: { type: 'integer' } }, required: ['id', 'qty'] } },
+            ],
+            queries: [
+              { name: 'items', description: 'List all items', input: { type: 'null' } },
+            ],
+          };
         },
       };
     `;
-    const sqlDigest = await doltliteExecutionManifestDigest();
-    await seedPageAuthorityAndDomain(f.page, [hostedIdentity.publicKey], epochKey, sqlDigest, 'sql-doltlite-v1', sqlDomain);
+    const { epoch0Key } = await seedPageGenesisV2(
+      f.page,
+      [hostedIdentity.publicKey],
+      { 'app/inventory': sqlReducer },
+      { inventory: { module: 'app/inventory', initialState: { dbRoot: null } } },
+    );
 
     const aad = `${f.page.id}:${f.page.application.id}:${issued.grantId}`;
     const wrapped = await sealHostedKeys(grantInfo.wrap_public_key, {
       signingSeedHex: hostedIdentity.privateKey,
       signingPublicKey: hostedIdentity.publicKey,
-      epochKeys: { '0': bytesToHex(epochKey) },
+      epochKeys: { '0': bytesToHex(epoch0Key) },
     }, aad);
 
     const connectResp = await request(pageBase + '_tendril/mcp/connect', f.settings, {
@@ -811,7 +838,7 @@ it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory D
       input: { id: 'bolts', qty: 42 },
       operationId: 'op-sql-bolts',
     });
-    expect(add1.result.isError).not.toBe(true);
+    expect(add1.result.isError, JSON.stringify(add1.result)).not.toBe(true);
     expect(add1.value.materialized.outcome).toBe('accepted');
 
     const queried = await mcpCall(f.settings, issued.access_token, 'query_application', {
@@ -822,8 +849,7 @@ it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory D
     expect(queried.result.isError).not.toBe(true);
     expect(queried.value.value).toEqual([{ id: 'bolts', qty: 42 }]);
 
-    // Verify encrypted SQL checkpointing (threshold = 2) + live `mcp-sync` push notice + DO eviction recovery
-    await inDO(f.page.id, t => { t.db.set('mcp_sql_checkpoint_threshold', 2); });
+    // Verify live `mcp-sync` push notice + sealed private CAS chunks (zero plaintext SQLite header or row values!)
     const watchResp = await request(pageBase + '_tendril/publication-ready', f.settings, {
       headers: { ...pageOwner, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PUBLICATION_WATCH_PROTOCOL },
     });
@@ -845,35 +871,32 @@ it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory D
     await expect.poll(() => watchMsgs.some(m => m.type === 'mcp-sync' && m.version === 1)).toBe(true);
     watchSock.close();
 
-    // Encrypted SQL checkpoint exists in mcp_store with ZERO plaintext SQLite header or row values
-    const ckptCheck = await inDO(f.page.id, t => {
-      const row = t.db.one<{ v: ArrayBuffer }>('SELECT v FROM mcp_store WHERE k=?', `sql-checkpoint/${f.page.application.id}`);
-      if (!row) return { exists: false, hasPlaintext: false, hasSqliteHeader: false };
-      const text = new TextDecoder().decode(new Uint8Array(row.v));
+    const privCasCheck = await inDO(f.page.id, t => {
+      const rows = t.db.all<{ k: string; v: ArrayBuffer }>("SELECT k, v FROM mcp_store WHERE k LIKE 'priv-cas/%'");
+      const text = rows.map(r => new TextDecoder().decode(new Uint8Array(r.v))).join('\n');
       return {
-        exists: true,
-        bytes: row.v.byteLength,
+        count: rows.length,
         hasPlaintext: text.includes('bolts') || text.includes('nuts'),
         hasSqliteHeader: text.includes('SQLite format 3'),
       };
     });
-    expect(ckptCheck.exists).toBe(true);
-    expect(ckptCheck.hasPlaintext).toBe(false);
-    expect(ckptCheck.hasSqliteHeader).toBe(false);
+    expect(privCasCheck.count).toBeGreaterThan(0);
+    expect(privCasCheck.hasPlaintext).toBe(false);
+    expect(privCasCheck.hasSqliteHeader).toBe(false);
 
-    // Evict DO and verify hydrated checkpoint + tail query returns all items accurately
+    // Evict DO and verify sealed CAS + encrypted envelopes re-hydrate accurately
     await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(f.page.id)));
     await inDO(f.page.id, t => {
       t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
       t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
     });
-    const afterCkptEvict = await mcpCall(f.settings, issued.access_token, 'query_application', {
+    const afterEvict = await mcpCall(f.settings, issued.access_token, 'query_application', {
       applicationId: f.page.application.id,
       query: 'items',
       input: null,
     });
-    expect(afterCkptEvict.result.isError).not.toBe(true);
-    expect(afterCkptEvict.value.value).toEqual([{ id: 'bolts', qty: 42 }, { id: 'nuts', qty: 10 }]);
+    expect(afterEvict.result.isError).not.toBe(true);
+    expect(afterEvict.value.value).toEqual([{ id: 'bolts', qty: 42 }, { id: 'nuts', qty: 10 }]);
   } finally {
     await inDO(f.page.id, t => { Object.assign(t.env, restore); });
   }

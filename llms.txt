@@ -1,6 +1,6 @@
 # Tendriller
 
-> Build a session-connected web application from a user's request. Tendriller hosts authenticated UI, signed controls, and account-linked `/mcp`; one owned Chronolog session supplies durable commands, queries, events, live signals, and peer replication.
+> Build a session-connected web application from a user's request. Tendriller hosts authenticated UI, a blind Chronolog v2 public-control participant, and account-linked `/mcp`; one owned Chronolog v2 session supplies QuickJS-NG Import-Map ES Module reducers, built-in deterministic SQLite-CAS (`chronolog:sqlite`) + write RLS (`chronolog/rls`), live signals, and zero-native-build peer replication.
 
 ## Start here, in order
 
@@ -14,7 +14,7 @@
 - [Same-conversation delivery](https://tendriller.dev/docs/CONVERSATION_DELIVERY.md): inspect the actual host mechanism, inject requests into an active Codex turn, retain per-page handled cursors and qualify idle wake across turn completion.
 - [Restart consumers](https://tendriller.dev/docs/AGENT_RESTART.md): what survives a republish, and what to re-arm after an agent program restart.
 - [Reviewed media and inference](https://tendriller.dev/docs/AI_INPUT.md): camera/file or voice capture, credential-owning native inference, editable review, and explicit command commit.
-- [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): events vs. guarded SQL transactions and required engine artifacts.
+- [State models: JSON reducers & SQLite-CAS + RLS](https://tendriller.dev/docs/STATE_MODELS.md): writing QuickJS-NG ES Module reducers, built-in `chronolog:sqlite`, Postgres-style `chronolog/rls`, and user-owned dynamic tables (zero native builds).
 - [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview vs. explicitly composed real-session preview.
 - [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): persistent device identity, browser-first root initialization, recipient-bound key provisioning for additional devices, and safe resume.
 - [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): shared profile owners, addressed work, exclusive claims, independent drafts, and recovery.
