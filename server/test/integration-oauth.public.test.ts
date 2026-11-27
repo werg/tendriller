@@ -897,7 +897,229 @@ it('executes hosted MCP chronolog:sqlite reducer with static sqlite-cas.wasm, se
     });
     expect(afterEvict.result.isError).not.toBe(true);
     expect(afterEvict.value.value).toEqual([{ id: 'bolts', qty: 42 }, { id: 'nuts', qty: 10 }]);
+
+    // Verify describe_application returns live topics & permissionsSummary, and query_multiple_applications fans out safely
+    const desc = await mcpCall(f.settings, issued.access_token, 'describe_application', {
+      applicationId: f.page.application.id,
+    });
+    expect(desc.result.isError).not.toBe(true);
+    expect(desc.value.topics).toHaveProperty('inventory');
+    expect(desc.value.permissionsSummary).toMatchObject({ openReaders: false, openWriters: false });
+    expect(desc.value.builtinTools).toContain('query_sql');
+    expect(desc.value.builtinTools).toContain('query_multiple_applications');
+
+    const federated = await mcpCall(f.settings, issued.access_token, 'query_multiple_applications', {
+      targets: [
+        { applicationId: f.page.application.id, query: 'items', input: null },
+        { applicationId: 'f'.repeat(64), query: 'items', input: null },
+      ],
+    });
+    expect(federated.result.isError).not.toBe(true);
+    expect(federated.value.succeeded).toBe(1);
+    expect(federated.value.failed).toBe(1);
+    expect(federated.value.results[0].ok).toBe(true);
+    expect(federated.value.results[0].value.value).toEqual([{ id: 'bolts', qty: 42 }, { id: 'nuts', qty: 10 }]);
+    expect(federated.value.results[1].ok).toBe(false);
+    expect(federated.value.results[1].error.code).toBe('application_not_connected');
   } finally {
     await inDO(f.page.id, t => { Object.assign(t.env, restore); });
   }
+});
+
+it('hosted MCP exposes live chronolog/sql schema introspection in describe_application and read-only query_sql', async () => {
+  const f = await hostFixture();
+  const issued = await tokens(f);
+  const restore = await inDO(f.page.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
+  await inDO(f.page.id, t => {
+    t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+    t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
+  });
+  try {
+    const pageBase = f.page.page_url;
+    const pageOwner = ownerHeaders(pageBase);
+    const grantsRes = await request(pageBase + '_tendril/mcp/grants', f.settings, { headers: pageOwner });
+    const grantsBody = await grantsRes.json() as { grants: Array<{ id: string; wrap_public_key: string }> };
+    const grantInfo = grantsBody.grants.find(g => g.id === issued.grantId)!;
+
+    const hostedIdentity = await exportSigningIdentity(await createSigningIdentity());
+    const { epoch0Key } = await seedPageGenesisV2(
+      f.page,
+      [hostedIdentity.publicKey],
+      {},
+      { db: { module: 'chronolog/sql' } },
+    );
+    const aad = `${f.page.id}:${f.page.application.id}:${issued.grantId}`;
+    const wrapped = await sealHostedKeys(grantInfo.wrap_public_key, {
+      signingSeedHex: hostedIdentity.privateKey,
+      signingPublicKey: hostedIdentity.publicKey,
+      epochKeys: { '0': bytesToHex(epoch0Key) },
+    }, aad);
+
+    const connectResp = await request(pageBase + '_tendril/mcp/connect', f.settings, {
+      method: 'POST',
+      headers: { ...pageOwner, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grantId: issued.grantId,
+        handle: 'sqlbot',
+        bio: 'Hosted chronolog/sql assistant',
+        publicKey: hostedIdentity.publicKey,
+        wrappedKeysBase64: base64url(wrapped),
+        label: 'Hosted Chronolog SQL',
+      }),
+    });
+    expect(connectResp.status).toBe(201);
+    await connectResp.json();
+
+    // Seed table + rows using chronolog/sql `exec` (admin/writer migrate via call_application_command -> db:exec/migrate)
+    const createTable = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id,
+      command: 'db:exec',
+      input: {
+        statements: [
+          'CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT NOT NULL)',
+          { sql: 'INSERT INTO notes(id, body) VALUES (?, ?)', params: ['n1', 'Hello from chronolog-db'] },
+        ],
+      },
+      operationId: 'op-sql-create-1',
+    });
+    expect(createTable.result.isError, JSON.stringify(createTable.result)).not.toBe(true);
+    expect(createTable.value.materialized.outcome).toBe('accepted');
+
+    // describe_application automatically introspects chronolog/sql schema!
+    const desc = await mcpCall(f.settings, issued.access_token, 'describe_application', {
+      applicationId: f.page.application.id,
+    });
+    expect(desc.result.isError).not.toBe(true);
+    expect(desc.value.sqlSchemas?.db?.tables?.map((t: any) => t.name)).toContain('notes');
+
+    // query_sql executes read-only SELECT returning objects
+    const sel = await mcpCall(f.settings, issued.access_token, 'query_sql', {
+      applicationId: f.page.application.id,
+      sql: 'SELECT id, body FROM notes WHERE id = ?',
+      params: ['n1'],
+    });
+    expect(sel.result.isError, JSON.stringify(sel.result)).not.toBe(true);
+    expect(sel.value.topic).toBe('db');
+    expect(sel.value.value.rows).toEqual([{ id: 'n1', body: 'Hello from chronolog-db' }]);
+
+    // query_sql rejects mutating SQL deterministically under read-only authorizer
+    const dropAttempt = await mcpCall(f.settings, issued.access_token, 'query_sql', {
+      applicationId: f.page.application.id,
+      sql: 'DROP TABLE notes',
+    });
+    expect(dropAttempt.result.isError).toBe(true);
+    expect(dropAttempt.value.code).toBe('sql_read_only');
+
+    // HTTPS gateway POST /v1/apps/:appId/sql also works
+    const httpSql = await request(`/v1/apps/${f.page.application.id}/sql`, f.settings, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${issued.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: 'SELECT COUNT(*) AS n FROM notes' }),
+    });
+    expect(httpSql.status).toBe(200);
+    const httpBody = await httpSql.json() as { value: { rows: Array<{ n: number }> } };
+    expect(httpBody.value.rows).toEqual([{ n: 1 }]);
+  } finally {
+    await inDO(f.page.id, t => { Object.assign(t.env, restore); });
+  }
+});
+
+it('supports Google Antigravity CIMD OAuth and exposes the Tendriller Inbox MCP App with plain-text fallback', async () => {
+  const agyClientId = 'https://antigravity.google/oauth/client-metadata.json';
+  const agyRedirect = 'https://antigravity.google/oauth-callback';
+  const settings = configured({
+    OAUTH_CONFIG_JSON: JSON.stringify({
+      resource: ISSUER + '/mcp',
+      clients: [
+        { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['tendrils:list', 'applications:read'] },
+        {
+          id: agyClientId,
+          name: 'Google Antigravity',
+          metadataDocument: true,
+          redirectUris: [agyRedirect],
+          scopes: ['tendrils:list', 'tendrils:create', 'applications:read', 'applications:write', 'events:subscribe'],
+          tokenEndpointAuthMethod: 'none',
+          allowRefresh: true,
+        },
+      ],
+    }),
+  });
+
+  // 1. Authorization server metadata advertises CIMD support.
+  const metaRes = await request('/.well-known/oauth-authorization-server', settings);
+  expect(metaRes.status).toBe(200);
+  const meta = await metaRes.json() as Record<string, any>;
+  expect(meta.client_id_metadata_document_supported).toBe(true);
+  expect(meta.code_challenge_methods_supported).toEqual(['S256']);
+
+  // 2. Authorization consent validates Antigravity's exact CIMD JSON document.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === agyClientId) {
+      return new Response(JSON.stringify({
+        client_id: agyClientId,
+        client_name: 'Google Antigravity',
+        redirect_uris: [agyRedirect],
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const authRes = await request('/oauth/authorize?' + new URLSearchParams({
+      client_id: agyClientId,
+      redirect_uri: agyRedirect,
+      state: 'agy-cimd-state',
+      resource: ISSUER + '/mcp',
+      response_type: 'code',
+      scope: 'tendrils:list applications:read',
+      code_challenge_method: 'S256',
+      code_challenge: await challengeFor('a'.repeat(43)),
+    }), settings);
+    expect(authRes.status).toBe(303);
+    expect(new URL(authRes.headers.get('Location')!, ISSUER).pathname).toBe('/auth');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // 3. MCP discovery advertises open_tendriller_inbox with io.modelcontextprotocol/ui + com.google.antigravity/ui entrypoints.
+  const rpc = async (method: string, params: object = {}) => {
+    const res = await request('/mcp', settings, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    expect(res.status).toBe(200);
+    return await res.json() as Record<string, any>;
+  };
+
+  const toolList = await rpc('tools/list');
+  const inboxTool = toolList.result.tools.find((t: any) => t.name === 'open_tendriller_inbox');
+  expect(inboxTool).toBeTruthy();
+  expect(inboxTool._meta).toEqual({
+    ui: { resourceUri: 'ui://tendriller/inbox.html' },
+    'com.google.antigravity/ui': {
+      entrypoints: [
+        { type: 'aux_pane', title: 'Tendriller Inbox' },
+        { type: 'global', title: 'Tendriller' },
+      ],
+    },
+  });
+
+  const resourceList = await rpc('resources/list');
+  expect(resourceList.result.resources).toContainEqual(expect.objectContaining({
+    uri: 'ui://tendriller/inbox.html',
+    mimeType: 'text/html;profile=mcp-app',
+    _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } } },
+  }));
+
+  const resourceRead = await rpc('resources/read', { uri: 'ui://tendriller/inbox.html' });
+  const content = resourceRead.result.contents[0];
+  expect(content.uri).toBe('ui://tendriller/inbox.html');
+  expect(content.mimeType).toBe('text/html;profile=mcp-app');
+  expect(content.text).toContain(ISSUER);
+  expect(content.text).toContain('com.google.antigravity/message');
+  expect(content._meta).toEqual({ ui: { csp: { connectDomains: [], resourceDomains: [] } } });
 });

@@ -23,6 +23,7 @@ const documents = [
   ['/docs/CAPABILITIES.md', 'text/markdown'],
   ['/docs/AGENT_DELIVERY.md', 'text/markdown'],
   ['/docs/CONVERSATION_DELIVERY.md', 'text/markdown'],
+  ['/docs/ANTIGRAVITY_INTEGRATION.md', 'text/markdown'],
   ['/docs/APP_PATTERNS.md', 'text/markdown'],
   ['/docs/AI_INPUT.md', 'text/markdown'],
   ['/docs/STATE_MODELS.md', 'text/markdown'],
@@ -147,7 +148,7 @@ describe('public application onboarding', () => {
     const primaryAction = /<a\b[^>]*\bclass="button"[^>]*>/.exec(html)?.[0];
     expect(primaryAction).toContain(`href="${BASE}${guidePath}"`);
     expect(html).toContain('Agent instructions');
-    for (const slug of ['claude-code', 'codex', 'meta-muse', 'instinct', 'openai-dots', 'claude-duet', 'grokbot', 'openclaw', 'hermes']) {
+    for (const slug of ['claude-code', 'codex', 'antigravity', 'meta-muse', 'instinct', 'openai-dots', 'claude-duet', 'grokbot', 'openclaw', 'hermes']) {
       expect(html, slug).toContain(`href="${BASE}/agents/${slug}"`);
       expect(html, slug).toContain(`href="${BASE}/agents/${slug}.md"`);
     }
@@ -171,7 +172,7 @@ describe('public application onboarding', () => {
     expectDiscoveryLinks(indexMd);
     expect(await indexMd.text()).toContain(`${BASE}/agents/codex.md`);
 
-    for (const slug of ['claude-code', 'codex', 'meta-muse', 'instinct', 'openai-dots', 'claude-duet', 'grokbot', 'openclaw', 'hermes']) {
+    for (const slug of ['claude-code', 'codex', 'antigravity', 'meta-muse', 'instinct', 'openai-dots', 'claude-duet', 'grokbot', 'openclaw', 'hermes']) {
       const htmlRes = await req(`/agents/${slug}`, { anonymous: true });
       expect(htmlRes.status, slug).toBe(200);
       expect(htmlRes.headers.get('Content-Type')).toContain('text/html');

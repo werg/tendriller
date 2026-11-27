@@ -24,6 +24,7 @@
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries, and reference snippets.
 - [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): `tendril_guide`, account-linked agent registration (`register_agent`), and connecting existing apps.
 - [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): plugin install, workspace sharing, account linking, per-app consent, and event delivery.
+- [Antigravity integration](https://tendriller.dev/docs/ANTIGRAVITY_INTEGRATION.md): Antigravity CLI/App/IDE/SDK capabilities, terminal sandbox rules, OAuth CIMD `/mcp`, MCP Apps, Sidecars, and `consumers/antigravity-bridge.mjs` conversation wake.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): failing stages, safe retries, and exact next actions.
 - [Test a release locally](https://tendriller.dev/docs/LOCAL_HOST.md): verified packed host, synthetic owner, and register/create/init/publish/pair/connect before production.
 

@@ -19,7 +19,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const COPY_JSON = join(ROOT, "server/src/site-copy.json");
 const APP_SRC = join(ROOT, "scripts/copy-editor-app");
 const TUTORIAL_DIR = join(ROOT, "docs/tutorial");
-const PAGE_SLUG = "copy-editor";
+const PAGE_SLUG = "copy-editor-v2";
 
 const { values: flags } = parseArgs({
   args: process.argv.slice(2),
@@ -33,7 +33,8 @@ const { values: flags } = parseArgs({
     republish: { type: "boolean", default: false },
     "no-agent": { type: "boolean", default: false },
     wait: { type: "boolean", default: false },
-    timeout: { type: "string", default: "600" },
+    after: { type: "string" },
+    timeout: { type: "string", default: "3600" },
     inbox: { type: "boolean", default: false },
     apply: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
@@ -65,7 +66,7 @@ const serviceOrigin = flags.service.replace(/\/+$/, "");
 const originSlug = new URL(serviceOrigin).host.replace(/[^a-zA-Z0-9.-]+/g, "-").replace(/[:.]+/g, "-").toLowerCase();
 const workspaceDir = flags.workspace
   ? resolve(flags.workspace)
-  : join(ROOT, ".tendriller-dev-host", "copy-editor-workspaces", originSlug);
+  : join(ROOT, ".tendriller-dev-host", "copy-editor-workspaces", `v2-${originSlug}`);
 const inboxPath = join(workspaceDir, ".tendriller", "copy-inbox.jsonl");
 const tendrilBin = join(workspaceDir, "node_modules/@tendriller/tools/bin/tendril.mjs");
 
@@ -168,7 +169,13 @@ function prepareWorkspaceSkeleton() {
   cpSync(join(ROOT, "dist/tools"), join(nm, "@tendriller/tools"), { recursive: true });
   ensureLink(join(ROOT, "node_modules/@chronolog/authority"), join(nm, "@chronolog/authority"));
   ensureLink(join(ROOT, "node_modules/@chronolog/peer-session"), join(nm, "@chronolog/peer-session"));
+  ensureLink(join(ROOT, "node_modules/@chronolog/signals"), join(nm, "@chronolog/signals"));
+  ensureLink(join(ROOT, "node_modules/@jitl/quickjs-ng-wasmfile-release-sync"), join(nm, "@jitl/quickjs-ng-wasmfile-release-sync"));
+  ensureLink(join(ROOT, "node_modules/quickjs-emscripten-core"), join(nm, "quickjs-emscripten-core"));
   ensureLink(join(ROOT, "node_modules/esbuild"), join(nm, "esbuild"));
+  const wsPkg = join(ROOT, "tools/node_modules/ws");
+  if (existsSync(wsPkg)) ensureLink(wsPkg, join(nm, "ws"));
+  else if (existsSync(join(ROOT, "node_modules/ws"))) ensureLink(join(ROOT, "node_modules/ws"), join(nm, "ws"));
   ensureFileLink(tendrilBin, join(nm, ".bin/tendril"));
 
   // Copy tutorial shared helpers & setup.mjs.
@@ -251,7 +258,8 @@ async function ensureProvisionedPage({ republish = false } = {}) {
 
   const pageMeta = config.pages[PAGE_SLUG];
   const preparedFile = join(workspaceDir, ".tendriller", "pages", pageMeta.id, "prepared.json");
-  if (!existsSync(preparedFile)) {
+  const initializedFile = join(workspaceDir, ".tendriller", "pages", pageMeta.id, "initialized.json");
+  if (!existsSync(preparedFile) || !existsSync(initializedFile)) {
     await runCmd(process.execPath, ["setup.mjs", "init", PAGE_SLUG], {
       cwd: workspaceDir,
       env: workspaceEnv(),
@@ -288,32 +296,58 @@ if (flags.inbox) {
 
 // ── Mode: --wait ──────────────────────────────────────────────────────────────
 if (flags.wait) {
-  const timeoutMs = Math.max(1, Number(flags.timeout) || 600) * 1000;
+  const rawTimeout = Number(flags.timeout);
+  const timeoutMs = rawTimeout === 0 ? 0 : Math.max(1, rawTimeout || 3600) * 1000;
   mkdirSync(dirname(inboxPath), { recursive: true });
-  const baseline = readInbox().length;
+  const cursorPath = `${inboxPath}.cursor`;
+  const readCursor = () => {
+    if (flags.after) return flags.after;
+    try { return readFileSync(cursorPath, "utf8").trim() || null; } catch { return null; }
+  };
+  const writeCursor = (id) => {
+    try { writeFileSync(cursorPath, `${id}\n`, "utf8"); } catch {}
+  };
+  const seenId = readCursor();
+  const initialItems = readInbox();
+  const baselineLen = seenId ? -1 : initialItems.length;
+
+  const nextBatch = () => {
+    const items = readInbox();
+    if (seenId) {
+      const idx = items.findIndex((b) => b.id === seenId);
+      if (idx === -1) return items[0] ?? null;
+      return items[idx + 1] ?? null;
+    }
+    return items.length > baselineLen ? items[baselineLen] : null;
+  };
 
   await new Promise((resolvePromise, reject) => {
     let settled = false;
-    const check = () => {
-      const items = readInbox();
-      if (items.length > baseline) {
-        settled = true;
-        clearInterval(poll);
-        clearTimeout(timer);
-        watcher?.close();
-        console.log(JSON.stringify(items.at(-1), null, 2));
-        resolvePromise();
-      }
-    };
-    const watcher = watch(dirname(inboxPath), () => { if (!settled) check(); });
-    const poll = setInterval(() => { if (!settled) check(); }, 400);
-    const timer = setTimeout(() => {
+    const finish = (batch) => {
       if (settled) return;
       settled = true;
       clearInterval(poll);
+      if (timer) clearTimeout(timer);
       watcher?.close();
-      reject(new Error(`Timed out after ${timeoutMs / 1000}s waiting for a replicated Chronolog batch in ${inboxPath}`));
-    }, timeoutMs);
+      if (batch.id) writeCursor(batch.id);
+      console.log(JSON.stringify(batch, null, 2));
+      resolvePromise();
+    };
+    const check = () => {
+      const batch = nextBatch();
+      if (batch) finish(batch);
+    };
+    const watcher = watch(dirname(inboxPath), () => { if (!settled) check(); });
+    const poll = setInterval(() => { if (!settled) check(); }, 400);
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          clearInterval(poll);
+          watcher?.close();
+          reject(new Error(`Timed out after ${timeoutMs / 1000}s waiting for a replicated Chronolog batch in ${inboxPath}`));
+        }, timeoutMs)
+      : null;
     check();
   });
   process.exit(0);

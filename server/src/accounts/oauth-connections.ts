@@ -2,6 +2,46 @@ import type { Env } from '../env';
 import { browserIdentity, consumeIntent, intent, redirect, sameOrigin, type OAuthGrant } from './oauth-data';
 import { authorizationPage, escapeHtml } from './oauth-management';
 import { form, oauthJson, reject, text, type OAuthConfig } from './oauth-support';
+import { renderShell } from './ui';
+import { copyAttrs, renderCopyText, SITE_COPY } from '../site-copy';
+
+export interface OAuthClientGrantView {
+  id: string;
+  clientName: string;
+  expiresAtIso: string;
+  active: boolean;
+  resource: string;
+  scope: string;
+}
+
+export function renderOAuthConnectionsBody(options: {
+  grants: OAuthClientGrantView[];
+  csrf?: string;
+  editable?: boolean;
+}): string {
+  const editable = Boolean(options.editable);
+  const oc = SITE_COPY.oauthClients;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const csrf = options.csrf ?? '';
+  return `<a class="back-link" href="/dashboard">← Back to dashboard</a><div class="page-head"><span class="eyebrow"${c('oauthClients.eyebrow', oc.eyebrow)}>${renderCopyText(oc.eyebrow)}</span><h1${c('oauthClients.title', oc.title)}>${renderCopyText(oc.title)}</h1>
+    <p class="lead"${c('oauthClients.lead', oc.lead)}>${renderCopyText(oc.lead)}</p></div>
+    <div class="stack">${options.grants.length ? options.grants.map(grant =>
+      `<section class="card"><div class="card-head"><div><h2>${escapeHtml(grant.clientName)}</h2><p>Expires ${escapeHtml(grant.expiresAtIso)}</p></div><span class="badge${grant.active ? ' ok' : ''}">${grant.active ? 'Active' : 'Revoked or expired'}</span></div>
+        <dl class="meta-grid"><dt>Resource</dt><dd><code>${escapeHtml(grant.resource)}</code></dd><dt>Permissions</dt><dd>${escapeHtml(grant.scope || 'Account identity only')}</dd></dl>
+        ${grant.active ? `<form method="post"><input type="hidden" name="intent" value="${csrf}"><input type="hidden" name="grant_id" value="${escapeHtml(grant.id)}"><div class="actions"><button class="danger sm" type="submit">Revoke authorization</button></div></form>` : ''}</section>`
+    ).join('') : `<p class="empty"${c('oauthClients.empty', oc.empty)}>${renderCopyText(oc.empty)}</p>`}</div>`;
+}
+
+export function renderOAuthConnectionsHtml(options: {
+  grants: OAuthClientGrantView[];
+  csrf?: string;
+  editable?: boolean;
+}): string {
+  return renderShell({
+    title: 'Connected integrations',
+    body: renderOAuthConnectionsBody(options),
+  });
+}
 
 /** Browser owners can revoke OAuth grants independently from application consent. */
 export async function oauthConnections(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
@@ -21,12 +61,17 @@ export async function oauthConnections(req: Request, env: Env, config: OAuthConf
   const csrf = await intent(env, browser, 'revoke', { resource: config.resource });
   const rows = await env.ACCOUNTS.prepare('SELECT * FROM integration_oauth_grants WHERE account_id=? AND resource=? ORDER BY created_at DESC LIMIT 100')
     .bind(browser.id, config.resource).all<OAuthGrant>();
-  return authorizationPage('Connected integrations', `<a class="back-link" href="/dashboard">← Back to dashboard</a><div class="page-head"><span class="eyebrow">Integrations</span><h1>Connected OAuth clients</h1>
-    <p class="lead">Manage which external clients can act on your account. Revoking stops future token use and subscriptions.</p></div>
-    <div class="stack">${rows.results.length ? rows.results.map(grant => {
-      const client = config.clients.find(value => value.id === grant.client_id), active = grant.revoked_at === null && grant.expires_at > Date.now();
-      return `<section class="card"><div class="card-head"><div><h2>${escapeHtml(client?.name ?? grant.client_id)}</h2><p>Expires ${escapeHtml(new Date(grant.expires_at).toISOString())}</p></div><span class="badge${active ? ' ok' : ''}">${active ? 'Active' : 'Revoked or expired'}</span></div>
-        <dl class="meta-grid"><dt>Resource</dt><dd><code>${escapeHtml(grant.resource)}</code></dd><dt>Permissions</dt><dd>${escapeHtml(grant.scope || 'Account identity only')}</dd></dl>
-        ${active ? `<form method="post"><input type="hidden" name="intent" value="${csrf}"><input type="hidden" name="grant_id" value="${escapeHtml(grant.id)}"><div class="actions"><button class="danger sm" type="submit">Revoke authorization</button></div></form>` : ''}</section>`;
-    }).join('') : '<p class="empty">No integration authorizations.</p>'}</div>`);
+  const grants: OAuthClientGrantView[] = rows.results.map(grant => {
+    const client = config.clients.find(value => value.id === grant.client_id);
+    const active = grant.revoked_at === null && grant.expires_at > Date.now();
+    return {
+      id: grant.id,
+      clientName: client?.name ?? grant.client_id,
+      expiresAtIso: new Date(grant.expires_at).toISOString(),
+      active,
+      resource: grant.resource,
+      scope: grant.scope,
+    };
+  });
+  return authorizationPage('Connected integrations', renderOAuthConnectionsBody({ grants, csrf }));
 }

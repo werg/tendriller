@@ -13,7 +13,7 @@ import { copyAttrs, renderCopyText, SITE_COPY } from "../site-copy";
 import { brandBase, brandMark } from "../brand";
 import { cleanupPageCustomDomain } from "../custom-domains";
 import { checkSubdomainAvailability, setPageSubdomain, subdomainPlanAllowed } from "../subdomains";
-import { remixExistingPage } from "../owner-pages";
+import { createPageFromBlueprint, createStarterPage, remixExistingPage } from "../owner-pages";
 import { accountGrants, createJoinCode, listAccountAgents, revokeAgent, setAgentGrant, setPagePrimaryAgent } from "../agents";
 import { listActiveBroadcasts } from "../broadcasts";
 
@@ -226,6 +226,29 @@ export function renderDashboardContent(view: DashboardViewData): { body: string;
       ${nearMcp ? `<p class="notice warn">${icon("cpu")}<span>Hosted MCP usage: ${view.mcpUsage!.calls.toLocaleString("en-US")} / ${view.mcpUsage!.cap!.toLocaleString("en-US")} calls this month. <a href="/dashboard/billing">Manage plan or pay-as-you-go</a>, or run <code>npm run agent</code> locally for unlimited access.</span></p>` : ""}
       ${view.systemBroadcastsHtml ?? ""}
       ${view.noticeListHtml ?? ""}
+      <section class="card" aria-labelledby="instant-create-title">
+        <div class="card-head"><div><span class="eyebrow">${icon("sparkles")} Browser-first (no agent required)</span><h2 id="instant-create-title">Create a page right now</h2><p>Launch a full local-first Chronolog v2 app directly in your browser — with offline SQL, hybrid search, and peer-to-peer sync. Attach an AI agent later anytime.</p></div></div>
+        <form method="post" action="/dashboard/pages/new">
+          <div class="field-row">
+            <div class="field"><label class="field-label" for="instant-starter">Starter app</label><select id="instant-starter" name="starter"><option value="knowledge">Knowledge &amp; AI Memory (FTS5 + sqlite-vec)</option><option value="inventory">Shared Inventory (chronolog-db SQL + RLS)</option><option value="notes">Shared Notes (lightweight CRDT)</option></select></div>
+            <div class="field"><label class="field-label" for="instant-name">Page name</label><input id="instant-name" name="name" maxlength="80" placeholder="e.g. Research Notes or Team Tracker"></div>
+          </div>
+          <div class="field"><label class="field-label" for="instant-visibility">Access &amp; privacy</label><select id="instant-visibility" name="visibility"><option value="private">Private — OAuth sign-in &amp; end-to-end encrypted (Recommended)</option><option value="public-read">Public · Read-only — unencrypted, anyone with link can view without signing in</option><option value="public-write">Public · Open contributions — unencrypted, anyone with link can view &amp; submit entries</option></select></div>
+          <p class="fine" id="instant-vis-note">Private pages generate encryption keys locally in your browser; Tendriller cannot read your data. Public pages are unencrypted so visitors can sync peer-to-peer without signing in.</p>
+          <div class="actions"><button type="submit">${icon("sparkles")} Create &amp; open page</button></div>
+        </form>
+        <details class="disclosure" style="margin-top:1rem"><summary>Or launch from a portable PageBlueprint (.json)</summary><div class="disclosure-body">
+          <p class="fine">Paste a secret-free <code>tendriller-page-blueprint/v1</code> JSON snapshot (exported via <code>tendril blueprint export</code>). It copies only hash-pinned reducers and SQL schema DDL — never private data or keys.</p>
+          <form method="post" action="/dashboard/pages/from-blueprint" class="stack-sm">
+            <div class="field-row">
+              <div class="field"><label class="field-label" for="bp-name">Page name (optional)</label><input id="bp-name" name="name" maxlength="80" placeholder="Defaults to blueprint title"></div>
+              <div class="field"><label class="field-label" for="bp-visibility">Access &amp; privacy</label><select id="bp-visibility" name="visibility"><option value="private">Private · E2EE (Recommended)</option><option value="public-read">Public · Read-only</option><option value="public-write">Public · Open write</option></select></div>
+            </div>
+            <div class="field"><label class="field-label" for="bp-json">PageBlueprint JSON</label><textarea id="bp-json" name="blueprint" rows="5" required placeholder='{"format":"tendriller-page-blueprint/v1",...}'></textarea></div>
+            <div class="actions"><button class="secondary sm" type="submit">${icon("sparkles")} Launch blueprint</button></div>
+          </form>
+        </div></details>
+      </section>
       <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} <span${c("dashboard.newPage.eyebrow", d.newPage.eyebrow)}>${txt(d.newPage.eyebrow)}</span></span><h2 id="new-title"${c("dashboard.newPage.title", d.newPage.title)}>${txt(d.newPage.title)}</h2><p${c("dashboard.newPage.lead", d.newPage.lead)}>${txt(d.newPage.lead)}</p></div><a class="button secondary sm" href="/agents">Platform guides</a></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("terminal")} Agent instructions</a></div></div><p class="fine" style="margin-top:.75rem"${c("dashboard.newPage.existingHint", d.newPage.existingHint)}>${txt(d.newPage.existingHint)}</p></section>
       ${agentsSection}
       <div class="section-title"><h2${c("dashboard.pages.title", d.pages.title)}>${txt(d.pages.title)}</h2><span class="badge">${view.tendrils.length}${view.limits.pages !== null ? ` / ${view.limits.pages}` : ""}</span><span class="rule"></span>${canUpgrade ? `<a class="button ghost sm" href="/dashboard/billing">${icon("sparkles")} Upgrade plan</a>` : ""}</div>
@@ -373,6 +396,60 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     const response = await pageFetch(id, "delete", { method: "POST" });
     if (!response.ok) return errorResponse(502, "unavailable", "The page could not be deleted. Try again.");
     return new Response(null, { status: 303, headers: { Location: "/dashboard?deleted=1", "Cache-Control": "no-store" } });
+  }
+  if (url.pathname === "/dashboard/pages/new" && req.method === "POST") {
+    try {
+      if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) throw new HttpError(403, "bad_origin", "Invalid dashboard origin");
+      await requireWritesOpen(env);
+      const isJson = (req.headers.get("Content-Type") ?? "").startsWith("application/json");
+      let starterId = "knowledge", name: string | undefined, visibility: "private" | "public-read" | "public-write" = "private";
+      if (isJson) {
+        const body = JSON.parse(new TextDecoder().decode(await readBody(req, 4096)) || "{}") as Record<string, unknown>;
+        if (typeof body.starter === "string") starterId = body.starter;
+        if (typeof body.name === "string" && body.name.trim()) name = body.name.trim();
+        if (typeof body.visibility === "string") visibility = body.visibility as typeof visibility;
+      } else {
+        const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
+        starterId = form.get("starter") ?? "knowledge";
+        const rawName = form.get("name")?.trim();
+        if (rawName) name = rawName;
+        const rawVis = form.get("visibility");
+        if (rawVis) visibility = rawVis as typeof visibility;
+      }
+      const created = await createStarterPage(env, session.accountId, url.origin, { starterId, name, visibility });
+      if (isJson || req.headers.get("Accept")?.includes("application/json")) {
+        return json(created, 201, { "Cache-Control": "no-store" });
+      }
+      return new Response(null, { status: 303, headers: { Location: created.page_url, "Cache-Control": "no-store" } });
+    } catch (error) { return toErrorResponse(error); }
+  }
+  if (url.pathname === "/dashboard/pages/from-blueprint" && req.method === "POST") {
+    try {
+      if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) throw new HttpError(403, "bad_origin", "Invalid dashboard origin");
+      await requireWritesOpen(env);
+      const isJson = (req.headers.get("Content-Type") ?? "").startsWith("application/json");
+      let blueprint: unknown, name: string | undefined, visibility: "private" | "public-read" | "public-write" | undefined;
+      if (isJson) {
+        const body = JSON.parse(new TextDecoder().decode(await readBody(req, 512 * 1024)) || "{}") as Record<string, unknown>;
+        blueprint = body.blueprint ?? body;
+        if (typeof body.name === "string" && body.name.trim()) name = body.name.trim();
+        if (typeof body.visibility === "string") visibility = body.visibility as typeof visibility;
+      } else {
+        const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 512 * 1024)));
+        const rawBp = form.get("blueprint") ?? "";
+        try { blueprint = JSON.parse(rawBp); }
+        catch { throw new HttpError(400, "bad_json", "PageBlueprint must be valid JSON."); }
+        const rawName = form.get("name")?.trim();
+        if (rawName) name = rawName;
+        const rawVis = form.get("visibility");
+        if (rawVis) visibility = rawVis as typeof visibility;
+      }
+      const created = await createPageFromBlueprint(env, session.accountId, url.origin, { blueprint, name, visibility });
+      if (isJson || req.headers.get("Accept")?.includes("application/json")) {
+        return json(created, 201, { "Cache-Control": "no-store" });
+      }
+      return new Response(null, { status: 303, headers: { Location: created.page_url, "Cache-Control": "no-store" } });
+    } catch (error) { return toErrorResponse(error); }
   }
   const remixMatch = /^\/dashboard\/t\/([a-z2-7]{12})\/remix$/.exec(url.pathname);
   if (remixMatch && req.method === "POST") {

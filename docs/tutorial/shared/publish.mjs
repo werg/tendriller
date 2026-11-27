@@ -4,7 +4,7 @@ import { bytesToHex, encodeSignedOperation, genesisLogId, hexToBytes } from '@ch
 import { authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const types = { html: 'text/html; charset=utf-8', mjs: 'text/javascript', js: 'text/javascript', json: 'application/json', wasm: 'application/wasm', css: 'text/css', png: 'image/png', svg: 'image/svg+xml' };
+const types = { html: 'text/html; charset=utf-8', mjs: 'text/javascript', js: 'text/javascript', json: 'application/json', wasm: 'application/wasm', css: 'text/css', png: 'image/png', webp: 'image/webp', svg: 'image/svg+xml' };
 
 /**
  * Signed Chronolog v2 code publication.

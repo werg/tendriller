@@ -33,6 +33,8 @@ origin.
 | --- | --- | --- |
 | Supported ChatGPT Work host exposes an event-subscription tool | Subscribe to approved `application.event` entries for the selected applications; retain and inspect delivery receipts | Conditional on subscription success and the two-request rehearsal below |
 | Codex exposes App Server steering, the documented `codex queue` command and the intended thread on its daemon | Use the bundled multi-page bridge with the exact thread UUID and explicit remote endpoint | Steer an observed active turn; queue idle work; qualify both active injection and repeated same-thread execution as below |
+| Antigravity (`agy` CLI or Antigravity App) exposes `agentapi` (`get-conversation-metadata` / `send-message`) and the intended conversation UUID | Use `consumers/antigravity-bridge.mjs --mode agentapi` (or an Antigravity App Sidecar for restart persistence) with exact conversation UUID and workspace verification | Delivers `MESSAGE_PRIORITY_HIGH` messages to active and idle turns while the Antigravity Language Server stays alive; qualify repeated same-thread execution as below |
+| Antigravity exposes reactive background-task wakeup (`run_command`, `IsDaemon: false`) without `agentapi` | Use `consumers/antigravity-bridge.mjs --mode wait` as a non-daemon task and re-arm after each handled wake | Wakes the calling conversation once per armed run while the session remains open; not restart-persistent |
 | A host exposes another existing-thread execution API | A supervised receiver admits work to that exact thread and waits for the resulting turn/outcome | Qualify thread identity, concurrent-turn policy and restart handling before selecting this route |
 | Only `read_application_events` is available | Catch up during a turn initiated by the user or an independently supported host mechanism | No unattended wake established |
 | Only `tendril watch`, `events`, or a one-shot terminal waiter is running | Observe or replay retained application events for a real worker | No conversation admission mechanism established |
@@ -279,6 +281,98 @@ verified the bridge's success-with-warning handling without addressing a real
 thread or starting a model turn. Complete the live rehearsal below against the
 actual intended conversation before reporting unattended same-thread delivery
 as verified.
+
+## Antigravity mechanisms and the supplied bridge
+
+Google Antigravity (CLI `agy`, Antigravity App, IDE) has different host
+primitives from Codex and ships its own dedicated multi-page consumer:
+`consumers/antigravity-bridge.mjs`. See the full
+[Antigravity integration guide](ANTIGRAVITY_INTEGRATION.md) for sandbox,
+OAuth CIMD, MCP Apps, and Sidecar setup.
+
+### 1. Continuous same-conversation delivery (`--mode agentapi`)
+
+Inside an Antigravity CLI session or an Antigravity App Sidecar, the documented
+`agentapi` CLI provides `get-conversation-metadata`, `send-message`, and
+`new-conversation`, while the local Language Server (`$ANTIGRAVITY_LS_ADDRESS` +
+`$ANTIGRAVITY_CSRF_TOKEN`) provides read-only `product.v1.ConversationService/GetConversation`
+status (`RUN_STATE_IDLE` / `RUN_STATE_RUNNING` / `RUN_STATE_CANCELLING`):
+
+```sh
+node consumers/antigravity-bridge.mjs \
+  --workspace /absolute/workspace \
+  --conversation-cwd /absolute/antigravity-project-root \
+  --pages requests,second \
+  --conversation "$ANTIGRAVITY_CONVERSATION_ID" \
+  --topics chat,agents \
+  --mode agentapi
+```
+
+- **Preflight & workspace verification:** Calls `agentapi get-conversation-metadata`
+  before announcing ready and requires the conversation's `workspaceUris` to match
+  `--conversation-cwd` (equal to or parent of `--workspace`). Run `--doctor` first
+  to verify `agentapi`, `ConversationService`, and terminal sandbox outbound rules.
+- **Delivery, cancelling respect, coalescing & uncertainty:** Checks
+  `ConversationService/GetConversation` before sending and defers while
+  `runState === "RUN_STATE_CANCELLING"` so user cancellations are respected.
+  Optional `--coalesce-ms` batches rapid multi-message bursts into one wake notice.
+  Persists `invoking` before calling `agentapi send-message --title=... <conversationId> <safeNotice>`
+  and verifies `response.sendMessage.recipientId === conversationId`. Any timeout,
+  error, or unconfirmed response stops as `uncertain` (`ANTIGRAVITY_DELIVERY_UNCERTAIN`)
+  without blind retries. Status output explicitly reports `source: "agentapi/send-message"`,
+  `workerReceipt: false`, and `wakeVerified: false`.
+- **Conversation-owned liveness & clean LS-exit lock release:** One shared probe loop queries
+  `ConversationService/GetConversation` (falling back to `agentapi get-conversation-metadata`)
+  and maps `RUN_STATE_IDLE` → `listening`, `RUN_STATE_RUNNING` → `busy`, and
+  `RUN_STATE_CANCELLING` → `stopped`. When the Antigravity CLI session closes and
+  `$ANTIGRAVITY_LS_ADDRESS` stops responding for `--ls-loss-threshold` consecutive
+  probes (default `3`), presence transitions immediately to unavailable and the bridge
+  exits cleanly (`ANTIGRAVITY_LS_GONE`), releasing its checkpoint `.lock` so a resumed
+  session (prompted by the native plugin's `SessionStart` hook) can re-attach without
+  lock contention.
+- **Session lifetime & Sidecars:** In Antigravity CLI, `$ANTIGRAVITY_LS_ADDRESS`
+  and `$ANTIGRAVITY_CSRF_TOKEN` are ephemeral per `agy` process; closing `agy`
+  ends `agentapi` reachability until restarted inside a resumed session. On
+  **Antigravity App**, running `consumers/antigravity-bridge.mjs` as a user-enabled
+  Sidecar (`~/.gemini/config/sidecars/<id>/sidecar.json` with
+  `restart_policy: "always"`) provides automatic restart supervision with fresh
+  `agentapi` access.
+- **No atomic `expectedTurnId` CAS:** Unlike Codex's `turn/steer`,
+  `agentapi send-message` delivers a `MESSAGE_PRIORITY_HIGH` message without an
+  atomic turn-ID precondition. Deduplication relies on the bridge's durable
+  per-page `delivered` set and Tendriller's `agentFeed` durable replies, backed
+  by the plugin's guarded `Stop` hook for turn-end boundary races.
+
+During the 2026-11-27 qualification review on Antigravity CLI `1.5.18`, live
+verification confirmed `agentapi get-conversation-metadata` returned exact
+`workspaceUris`, `ConversationService/GetConversation` returned live `runState`,
+and `agentapi send-message` delivered a `MESSAGE_PRIORITY_HIGH` `<SYSTEM_MESSAGE>`
+directly into the active running turn. Still run the two-request idle-wake
+rehearsal below in the target CLI/App conversation before claiming unattended
+multi-turn delivery as verified.
+
+### 2. Unattended streaming and fallback modes (`--mode headless-stream`, `--mode wait`, `--mode new-conversation`)
+
+- **`--mode headless-stream`:** Keeps one warm `agy --input-format stream-json --output-format stream-json`
+  process for dedicated unattended servers (refuses to attach concurrently to an
+  open `$ANTIGRAVITY_CONVERSATION_ID`), streams live `text_delta` previews to the
+  browser via `streamAgentReply`, detects headless soft-denied tools on `stderr`
+  and `tool_info.error`, and checks `agentFeed` for durable reply verification.
+- **`--mode wait` (reactive one-shot waiter):** Attaches to `tendril agent run`,
+  checks for pending unanswered requests or verified broadcasts across `--pages`,
+  records them in the durable `delivered` set, prints one safe `antigravity_wake_notice`
+  JSON envelope, closes presence cleanly, and exits `0`. When launched as a
+  non-daemon background task (`IsDaemon: false`), Antigravity's reactive task
+  system wakes the calling conversation automatically. **You must re-arm the
+  waiter after handling each batch.**
+- **`--mode new-conversation`:** Dispatches each unhandled request via
+  `agentapi new-conversation` (with optional `--model` and `--profile`) for
+  isolated unattended runs instead of continuing one thread.
+- **Non-wake primitives:** Antigravity `.agents/hooks.json` hooks are synchronous
+  and turn-scoped (they cannot wake an idle conversation on their own; the plugin's
+  `SessionStart`/`Stop` hooks complement the bridge). `ConversationService` has
+  `CreateConversation` and `GetConversation`, not `SendMessage`. Never run headless
+  `agy --conversation <id>` concurrently against an open interactive TUI/App conversation.
 
 ## Bind presence to the handler
 

@@ -1,6 +1,8 @@
 import quickJsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { admitBrowserSession, bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
+import { hostedMcpExtensions } from '../../shared/helpers/hosted-mcp.mjs';
+import { composeOwnerExtensions } from '@tendriller/core/admission';
 import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
@@ -45,7 +47,13 @@ serveBrowserOwner({
             definition,
           });
           if (opened.publicOps.length > 0) {
-            await session.mergeFacts({ publicOps: opened.publicOps, encryptedEnvelopes: [], casNodes: opened.casNodes, retentions: [], checkpoints: [] });
+            await session.mergeFacts({
+              publicOps: opened.publicOps,
+              encryptedEnvelopes: [],
+              casNodes: opened.casNodes,
+              retentions: [],
+              checkpoints: [],
+            });
           }
           admission = admitBrowserSession(session, { peers: opened.peers, wrapKey: opened.wrapKey });
           participation = participateApplication(session, {
@@ -56,7 +64,7 @@ serveBrowserOwner({
           Object.defineProperty(session, 'participation', { value: participation });
           return {
             session,
-            extensions: admission.extensions,
+            extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })),
             async close() {
               admission.close();
               await participation.close();

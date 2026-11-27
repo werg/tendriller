@@ -7,7 +7,7 @@ multi-agent Chronolog communication pipe with two durable commands (`agentMessag
 signal helpers (`announceAgentPresence`, `watchAgentPresence`, `watchAgentsPresence`,
 `streamAgentReply`, `watchAgentStreams`). A request is simply a message an agent
 should answer; its answer is a reply message whose `inReplyTo` names the request.
-`consumers/request-worker.mjs` and `consumers/codex-queue.mjs` consume this same
+`consumers/request-worker.mjs`, `consumers/codex-queue.mjs`, and `consumers/antigravity-bridge.mjs` consume this same
 pipe with durable checkpoints.
 
 ## 1. Wire the commands and query into `domain.mjs`

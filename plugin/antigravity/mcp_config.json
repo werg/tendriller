@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "tendriller": {
+      "serverUrl": "https://tendriller.dev/mcp",
+      "timeoutSeconds": 300,
+      "tools": {
+        "tendril_guide": {
+          "eager": true
+        },
+        "list_tendrils": {
+          "eager": true
+        },
+        "query_sql": {
+          "eager": true
+        },
+        "open_tendriller_inbox": {
+          "eager": true
+        }
+      }
+    }
+  }
+}

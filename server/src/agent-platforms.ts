@@ -61,6 +61,11 @@ export const AGENT_PLATFORMS: readonly AgentPlatform[] = [
     `Otherwise start from ${base}/api/readiness, ${base}/api/service, and ${base}/.well-known/tendriller.json, and follow ${base}/docs/BUILD_AN_APP.md end-to-end.`,
     `Deliver the live published URL without waiting for claim first, and verify local durability plus offline reload.`,
   ]),
+  makePlatform("antigravity", "Antigravity", "cli-and-mcp", (base) => [
+    `Zero user setup required: read ${base}/api/readiness, ${base}/api/service, ${base}/.well-known/tendriller.json, and ${base}/docs/BUILD_AN_APP.md, install the Chronolog v2 starter with Node 22.15+ (\`npm ci --ignore-scripts\`), publish the signed UI before claim, and return the ready page URL.`,
+    `If the user wants live page messages to wake this conversation, start \`node consumers/antigravity-bridge.mjs --workspace /abs/workspace --pages SLUG\` alongside \`npm run agent\` — \`--mode agentapi\` and \`$ANTIGRAVITY_CONVERSATION_ID\` are auto-detected with zero extra user setup (fall back to \`--mode wait\` as a non-daemon task if \`agentapi\` is unavailable).`,
+    `If Tendriller MCP (${base}/mcp) is already connected, call \`tendril_guide\` (\`topic: "build"\`) or \`open_tendriller_inbox\` (renders as a docked side panel in Antigravity App v2.34.0+). Never ask the end user to hand-edit config JSON files; see ${base}/docs/ANTIGRAVITY_INTEGRATION.md for details.`,
+  ]),
   makePlatform("meta-muse", "Meta Muse", "agent-url", (base) => [
     `Fetch ${base}/agent.md and ${base}/docs/BUILD_AN_APP.md, then check ${base}/api/readiness before installing packages.`,
     `If your runtime has shell + Node 24, complete the workspace setup and publish the signed UI directly. If sandboxed without persistent shell execution, report the missing capability and hand off the exact commands and ${base} origin.`,
@@ -135,8 +140,9 @@ export function agentPlatformHtml(slug: string, publicBase: string, options?: { 
   const base = escapeHtml(publicBase);
   const rawHost = hostFromBase(publicBase);
   const host = escapeHtml(rawHost);
-  const vars = { host: rawHost, base: publicBase };
+  const vars = { host: rawHost, base: publicBase, name: p.name };
   const c = (key: string, template: string) => copyAttrs(key, template, editable);
+  const g = SITE_COPY.platforms.guide;
   const prompt = p.prompt(publicBase);
   const others = AGENT_PLATFORMS.filter((item) => item.slug !== p.slug);
 
@@ -167,8 +173,8 @@ export function agentPlatformHtml(slug: string, publicBase: string, options?: { 
 
   <div class="grid-2">
     <section class="card" aria-labelledby="prompt-h">
-      <h2 id="prompt-h">1. Copy this prompt into ${escapeHtml(p.name)}</h2>
-      <p class="fine" style="margin-bottom:.75rem">Swap in your own email address and describe whatever dashboard, sensors, or shared database you want.</p>
+      <h2 id="prompt-h"${c("platforms.guide.promptTitle", g.promptTitle)}>${renderCopyText(g.promptTitle, vars)}</h2>
+      <p class="fine" style="margin-bottom:.75rem"${c("platforms.guide.promptHint", g.promptHint)}>${renderCopyText(g.promptHint, vars)}</p>
       <p id="prompt-text" class="prompt-quote"${c(`platforms.items.${p.slug}.prompt`, p.promptTemplate)}>${escapeHtml(prompt)}</p>
       <div class="actions tight">
         <button type="button" id="copy-prompt" class="sm">${icon("copy")}<span>Copy prompt</span></button>
@@ -178,7 +184,7 @@ export function agentPlatformHtml(slug: string, publicBase: string, options?: { 
     </section>
 
     <section class="card" aria-labelledby="steps-h">
-      <h2 id="steps-h">2. What happens next</h2>
+      <h2 id="steps-h"${c("platforms.guide.stepsTitle", g.stepsTitle)}>${renderCopyText(g.stepsTitle, vars)}</h2>
       <ol class="steps">
         ${p.stepTemplates.map((step, i) => `<li><span${c(`platforms.items.${p.slug}.steps.${i}`, step)}>${renderCopyText(step, vars)}</span></li>`).join("")}
       </ol>
@@ -186,19 +192,20 @@ export function agentPlatformHtml(slug: string, publicBase: string, options?: { 
   </div>
 
   <section class="ai-box" aria-labelledby="ai-h">
-    <h2 id="ai-h">Sending ${escapeHtml(p.name)} directly to a URL?</h2>
-    <p>Point ${escapeHtml(p.name)} at the Markdown version of this page or straight to the full agent specification — both are plain text with exact endpoints for <code>${host}</code>.</p>
+    <h2 id="ai-h"${c("platforms.guide.aiTitle", g.aiTitle)}>${renderCopyText(g.aiTitle, vars)}</h2>
+    <p${c("platforms.guide.aiLead", g.aiLead)}>${renderCopyText(g.aiLead, vars)}</p>
     <div class="ai-links">
       <a href="${base}/agents/${p.slug}.md">${escapeHtml(p.name)} guide (.md)</a>
       <a href="${base}/docs/BUILD_AN_APP.md">Agent instructions (BUILD_AN_APP.md)</a>
       <a href="${base}/agent.md">Quick reference (/agent.md)</a>
       ${p.connectionMode === "cli-and-mcp" ? `<a href="${base}/docs/MCP_AGENT_GUIDE.md">MCP guide</a>` : ""}
+      ${p.slug === "antigravity" ? `<a href="${base}/docs/ANTIGRAVITY_INTEGRATION.md">Antigravity integration</a>` : ""}
       <a href="${base}/docs/CAPABILITIES.md">Capabilities</a>
     </div>
   </section>
 
   <section style="margin-top:2rem" aria-labelledby="other-h">
-    <h2 id="other-h" style="margin-bottom:.85rem">Other agent platforms</h2>
+    <h2 id="other-h" style="margin-bottom:.85rem"${c("platforms.guide.otherTitle", g.otherTitle)}>${renderCopyText(g.otherTitle, vars)}</h2>
     <div class="cluster">
       ${others.map((o) => `<a class="button secondary sm" href="${base}/agents/${o.slug}">${escapeHtml(o.name)}</a>`).join("")}
     </div>
@@ -260,6 +267,7 @@ export function agentPlatformMd(slug: string, publicBase: string): string | null
     `- Machine discovery JSON: ${publicBase}/.well-known/tendriller.json`,
     `- Live readiness preflight: ${publicBase}/api/readiness`,
     ...(p.connectionMode === "cli-and-mcp" ? [`- Account-linked MCP guide: ${publicBase}/docs/MCP_AGENT_GUIDE.md (${publicBase}/mcp)`] : []),
+    ...(p.slug === "antigravity" ? [`- Antigravity integration & conversation bridge: ${publicBase}/docs/ANTIGRAVITY_INTEGRATION.md`] : []),
     ``,
     `## Platform notes for ${p.name}`,
     ``,
@@ -289,7 +297,7 @@ export function agentPlatformIndexHtml(publicBase: string, options?: { editable?
   const vars = { host: rawHost, base: publicBase };
   const pl = SITE_COPY.platforms;
   const c = (key: string, template: string) => copyAttrs(key, template, editable);
-  const head = `<meta name="description" content="Human and AI-friendly getting-started guides for connecting Claude Code, Codex, Meta Muse, Instinct, OpenAI Dots, Claude Duet, GrokBot, OpenClaw, and Hermes to Tendriller.">` +
+  const head = `<meta name="description" content="Human and AI-friendly getting-started guides for connecting Claude Code, Codex, Antigravity, Meta Muse, Instinct, OpenAI Dots, Claude Duet, GrokBot, OpenClaw, and Hermes to Tendriller.">` +
     `<link rel="alternate" type="text/markdown" href="${base}/agents.md" title="Agent platforms (Markdown)">` +
     `<link rel="service-desc" type="application/json" href="${base}/.well-known/tendriller.json">`;
   const nav = `<nav aria-label="Main navigation">` +

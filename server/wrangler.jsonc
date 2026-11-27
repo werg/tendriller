@@ -1,7 +1,9 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tendriller",
-  "main": "src/index.ts",
+  "main": "../dist/engine/worker.mjs",
+  "no_bundle": true,
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {

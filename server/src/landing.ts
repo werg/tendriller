@@ -555,7 +555,7 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
         <div class="prompt-bar">
           <span class="prompt-label"${c("home.start.promptLabel", h.start.promptLabel)}>${txt(h.start.promptLabel)}</span>
           <div class="prompt-tabs" role="group" aria-label="Prompt examples">
-            ${prompts.map((p, i) => `<button type="button" class="prompt-tab" data-prompt="${escapeHtml(p.plain)}" data-prompt-index="${i}" aria-pressed="${i === 0 ? "true" : "false"}">${escapeHtml(p.label)}</button>`).join("")}
+            ${prompts.map((p, i) => `<button type="button" class="prompt-tab" data-prompt="${escapeHtml(p.plain)}"${editable ? ` data-prompt-raw="${escapeHtml(p.raw)}"` : ""} data-prompt-index="${i}" aria-pressed="${i === 0 ? "true" : "false"}">${escapeHtml(p.label)}</button>`).join("")}
           </div>
         </div>
         <div class="prompt-body">
@@ -743,7 +743,10 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
     tab.addEventListener('click',()=>{
       for(const t of tabs)t.setAttribute('aria-pressed',String(t===tab));
       text.textContent=tab.dataset.prompt||'';
-      if(text.hasAttribute('data-copy')&&tab.dataset.promptIndex)text.setAttribute('data-copy','home.start.prompts.'+tab.dataset.promptIndex+'.text');
+      if(text.hasAttribute('data-copy')&&tab.dataset.promptIndex){
+        text.setAttribute('data-copy','home.start.prompts.'+tab.dataset.promptIndex+'.text');
+        if(tab.dataset.promptRaw)text.setAttribute('data-copy-raw',tab.dataset.promptRaw);
+      }
       if(status)status.textContent=${JSON.stringify(h.start.promptHint)};
     });
   }

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "tendriller",
+  "displayName": "Tendriller",
+  "description": "Give Antigravity a live private web page you can talk to — backed by encrypted local-first SQL/CRDT state, device sensors, and guest invites.",
+  "version": "1.0.0",
+  "logo": "assets/logo.png",
+  "suggestedPrompts": [
+    "Build me a live Tendriller dashboard with a shared SQL database and voice controls.",
+    "Open my Tendriller inbox and check for new page messages.",
+    "List my connected Tendriller apps and summarize what changed."
+  ],
+  "author": {
+    "name": "Gabriel Pickard",
+    "email": "wergomat@gmail.com",
+    "url": "https://tendriller.dev"
+  },
+  "homepage": "https://tendriller.dev/agents/antigravity",
+  "repository": "https://github.com/werg/tendriller",
+  "license": "MIT",
+  "keywords": [
+    "tendriller",
+    "dashboard",
+    "chronolog",
+    "mcp",
+    "local-first",
+    "sensors"
+  ]
+}

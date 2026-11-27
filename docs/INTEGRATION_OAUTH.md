@@ -10,6 +10,7 @@ OAuth is optional. Without `OAUTH_CONFIG_JSON`, its routes return 404. When misc
 2. Set the OAuth `resource` to `<PUBLIC_BASE>/mcp` (no query, fragment, userinfo, or wildcard).
 3. Register each allowed client with its exact canonical HTTPS `redirectUris`.
    - For ChatGPT's Client ID Metadata Document flow, set `metadataDocument: true`, `tokenEndpointAuthMethod: "none"`, `id: "https://chatgpt.com/oauth/client.json"`, and pin its exact redirect URI. The host verifies the public metadata document on consent.
+   - For Google Antigravity's Client ID Metadata Document flow (CLI, App, and IDE `v2.6.0+`), set `metadataDocument: true`, `tokenEndpointAuthMethod: "none"`, `id: "https://antigravity.google/oauth/client-metadata.json"`, and pin `redirectUris: ["https://antigravity.google/oauth-callback"]`. See [Antigravity integration](ANTIGRAVITY_INTEGRATION.md).
    - Confidential clients use `tokenEndpointAuthMethod: "client_secret_basic"` with `clientSecretSha256` (lowercase SHA-256 hex of a 32–512 character secret). HTTP Basic uses OAuth form encoding; request-body `client_secret` is rejected.
    - **All clients require PKCE S256.**
 4. Install `OAUTH_CONFIG_JSON` and the private signing key `OAUTH_SIGNING_JWK` via your deployment secret store.
@@ -24,6 +25,14 @@ OAuth is optional. Without `OAUTH_CONFIG_JSON`, its routes return 404. When misc
     "name": "ChatGPT",
     "metadataDocument": true,
     "redirectUris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+    "scopes": ["tendrils:list", "tendrils:create", "applications:read", "applications:write", "events:subscribe"],
+    "tokenEndpointAuthMethod": "none",
+    "allowRefresh": true
+  }, {
+    "id": "https://antigravity.google/oauth/client-metadata.json",
+    "name": "Google Antigravity",
+    "metadataDocument": true,
+    "redirectUris": ["https://antigravity.google/oauth-callback"],
     "scopes": ["tendrils:list", "tendrils:create", "applications:read", "applications:write", "events:subscribe"],
     "tokenEndpointAuthMethod": "none",
     "allowRefresh": true
