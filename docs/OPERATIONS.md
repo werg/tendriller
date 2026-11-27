@@ -2,7 +2,7 @@
 
 Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendriller/engine`) with a filtered Chronolog authority and publication participant and optional account-linked `/mcp` gateway. Application execution stays on enrolled peers.
 
-For the backend-only operator API, expiring complimentary Pro/Team access, and
+For the backend-only operator API, complimentary Pro/Team access, and
 aggregate service usage, see [service administration](ADMINISTRATION.md). Its
 independent operator credentials are configured through the optional
 `ADMIN_API_CREDENTIALS_JSON` Worker secret; ordinary admin sessions and broadcast
