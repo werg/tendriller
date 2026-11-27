@@ -23,7 +23,7 @@ export async function proposeSqlBranch(session, {
   const branch = await session.forkSql(sqlTopic);
   try {
     await mutate(branch);
-    const proposal = branch.toProposal({ withRowGuards });
+    const proposal = await branch.toProposal({ withRowGuards });
     if (proposal.statements.length === 0) {
       return { empty: true, proposal };
     }
@@ -43,7 +43,7 @@ export async function proposeSqlBranch(session, {
     const mat = await op.materialized();
     return { empty: false, id, proposal, outcome: mat.outcome, opId: op.id };
   } finally {
-    branch.close();
+    await branch.close();
   }
 }
 

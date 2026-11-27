@@ -169,7 +169,30 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
         hasActiveFinality: status.hasActiveFinality,
         closedThroughMs: status.closedThroughMs === null ? null : status.closedThroughMs.toString(),
         checkpoints: status.checkpoints.length,
+        ...(typeof session.equivocationProofs === 'function' ? { equivocationProofs: await session.equivocationProofs() } : {}),
       };
+    }
+    if (args[0] === 'op') {
+      const opId = required(args[1], 'an operation ID');
+      if (typeof session.finalityStatus !== 'function') throw Error('Finality status lookup is unavailable on this session.');
+      const [status, equivocationProofs] = await Promise.all([
+        session.finalityStatus(opId),
+        typeof session.equivocationProofs === 'function' ? session.equivocationProofs() : [],
+      ]);
+      return { opId, status, equivocationProofs };
+    }
+    if (args[0] === 'notarize') {
+      if (typeof owned.notarizeFrontier !== 'function') {
+        throw Error('Blind host notarization requires a workspace host connection (run via tendril CLI).');
+      }
+      const extraInclusions = typeof options.include === 'string' && options.include.trim()
+        ? jsonInput(options.include, 'extraInclusions JSON array ([{ opId, authorTimestampMs, author }])')
+        : undefined;
+      const notarized = await owned.notarizeFrontier(extraInclusions ? { extraInclusions } : {}, { signal });
+      const [{ decodeRecord }, { authorityRecordBytes }] = await Promise.all([import('@chronolog/peer-session'), import('@tendriller/core/authority')]);
+      const checkpoint = decodeRecord(authorityRecordBytes(notarized.checkpoint));
+      const submitted = await session.finality.submitCheckpoints([checkpoint]);
+      return { ...notarized, submitted };
     }
     if (args[0] === 'close') {
       const checkpoint = await session.finality.createCheckpoint({ throughMs: authorTime(required(options.through, '--through with an explicit author-time frontier')) });
@@ -215,7 +238,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    throw Error('Use finality status, schedule, close, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
+    throw Error('Use finality status, op <opId>, notarize, schedule, close, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
   }
   if (command === 'blueprint') {
     const sub = required(args[0], 'blueprint subcommand: export');
@@ -315,10 +338,52 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     return session.topic(required(args[0], 'a Chronolog topic name'));
   }
   if (command === 'sql') {
-    const sub = required(args[0], 'sql subcommand: query, exec, migrate, rls, schema, or tables');
+    const sub = required(args[0], 'sql subcommand: query, exec, migrate, migrate-file, rls, schema, tables, audit, conflicts, resolve-conflict, or history');
     const topic = options.topic || 'sql';
     if (sub === 'schema' || sub === 'tables') {
       return session.query(topic, { kind: sub });
+    }
+    if (sub === 'audit') {
+      return session.query(topic, {
+        kind: 'audit',
+        ...(options.table ? { table: String(options.table) } : {}),
+        ...(options.limit !== undefined ? { limit: Number(options.limit) } : {}),
+      });
+    }
+    if (sub === 'conflicts') {
+      return session.query(topic, {
+        kind: 'conflicts',
+        unresolvedOnly: options.all !== true,
+      });
+    }
+    if (sub === 'resolve-conflict') {
+      const conflictOpId = required(args[1], 'the conflicting operation ID');
+      const op = await session.submit({
+        ...identity(options),
+        updates: [{
+          topic,
+          input: {
+            action: 'resolveConflict',
+            opId: conflictOpId,
+            ...(options.resolution ? { resolution: String(options.resolution) } : {}),
+          },
+        }],
+      });
+      return observe(op, options, signal);
+    }
+    if (sub === 'history') {
+      if (typeof session.queryAsOf !== 'function') throw Error('Time-travel queries (queryAsOf) require a Chronolog session supporting queryAsOf.');
+      const input = args[1] ? (args[1].trim().startsWith('{') ? jsonInput(args[1], 'SQL query JSON') : { sql: args[1], format: 'objects' }) : null;
+      if (!input) throw Error('Supply a SQL string or JSON query object');
+      const asOf = options.op
+        ? { opId: String(options.op) }
+        : options.at !== undefined
+          ? { timestampMs: Number(options.at) }
+          : null;
+      if (!asOf || (asOf.timestampMs !== undefined && !Number.isFinite(asOf.timestampMs))) {
+        throw Error('Supply --op <opId> or --at <epochMs> for sql history');
+      }
+      return session.queryAsOf(topic, input, asOf);
     }
     if (sub === 'query') {
       const input = args[1] ? (args[1].trim().startsWith('{') ? jsonInput(args[1], 'SQL query JSON') : { sql: args[1], format: 'objects' }) : null;
@@ -349,7 +414,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    throw Error('Use sql query|exec|migrate|migrate-file|rls|schema|tables');
+    throw Error('Use sql query|exec|migrate|migrate-file|rls|schema|tables|audit|conflicts|resolve-conflict|history');
   }
   if (command === 'reducers') {
     const sub = args[0] ?? 'inspect';
@@ -408,7 +473,41 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   if (command === 'permissions') {
     const sub = args[0] ?? 'inspect';
     if (sub === 'inspect') return session.query('$permissions', { summary: true });
-    if (['set-member', 'remove-member', 'invite', 'revoke-invite', 'set-open', 'set-admin', 'block-author', 'multisig-propose'].includes(sub)) {
+    if (sub === 'recovery-status') return session.query('$permissions', { guardians: true });
+    if (sub === 'recovery-setup') {
+      if (typeof session.setupSocialRecovery !== 'function') throw Error('Social recovery is unavailable on this session.');
+      const payload = jsonInput(args[1], 'recovery setup JSON ({ threshold, guardians })');
+      const op = await session.setupSocialRecovery(payload);
+      return observe(op, options, signal);
+    }
+    if (sub === 'recovery-request') {
+      if (typeof session.requestSocialRecovery !== 'function') throw Error('Social recovery is unavailable on this session.');
+      const payload = args[1] ? jsonInput(args[1], 'recovery request JSON ({ label? })') : {};
+      const res = await session.requestSocialRecovery(payload);
+      return {
+        requestId: res.requestId,
+        verificationCode: res.verificationCode,
+        operation: await observe(res.operation, options, signal),
+      };
+    }
+    if (sub === 'recovery-approve') {
+      if (typeof session.approveSocialRecovery !== 'function') throw Error('Social recovery is unavailable on this session.');
+      const op = await session.approveSocialRecovery(required(args[1], 'a recovery requestId'));
+      return observe(op, options, signal);
+    }
+    if (sub === 'recovery-complete') {
+      if (typeof session.completeSocialRecovery !== 'function') throw Error('Social recovery is unavailable on this session.');
+      return session.completeSocialRecovery();
+    }
+    if (sub === 'compartment') {
+      if (typeof session.createCompartment !== 'function') throw Error('Compartment key rings are unavailable on this session.');
+      const payload = jsonInput(args[1], 'compartment JSON ({ ring, members })');
+      const ring = required(payload.ring, 'ring name inside JSON payload');
+      if (!Array.isArray(payload.members)) throw Error('Supply members array ([{ publicKey, wrapKey }]) inside compartment JSON payload');
+      const op = await session.createCompartment(ring, payload.members);
+      return observe(op, options, signal);
+    }
+    if (['set-member', 'remove-member', 'invite', 'revoke-invite', 'set-open', 'set-admin', 'block-author', 'multisig-propose', 'set-antispam'].includes(sub)) {
       const payload = jsonInput(args[1], `permissions ${sub} JSON payload`);
       const actionMap = {
         'set-member': 'setMember',
@@ -419,6 +518,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
         'set-admin': 'setAdmin',
         'block-author': 'blockAuthor',
         'multisig-propose': 'propose',
+        'set-antispam': 'setAntiSpam',
       };
       const op = await session.submit({
         visibility: 'public',
@@ -427,12 +527,12 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    if (sub === 'unblock-author') {
+    if (sub === 'unblock-author' || sub === 'vouch-author') {
       const publicKey = required(args[1], 'a 64-hex author publicKey');
       const op = await session.submit({
         visibility: 'public',
         ...identity(options),
-        updates: [{ topic: '$permissions', input: { action: 'unblockAuthor', publicKey } }],
+        updates: [{ topic: '$permissions', input: { action: sub === 'vouch-author' ? 'vouchAuthor' : 'unblockAuthor', publicKey } }],
       });
       return observe(op, options, signal);
     }
@@ -445,7 +545,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    throw Error('Use permissions inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|block-author|unblock-author|multisig-propose|multisig-approve|multisig-cancel');
+    throw Error('Use permissions inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|block-author|unblock-author|set-antispam|vouch-author|compartment|multisig-propose|multisig-approve|multisig-cancel|recovery-status|recovery-setup|recovery-request|recovery-approve|recovery-complete');
   }
   if (command === 'publication-history') {
     const res = await session.query('$publications', { history: true });

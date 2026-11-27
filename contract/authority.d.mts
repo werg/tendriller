@@ -89,6 +89,18 @@ export interface HostJoinRequestEntry {
   readonly request: AuthorityRecord;
 }
 
+export interface HostNotaryInclusionInput {
+  readonly opId: string;
+  readonly authorTimestampMs: number | string;
+  readonly author: string;
+}
+
+export interface HostNotaryCheckpointResponse {
+  readonly checkpoint: AuthorityRecord;
+  readonly closedThroughMs: string;
+  readonly includedCount: number;
+}
+
 export interface AuthorityClient {
   application(options?: AuthorityRequestOptions): Promise<HostApplication>;
   prepare(configuration: HostAppConfig): Promise<HostApplication>;
@@ -106,6 +118,7 @@ export interface AuthorityClient {
   groups?(options?: AuthorityRequestOptions): Promise<{ readonly policy: unknown; readonly group_attestations: readonly unknown[]; readonly departures: readonly unknown[] }>;
   setGroupPolicy?(policy: unknown, options?: AuthorityRequestOptions): Promise<{ readonly policy: unknown }>;
   ackDeparture?(publicKey: string, options?: AuthorityRequestOptions): Promise<{ readonly cleared: boolean }>;
+  notarizeFrontier?(input?: { readonly extraInclusions?: readonly HostNotaryInclusionInput[] }, options?: AuthorityRequestOptions): Promise<HostNotaryCheckpointResponse>;
   participant(record: AuthorityRecord): Promise<AuthorityRecord>;
 }
 

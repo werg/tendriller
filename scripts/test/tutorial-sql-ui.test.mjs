@@ -91,7 +91,10 @@ test('SQL schema, preconditions, and RLS policies use first-class chronolog/sql 
   const { definition, deriveInventory, topics, imports } = await import('../../docs/tutorial/templates/inventory/domain.mjs');
   assert.equal(Object.hasOwn(definition, 'schema'), false);
   assert.deepEqual(imports, {});
-  assert.deepEqual(topics, { inventory: { module: 'chronolog/sql' } });
+  assert.deepEqual(topics, {
+    inventory: { module: 'chronolog/sql' },
+    proposals: { module: 'chronolog/workflow', export: 'stateMachine' },
+  });
   const initial = definition.commands.initialize.prepare(null);
   assert.equal(initial[0].topic, 'inventory');
   assert.equal(initial[0].input.action, 'migrate');

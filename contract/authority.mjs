@@ -72,6 +72,14 @@ export function createAuthorityClient(dispatch, { applicationId } = {}) {
       },
       ...options,
     }),
+    notarizeFrontier: ({ extraInclusions } = {}, options) => request('peers/enrollment', {
+      method: 'POST',
+      body: {
+        action: 'notary',
+        ...(extraInclusions === undefined ? {} : { extraInclusions }),
+      },
+      ...options,
+    }),
     admissions: options => request('peers/enrollment', { method: 'POST', body: { action: 'admissions' }, ...options }),
     submitJoinRequest: (reqRecord, options) => request('peers/enrollment', { method: 'POST', body: { action: 'join_request', request: reqRecord }, ...options }),
     joinRequests: options => request('peers/enrollment', { method: 'POST', body: { action: 'join_requests' }, ...options }),

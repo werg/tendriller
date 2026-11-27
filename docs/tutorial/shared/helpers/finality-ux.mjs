@@ -10,15 +10,16 @@ const SETTLEMENT_LABELS = Object.freeze({
 
 /**
  * Translate a Chronolog operation's finality status into calm, jargon-free UI copy.
+ * Works identically on both Node ApplicationSession and browser WorkerApplicationSession.
  */
-export function describeOpSettlement(session, opId) {
-  const status = typeof session.finalityStatus === 'function' ? session.finalityStatus(opId) : 'local';
+export async function describeOpSettlement(session, opId) {
+  const status = typeof session.finalityStatus === 'function' ? await session.finalityStatus(opId) : 'local';
   const meta = SETTLEMENT_LABELS[status] ?? SETTLEMENT_LABELS.local;
-  const proofs = typeof session.equivocationProofs === 'function' ? session.equivocationProofs() : [];
+  const proofs = typeof session.equivocationProofs === 'function' ? await session.equivocationProofs() : [];
   return {
     status,
     ...meta,
-    equivocationCount: proofs.length,
+    equivocationCount: Array.isArray(proofs) ? proofs.length : 0,
   };
 }
 

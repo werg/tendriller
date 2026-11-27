@@ -724,4 +724,23 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const anonManageRes = await req(new URL('_tendril/manage', openUrl).href, { anonymous: true });
     expect(anonManageRes.status).toBe(403);
   });
+
+  it('signs blind-host finality checkpoints via peers/enrollment action=notary without ever decrypting private payloads', async () => {
+    const page = await createTestPage();
+    const { root } = await ownerRooted(page, {
+      finalitySchedule: [{ effectiveAfterMs: 0n, policy: { kind: 'signed-frontier', signer: hostKey } }],
+    });
+    const opId = '11'.repeat(32);
+    const notarized = await body(await page.ownerApi('POST', 'peers/enrollment', {
+      action: 'notary',
+      extraInclusions: [{ opId, authorTimestampMs: 100, author: root.identity.publicKey }],
+    }));
+    expect(notarized.includedCount).toBeGreaterThanOrEqual(1);
+    const cp = dec<FinalityCheckpoint>(notarized.checkpoint);
+    expect(cp.attestation.kind).toBe('signatures');
+    if (cp.attestation.kind === 'signatures') {
+      expect(cp.attestation.signatures[0]?.signer).toBe(hostKey);
+    }
+    expect(cp.payload.inclusions.some(inc => inc.opId === opId)).toBe(true);
+  });
 });

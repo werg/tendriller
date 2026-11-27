@@ -70,9 +70,9 @@ Page application session (attaches to tendril agent run; --page <slug|id>):
   watch [--events [--cursor CURSOR] [--topics JSON] [--limit N]]   Without --page: every running page, cursors per page
   logs [--topics JSON] [--latest]
   signal <topic> <json> [--ttl MILLISECONDS]
-  topic <name> | sql <query|exec|migrate|migrate-file|rls|schema|tables> [json|file.sql] [--topic sql] [--policies file.json] [--operation ID]
-  reducers [inspect|set <json>|publish <spec> <file.mjs> [--bind topic=spec[:export]]] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|multisig-propose|multisig-approve|multisig-cancel <json|id>] [--operation ID]
-  finality status | finality schedule --kind none|signed-frontier|fixed-validator [--signer PK] [--effective-after MS] --operation ID | finality close --through MS | finality submit <record>
+  topic <name> | sql <query|exec|migrate|migrate-file|rls|schema|tables|audit|conflicts|resolve-conflict|history> [json|file.sql|opId] [--topic sql] [--table T] [--limit N] [--all] [--op ID|--at MS] [--resolution TEXT] [--policies file.json] [--operation ID]
+  reducers [inspect|set <json>|publish <spec> <file.mjs> [--bind topic=spec[:export]]] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|set-antispam|vouch-author|compartment|multisig-propose|multisig-approve|multisig-cancel|recovery-status|recovery-setup|recovery-request|recovery-approve|recovery-complete <json|id>] [--operation ID]
+  finality status | finality op <opId> | finality notarize [--include op1,op2] | finality schedule --kind none|signed-frontier|fixed-validator [--signer PK] [--effective-after MS] --operation ID | finality close --through MS | finality submit <record>
   blueprint export [out.json] [--title TEXT] [--no-schema]
   definition | publication | publication-history | publication-operation <id> | publication-recover <rev|opId> [dir] | publication-rollback <rev|opId> --operation ID
   content put <file> [--visibility public|private] [--no-dedup] [--type mime] | content get <hash|ref-json> [out]
@@ -95,9 +95,9 @@ const flagsByCommand = {
   'command-batch': ['wait'], operation: [],
   retry: ['wait'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
   logs: ['topics', 'latest'],
-  signal: ['ttl'], topic: [], sql: ['topic', 'policies', 'operation', 'author-time', 'wait'],
+  signal: ['ttl'], topic: [], sql: ['topic', 'policies', 'table', 'limit', 'all', 'op', 'at', 'resolution', 'operation', 'author-time', 'wait'],
   reducers: ['bind', 'operation', 'author-time', 'wait'], permissions: ['operation', 'author-time', 'wait'],
-  finality: ['through', 'kind', 'signer', 'validators', 'threshold', 'effective-after', 'operation', 'author-time', 'wait'], blueprint: ['title', 'no-schema'], content: ['visibility', 'no-dedup', 'type'], definition: [], publication: [], 'publication-history': [], 'publication-operation': [],
+  finality: ['through', 'kind', 'signer', 'validators', 'threshold', 'effective-after', 'include', 'operation', 'author-time', 'wait'], blueprint: ['title', 'no-schema'], content: ['visibility', 'no-dedup', 'type'], definition: [], publication: [], 'publication-history': [], 'publication-operation': [],
   'publication-recover': [], 'publication-rollback': ['operation', 'author-time', 'wait'], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
@@ -477,7 +477,18 @@ export async function main(argv, { attach } = {}) {
     if (!process.stdout.write(jsonText(value, flags.pretty) + '\n')) await once(process.stdout, 'drain', { signal: lifetime.signal });
   };
   const openPage = ref => attach ? options => attach({ page: ref, ...options })
-    : async options => { const workspace = await openWorkspace({ root: workspaceDir ?? findWorkspace() }); return { ...await attachPage(workspace, ref, options), page: ref ?? null }; };
+    : async options => {
+      const workspace = await openWorkspace({ root: workspaceDir ?? findWorkspace() });
+      return {
+        ...await attachPage(workspace, ref, options),
+        page: ref ?? null,
+        notarizeFrontier: async (input, reqOpts) => {
+          const page = await workspace.page(ref);
+          const client = await workspace.client();
+          return client.page(page.id).peers.notarizeFrontier(input, reqOpts);
+        },
+      };
+    };
   let completedResult;
   try {
     if (session) {

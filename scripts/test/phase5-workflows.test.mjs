@@ -93,7 +93,7 @@ test('Human + Agent Data PRs (proposals.mjs), conflict inbox (finality-ux.mjs), 
     assert.equal(approved.approved, true);
     assert.equal(approved.applied, true);
 
-    const settlement = describeOpSettlement(sAdmin, approved.applyOpId);
+    const settlement = await describeOpSettlement(sAdmin, approved.applyOpId);
     assert.equal(settlement.status, 'local');
     assert.equal(settlement.label, 'Saved locally');
 

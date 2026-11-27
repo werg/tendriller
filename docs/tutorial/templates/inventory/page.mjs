@@ -7,6 +7,10 @@ import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
 import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { mountFinality } from '../../shared/helpers/finality-view.mjs';
+import { listPendingProposals } from '../../shared/helpers/proposals.mjs';
+import { listUnresolvedConflicts, resolveConflictEntry } from '../../shared/helpers/finality-ux.mjs';
+import { renderProposalCard } from '../../shared/ui/proposal-card.mjs';
+import { mountRecoveryPanel } from '../../shared/ui/recovery-panel.mjs';
 import { deriveInventory } from './domain.mjs';
 const $ = id => document.querySelector(id);
 const diagnostics = mountDiagnosticsPanel($('main') ?? document.body, { appName: 'Shared inventory' });
@@ -46,6 +50,58 @@ function render(value) {
   $('#schema').textContent = `Current columns: ${value.value.columns.join(', ')}. Catalog: ${value.value.catalog.map(item => `${item.name} (${item.type})`).join(', ')}`;
   $('#receipts').replaceChildren(...value.value.transfers.map(receipt => { const item = document.createElement('li'); item.textContent = `${receipt.units} units: ${receipt.from} → ${receipt.to}. Stable receipt ${receipt.id}.`; return item; }));
   renderDetail(); if (active?.isConnected && active !== document.activeElement) active.focus({ preventScroll: true }); scrollTo(x, y);
+  void refreshReviewPanels();
+}
+let panelRefreshToken = 0;
+async function refreshReviewPanels() {
+  if (!session) return;
+  const token = ++panelRefreshToken;
+  try {
+    const [proposals, conflicts] = await Promise.all([
+      listPendingProposals(session, 'proposals').catch(() => []),
+      listUnresolvedConflicts(session, 'inventory').catch(() => []),
+    ]);
+    if (token !== panelRefreshToken) return;
+    const statusEl = $('#proposals-status');
+    const proposalsEl = $('#proposals-list');
+    const conflictsEl = $('#conflicts-list');
+    if (proposalsEl) {
+      proposalsEl.replaceChildren(...proposals.map(item => renderProposalCard(session, item, {
+        workflowTopic: 'proposals',
+        onResolved: () => { void live?.refresh(); void refreshReviewPanels(); },
+      })));
+    }
+    if (conflictsEl) {
+      conflictsEl.replaceChildren(...conflicts.map(entry => {
+        const row = document.createElement('div');
+        row.className = 'tendril-conflict-row';
+        const text = document.createElement('span');
+        text.textContent = `Conflict on ${entry.opId.slice(0, 12)}: ${entry.reason || 'changed concurrently'}`;
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'secondary';
+        dismiss.textContent = 'Dismiss conflict';
+        dismiss.addEventListener('click', async () => {
+          dismiss.disabled = true;
+          await resolveConflictEntry(session, { sqlTopic: 'inventory', opId: entry.opId, resolution: 'dismissed' });
+          void refreshReviewPanels();
+        });
+        row.append(text, ' ', dismiss);
+        return row;
+      }));
+    }
+    if (statusEl) {
+      statusEl.textContent = proposals.length || conflicts.length
+        ? `${proposals.length} pending proposal${proposals.length === 1 ? '' : 's'} · ${conflicts.length} unresolved conflict${conflicts.length === 1 ? '' : 's'}`
+        : 'No pending proposals or conflicts.';
+    }
+    if ((proposals.length > 0 || conflicts.length > 0) && $('#proposals-panel')) {
+      $('#proposals-panel').open = true;
+    }
+    if ($('#recovery-mount')) {
+      await mountRecoveryPanel($('#recovery-mount'), session, { onRecovered: () => void live?.refresh() }).catch(() => {});
+    }
+  } catch { /* Non-fatal if optional panels are not yet materialized */ }
 }
 window.addEventListener('hashchange', renderDetail);
 function show(inspection) {

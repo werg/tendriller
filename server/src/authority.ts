@@ -882,7 +882,7 @@ export async function syncControlState(
 const ENROLLMENT_FIELDS = [
   'action', 'publicKey', 'proof', 'invite', 'genesis', 'casNodes', 'publicOps',
   'checkpoints', 'knownOpIds', 'knownCasHashes', 'encryptedEnvelopes', 'knownEnvelopeDigests',
-  'request',
+  'request', 'extraInclusions',
 ];
 const JOIN_REQUEST_DOMAIN = 'tendriller-join-request-v1';
 const JOIN_REQUESTS_KEY = 'v2_join_requests';
@@ -1211,6 +1211,11 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
       if (input.action === 'mailbox') {
         fields('encryptedEnvelopes', 'publicOps', 'casNodes', 'knownEnvelopeDigests', 'knownOpIds', 'knownCasHashes');
         return json(await syncMailbox(t, principal, input));
+      }
+
+      if (input.action === 'notary') {
+        fields('extraInclusions');
+        return json(await notarizeBlindFrontier(t, principal, { extraInclusions: input.extraInclusions }));
       }
 
       if (input.action === 'join_request') {

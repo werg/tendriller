@@ -15,6 +15,7 @@ const quantity = { type: 'integer', minimum: 0, maximum: 1_000_000 };
 export const imports = Object.freeze({});
 export const topics = Object.freeze({
   inventory: Object.freeze({ module: 'chronolog/sql' }),
+  proposals: Object.freeze({ module: 'chronolog/workflow', export: 'stateMachine' }),
 });
 
 export async function deriveInventory(view) {
@@ -69,7 +70,8 @@ export const definition = defineApplication({
             `CREATE TABLE IF NOT EXISTS inventory (
               id TEXT PRIMARY KEY,
               units INTEGER NOT NULL CHECK (units >= 0 AND units <= 1000000),
-              owner TEXT NOT NULL
+              owner TEXT NOT NULL,
+              _last_op_id TEXT
             )`,
             `CREATE TABLE IF NOT EXISTS transfers (
               id TEXT PRIMARY KEY,
@@ -84,6 +86,8 @@ export const definition = defineApplication({
             )`,
             `INSERT OR IGNORE INTO inventory(id, units, owner) VALUES ('source', 10, actor()), ('destination', 0, actor())`,
           ],
+          stampTables: ['inventory'],
+          auditTables: ['inventory'],
           policies: {
             inventory: {
               insert: 'NEW.owner = actor()',

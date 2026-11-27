@@ -668,7 +668,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
         ...(permissionsSummary ? { permissionsSummary } : {}),
         queries,
         commands,
-        builtinTools: ['agents_list', 'agent_message', 'agent_feed', 'query_sql', 'query_multiple_applications', 'read_application_events', 'inspect_application_operation'],
+        builtinTools: ['agents_list', 'agent_message', 'agent_feed', 'query_sql', 'query_as_of', 'list_conflicts', 'propose_sql_branch', 'query_multiple_applications', 'read_application_events', 'inspect_application_operation'],
       },
     });
   }
@@ -743,6 +743,145 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             throw new HttpError(403, 'sql_read_only', 'query_sql only permits read-only SQL queries.');
           }
           throw new HttpError(400, 'sql_query_failed', msg);
+        }
+      });
+    }
+
+    if (method === 'query_as_of') {
+      await checkGrant('applications:read');
+      if (!caps.read) throw new HttpError(403, 'read_not_permitted');
+      meterCall();
+      const targetTopic = string(params.topic, 128);
+      const hasOpId = typeof params.opId === 'string' && /^[0-9a-f]{64}$/u.test(params.opId);
+      const hasTs = typeof params.atTimestampMs === 'number' && Number.isSafeInteger(params.atTimestampMs) && params.atTimestampMs >= 0;
+      if (!hasOpId && !hasTs) {
+        throw new HttpError(400, 'invalid_arguments', 'Supply either a 64-hex "opId" or nonnegative integer "atTimestampMs".');
+      }
+      const target = hasOpId ? { opId: params.opId as string } : { atTimestampMs: BigInt(params.atTimestampMs as number) };
+      const queryInput = typeof params.sql === 'string'
+        ? { sql: string(params.sql, 8192), params: Array.isArray(params.params) ? params.params : [], format: params.format === 'rows' ? 'rows' : 'objects' }
+        : (params.input ?? null);
+      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
+        try {
+          const result = await session.queryAsOf(targetTopic, queryInput as any, target);
+          return json({ value: { topic: targetTopic, targetOpId: result.targetOpId, revision: result.revision, value: result.value } });
+        } catch (err) {
+          throw new HttpError(400, 'time_travel_query_failed', err instanceof Error ? err.message : String(err));
+        }
+      });
+    }
+
+    if (method === 'list_conflicts') {
+      await checkGrant('applications:read');
+      if (!caps.read) throw new HttpError(403, 'read_not_permitted');
+      meterCall();
+      const requestedTopic = typeof params.topic === 'string' && params.topic.trim() ? params.topic.trim() : null;
+      const unresolvedOnly = params.unresolvedOnly !== false;
+      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
+        const redTopics = (session.topic('$reducers') as { topics?: Record<string, any> } | null)?.topics ?? {};
+        let targetTopic = requestedTopic;
+        if (!targetTopic) {
+          const sqlTopics = Object.entries(redTopics)
+            .filter(([name, binding]) => !name.startsWith('$') && binding?.module === 'chronolog/sql')
+            .map(([name]) => name);
+          if (sqlTopics.length === 1) targetTopic = sqlTopics[0];
+          else if (sqlTopics.includes('sql')) targetTopic = 'sql';
+        }
+        if (!targetTopic) {
+          throw new HttpError(400, 'sql_topic_required', 'Specify "topic" because this page has zero or multiple SQL topics.');
+        }
+        const result = await session.query(targetTopic, { kind: 'conflicts', unresolvedOnly } as any);
+        return json({ value: { topic: targetTopic, revision: result.revision, value: result.value } });
+      });
+    }
+
+    if (method === 'propose_sql_branch') {
+      await checkGrant('applications:write');
+      if (!caps.write) throw new HttpError(403, 'write_not_permitted');
+      meterCall();
+      const title = string(params.title, 200);
+      const operationId = string(params.operationId, 512);
+      const rawStmts = Array.isArray(params.statements) ? params.statements : [];
+      if (rawStmts.length === 0 || rawStmts.length > 32) {
+        throw new HttpError(400, 'invalid_arguments', 'Supply 1..32 SQL statements.');
+      }
+      const requestedTopic = typeof params.topic === 'string' && params.topic.trim() ? params.topic.trim() : null;
+      const requestedWorkflow = typeof params.workflowTopic === 'string' && params.workflowTopic.trim() ? params.workflowTopic.trim() : null;
+      const withRowGuards = params.withRowGuards !== false;
+      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
+        const redTopics = (session.topic('$reducers') as { topics?: Record<string, any> } | null)?.topics ?? {};
+        let sqlTopic = requestedTopic;
+        if (!sqlTopic) {
+          const sqlTopics = Object.entries(redTopics)
+            .filter(([name, binding]) => !name.startsWith('$') && binding?.module === 'chronolog/sql')
+            .map(([name]) => name);
+          if (sqlTopics.length === 1) sqlTopic = sqlTopics[0];
+        }
+        if (!sqlTopic) throw new HttpError(400, 'sql_topic_required', 'Specify "topic" for the target SQL database.');
+
+        let workflowTopic = requestedWorkflow;
+        if (!workflowTopic) {
+          const wfTopics = Object.entries(redTopics)
+            .filter(([name, binding]) => !name.startsWith('$') && binding?.module === 'chronolog/workflow')
+            .map(([name]) => name);
+          if (wfTopics.length === 1) workflowTopic = wfTopics[0];
+          else if (wfTopics.includes('proposals')) workflowTopic = 'proposals';
+        }
+        if (!workflowTopic) {
+          throw new HttpError(400, 'workflow_topic_required', 'This page does not bind a chronolog/workflow topic (or specify "workflowTopic").');
+        }
+
+        const branch = await session.forkSql(sqlTopic);
+        try {
+          for (const item of rawStmts) {
+            if (!item || typeof item !== 'object' || typeof (item as any).sql !== 'string') {
+              throw new HttpError(400, 'invalid_statement', 'Each statement must have a sql string.');
+            }
+            const stmtSql = string((item as any).sql, 8192);
+            const stmtParams = Array.isArray((item as any).params) ? (item as any).params : [];
+            branch.exec(stmtSql, stmtParams, { mode: 'user' });
+          }
+          const proposal = branch.toProposal({ withRowGuards });
+          const proposalId = crypto.randomUUID();
+          const summary = {
+            totalChanges: proposal.diff.tables.reduce((s, tbl) => s + tbl.inserted.length + tbl.updated.length + tbl.deleted.length, 0),
+            inserted: proposal.diff.tables.reduce((s, tbl) => s + tbl.inserted.length, 0),
+            updated: proposal.diff.tables.reduce((s, tbl) => s + tbl.updated.length, 0),
+            deleted: proposal.diff.tables.reduce((s, tbl) => s + tbl.deleted.length, 0),
+            changedPages: proposal.diff.merkle.totalChangedPages,
+            tables: proposal.diff.tables.map(tbl => ({
+              table: tbl.table,
+              inserted: tbl.inserted.length,
+              updated: tbl.updated.length,
+              deleted: tbl.deleted.length,
+            })),
+          };
+          const op = await session.command(`${workflowTopic}:create`, {
+            id: proposalId,
+            title,
+            payload: {
+              kind: 'sql-branch-proposal',
+              sqlTopic,
+              statements: proposal.statements,
+              preconditions: proposal.preconditions,
+              summary,
+              diff: proposal.diff,
+            },
+          }, { operationId });
+          const mat = await op.materialized();
+          return json({
+            value: {
+              proposalId,
+              workflowTopic,
+              sqlTopic,
+              opId: op.id,
+              outcome: mat.outcome,
+              rejectionCode: mat.rejectionCode,
+              summary,
+            },
+          });
+        } finally {
+          branch.close();
         }
       });
     }

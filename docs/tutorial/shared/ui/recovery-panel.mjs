@@ -68,6 +68,17 @@ export async function mountRecoveryPanel(container, session, { onRecovered } = {
   }
 
   const completedForMe = state.requests.find(r => r.newPublicKey === myPk && r.status === 'completed');
+  let isReader = false;
+  if (typeof session.isReader === 'function') {
+    isReader = Boolean(session.isReader(myPk));
+  } else if (typeof session.permissions === 'function') {
+    try {
+      const perms = await session.permissions();
+      isReader = Boolean(perms?.members?.some?.(m => m.publicKey === myPk && m.reader));
+    } catch { /* fall back to status */ }
+  } else {
+    isReader = Boolean(session.status?.canAuthor);
+  }
   if (completedForMe) {
     const finishBtn = document.createElement('button');
     finishBtn.type = 'button';
@@ -78,7 +89,7 @@ export async function mountRecoveryPanel(container, session, { onRecovered } = {
       onRecovered?.(res);
     });
     container.append(finishBtn);
-  } else if (!session.isReader?.(myPk)) {
+  } else if (!isReader) {
     const reqBtn = document.createElement('button');
     reqBtn.type = 'button';
     reqBtn.textContent = 'Request access recovery';

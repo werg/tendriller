@@ -229,3 +229,58 @@ test('authored graphs retain exact bytes and reject incomplete, oversized or lin
   await symlink(join(root, 'index.html'), join(root, 'linked.html'));
   assert.throws(() => pack(root), /symlink/);
 });
+
+test('extended sql, finality, and permissions CLI subcommands delegate to Chronolog session APIs', async () => {
+  const calls = [];
+  const fakeOp = id => ({ inspect: async () => facts(id) });
+  const session = {
+    query: async (topic, input) => { calls.push(['query', topic, input]); return { ok: true, topic, input }; },
+    queryAsOf: async (topic, input, asOf) => { calls.push(['queryAsOf', topic, input, asOf]); return { rows: [['ok']] }; },
+    submit: async payload => { calls.push(['submit', payload]); return fakeOp(payload.operationId); },
+    finalityStatus: async opId => { calls.push(['finalityStatus', opId]); return 'finalized'; },
+    equivocationProofs: async () => [],
+    finality: {
+      status: () => ({ hasActiveFinality: true, closedThroughMs: 500n, checkpoints: [{}] }),
+      submitCheckpoints: async cps => { calls.push(['submitCheckpoints', cps.length]); return { added: cps.length }; },
+    },
+    setupSocialRecovery: async opts => { calls.push(['setupSocialRecovery', opts]); return fakeOp('rec-setup'); },
+    requestSocialRecovery: async opts => { calls.push(['requestSocialRecovery', opts]); return { requestId: 'req-1', verificationCode: '123456', operation: fakeOp('rec-req') }; },
+    approveSocialRecovery: async id => { calls.push(['approveSocialRecovery', id]); return fakeOp('rec-app'); },
+    completeSocialRecovery: async () => { calls.push(['completeSocialRecovery']); return { restoredEpochs: 2 }; },
+    createCompartment: async (ring, members) => { calls.push(['createCompartment', ring, members]); return fakeOp('comp-1'); },
+  };
+
+  await runSessionCommand({ session }, 'sql', ['audit'], { topic: 'db', table: 'items', limit: '20' });
+  await runSessionCommand({ session }, 'sql', ['conflicts'], { topic: 'db' });
+  await runSessionCommand({ session }, 'sql', ['resolve-conflict', 'op-bad'], { topic: 'db', resolution: 'kept-mine', operation: 'res-1' });
+  await runSessionCommand({ session }, 'sql', ['history', 'SELECT * FROM items'], { topic: 'db', op: 'op-123' });
+  const fOp = await runSessionCommand({ session }, 'finality', ['op', 'op-123']);
+  assert.equal(fOp.status, 'finalized');
+  const fStatus = await runSessionCommand({ session }, 'finality', ['status']);
+  assert.deepEqual(fStatus.equivocationProofs, []);
+
+  const [{ encodeRecord }, { authorityRecord }] = await Promise.all([import('@chronolog/peer-session'), import('@tendriller/core/authority')]);
+  const notarizeRes = await runSessionCommand({
+    session,
+    notarizeFrontier: async input => {
+      calls.push(['notarizeFrontier', input]);
+      return { checkpoint: authorityRecord(encodeRecord({ kind: 'cp', n: 1 })), closedThroughMs: '900', includedCount: 1 };
+    },
+  }, 'finality', ['notarize'], { include: JSON.stringify([{ opId: '11'.repeat(32), authorTimestampMs: 100, author: '22'.repeat(32) }]) });
+  assert.deepEqual(notarizeRes.submitted, { added: 1 });
+
+  await runSessionCommand({ session }, 'permissions', ['recovery-status']);
+  await runSessionCommand({ session }, 'permissions', ['recovery-setup', JSON.stringify({ threshold: 2, guardians: [] })]);
+  const reqRes = await runSessionCommand({ session }, 'permissions', ['recovery-request', JSON.stringify({ label: 'Laptop' })]);
+  assert.equal(reqRes.verificationCode, '123456');
+  await runSessionCommand({ session }, 'permissions', ['recovery-approve', 'req-1']);
+  assert.deepEqual(await runSessionCommand({ session }, 'permissions', ['recovery-complete']), { restoredEpochs: 2 });
+  await runSessionCommand({ session }, 'permissions', ['compartment', JSON.stringify({ ring: 'hr', members: [] })]);
+  await runSessionCommand({ session }, 'permissions', ['set-antispam', JSON.stringify({ minPowBits: 8 })], { operation: 'as-1' });
+  await runSessionCommand({ session }, 'permissions', ['vouch-author', 'ab'.repeat(32)], { operation: 'va-1' });
+
+  assert.ok(calls.some(c => c[0] === 'queryAsOf' && c[3].opId === 'op-123'));
+  assert.ok(calls.some(c => c[0] === 'notarizeFrontier' && c[1].extraInclusions.length === 1));
+  assert.ok(calls.some(c => c[0] === 'createCompartment' && c[1] === 'hr'));
+  assert.ok(calls.some(c => c[0] === 'submit' && c[1].updates[0].input.action === 'vouchAuthor'));
+});
