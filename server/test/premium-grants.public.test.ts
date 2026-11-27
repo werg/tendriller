@@ -233,6 +233,29 @@ describe("Complimentary premium access", () => {
     expect((await getAccountEntitlements(env, id)).usage).toMatchObject({ complimentaryMcpCalls: 1, complimentaryMediaBytes: 123 });
   });
 
+  it("preserves a complimentary MCP admission when its grant is revoked in the same millisecond", async () => {
+    const id = await account(), now = Date.now(), input = grantInput(id, "pro", now);
+    await createPremiumGrant(env, ACTOR, input, now);
+    const admitted = await getAccountEntitlements(env, id, now);
+    expect(admitted.premiumGrant).not.toBeNull();
+    await revokePremiumGrant(env, ACTOR, input.id, "Done", now);
+    expect((await getAccountEntitlements(env, id, now)).premiumGrant).toBeNull();
+
+    await recordAccountUsage(env, id, { mcpCalls: 1 }, now, { mcpComplimentary: Boolean(admitted.premiumGrant) });
+    expect((await getAccountEntitlements(env, id, now)).usage).toMatchObject({ mcpCalls: 1, complimentaryMcpCalls: 1 });
+  });
+
+  it("preserves a non-complimentary MCP admission when a grant is added in the same millisecond", async () => {
+    const id = await account(), now = Date.now();
+    const admitted = await getAccountEntitlements(env, id, now);
+    expect(admitted.premiumGrant).toBeNull();
+    await createPremiumGrant(env, ACTOR, grantInput(id, "pro", now), now);
+    expect((await getAccountEntitlements(env, id, now)).premiumGrant).not.toBeNull();
+
+    await recordAccountUsage(env, id, { mcpCalls: 1 }, now, { mcpComplimentary: Boolean(admitted.premiumGrant) });
+    expect((await getAccountEntitlements(env, id, now)).usage).toMatchObject({ mcpCalls: 1, complimentaryMcpCalls: 0 });
+  });
+
   it("allows opting out of an existing PAYG preference while blocking enabling overage through a grant", async () => {
     const h = await create();
     await createPremiumGrant(env, ACTOR, grantInput(h.account!));

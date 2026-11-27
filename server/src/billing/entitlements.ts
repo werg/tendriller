@@ -344,8 +344,8 @@ export async function recordAccountUsage(
   accountId: string,
   delta: { mcpCalls?: number; relayMs?: number; relayBytes?: number; mediaBytes?: number },
   now = Date.now(),
-  /** Trusted server observation interval, never a client-supplied timestamp. */
-  options: { mediaIntervalStart?: number } = {},
+  /** Trusted server observations, never client-supplied billing decisions or timestamps. */
+  options: { mediaIntervalStart?: number; mcpComplimentary?: boolean } = {},
 ): Promise<void> {
   if (!env.ACCOUNTS || !accountId) return;
   const counters = [delta.mcpCalls ?? 0, delta.relayMs ?? 0, delta.relayBytes ?? 0, delta.mediaBytes ?? 0];
@@ -354,13 +354,17 @@ export async function recordAccountUsage(
   if (!mcpCalls && !relayMs && !relayBytes && !mediaBytes) return;
   const mediaStart = options.mediaIntervalStart ?? now;
   if (!Number.isSafeInteger(now) || !Number.isSafeInteger(mediaStart) || mediaStart > now) return;
+  if (options.mcpComplimentary !== undefined && typeof options.mcpComplimentary !== "boolean") return;
+  // Preserve the admission decision independently of the accounting period.
+  // Explicit false must not become complimentary if a grant was added later.
+  const mcpComplimentary = options.mcpComplimentary === undefined ? null : Number(options.mcpComplimentary);
   const { period } = currentUsagePeriod(now);
   try {
     await env.ACCOUNTS.prepare(`INSERT INTO usage_periods
       (account_id, period, mcp_calls, relay_ms, relay_bytes, media_bytes, updated_at, complimentary_mcp_calls, complimentary_media_bytes)
       SELECT ?, ?, ?, ?, ?, ?, ?,
-        CASE WHEN EXISTS(SELECT 1 FROM premium_grants WHERE account_id = ? AND created_at <= ? AND expires_at > ?
-          AND (revoked_at IS NULL OR revoked_at > ?)) THEN ? ELSE 0 END,
+        CASE WHEN COALESCE(?, EXISTS(SELECT 1 FROM premium_grants WHERE account_id = ? AND created_at <= ? AND expires_at > ?
+          AND (revoked_at IS NULL OR revoked_at > ?))) THEN ? ELSE 0 END,
         CASE WHEN EXISTS(SELECT 1 FROM premium_grants WHERE account_id = ? AND created_at <= ? AND expires_at > ?
           AND (revoked_at IS NULL OR revoked_at > ?)) THEN ? ELSE 0 END
       WHERE true
@@ -373,7 +377,7 @@ export async function recordAccountUsage(
         complimentary_media_bytes = complimentary_media_bytes + excluded.complimentary_media_bytes,
         updated_at = excluded.updated_at`)
       .bind(accountId, period, mcpCalls, relayMs, relayBytes, mediaBytes, now,
-        accountId, now, now, now, mcpCalls, accountId, now, mediaStart, mediaStart, mediaBytes).run();
+        mcpComplimentary, accountId, now, now, now, mcpCalls, accountId, now, mediaStart, mediaStart, mediaBytes).run();
   } catch {
     /* Non-fatal if account was deleted concurrently */
     return;

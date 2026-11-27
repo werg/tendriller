@@ -566,11 +566,12 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
     }
   };
 
-  // Preserve the trusted admission time across OAuth checks and serialized work.
+  // Preserve the trusted admission decision across OAuth checks and serialized work.
   // A grant that expires or is revoked while this call waits must not turn an
   // already-admitted complimentary call into billable usage.
   const authorizedAt = t.now();
   const ent = await getAccountEntitlements(t.env, principal.account, authorizedAt);
+  const mcpComplimentary = Boolean(ent.premiumGrant);
   const mcpCheck = canConsumeMcpCall(ent);
   if (!mcpCheck.allowed) {
     const cap = ent.quotas.mcpCallsPerMonth ?? 0;
@@ -590,16 +591,22 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
     });
   }
 
+  // Account when work is metered, so queued calls do not land in a closed month.
+  // The captured grant decision remains stable even across same-ms revocation.
+  const meterCall = () => {
+    t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now(), { mcpComplimentary }));
+  };
+
   if (method === 'agents_list') {
     await checkGrant('applications:read');
-    t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, authorizedAt));
+    meterCall();
     const roster = pageAgents(t);
     return json({ value: { applicationId, pageId: t.tid, self: `mcp:${conn.grant_id}`, selfHandle: conn.handle, ...roster } });
   }
 
   if (method === 'describe_application') {
     await checkGrant('applications:read');
-    t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, authorizedAt));
+    meterCall();
     let described: { queries: readonly any[]; commands: readonly any[] } | null = null;
     let topics: Record<string, unknown> = {};
     let sqlSchemas: Record<string, unknown> = {};
@@ -682,8 +689,6 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
   }
 
   return t.serializeMcp(async () => {
-    const meterCall = () => { t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, authorizedAt)); };
-
     if (method === 'read_application_events') {
       await checkGrant('applications:read');
       if (!caps.read) throw new HttpError(403, 'read_not_permitted');

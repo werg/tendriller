@@ -5,6 +5,7 @@ import { applyPlanToAccount, getAccountEntitlements, PAST_DUE_GRACE_MS, recordAc
 import { signStandardWebhook } from "../src/billing/polar";
 import { reconcileBillingAndUsage } from "../src/billing/usage-sync";
 import { GB } from "../src/billing/plans";
+import { createPremiumGrant, revokePremiumGrant } from "../src/billing/premium-grants";
 import { BASE, create, req } from "./helpers";
 
 const WEBHOOK_SECRET = "whsec_dGVzdF9wb2xhcl9zZWNyZXRfMTIzNDU2Nzg5MA==";
@@ -325,6 +326,96 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     // Second reconciliation emits 0 duplicate events
     const second = await reconcileBillingAndUsage(billingEnv);
     expect(second.flushedEvents).toBe(0);
+  });
+
+  it.each(["pro", "team"] as const)("keeps paid %s checkout available during grant-only access", async plan => {
+    const h = await create();
+    const billingEnv = { ...env, POLAR_ACCESS_TOKEN: "polar_test_tok", POLAR_PRODUCTS_JSON: PRODUCTS, POLAR_API_BASE: "https://polar.mock.test" };
+    const grant = { id: crypto.randomUUID(), accountId: h.account!, plan, expiresAt: Date.now() + 86_400_000, reason: "Checkout testing" };
+    await createPremiumGrant(billingEnv, "operator:testing", grant);
+
+    const page = await route(new Request(`${BASE}/dashboard/billing`, { headers: { Cookie: h.session! } }), billingEnv);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const checkoutForms = (html.match(/<form\b[^>]*action="\/dashboard\/billing\/checkout"[\s\S]*?<\/form>/g) ?? []);
+    expect(checkoutForms).toHaveLength(4);
+    for (const form of checkoutForms) expect(form).not.toMatch(/<button\b[^>]*\bdisabled\b/);
+    expect(html).not.toContain("Current (");
+
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "chk_grant", url: "https://polar.sh/checkout/chk_grant",
+    }), { status: 201 }));
+    const checkout = await route(new Request(`${BASE}/dashboard/billing/checkout`, {
+      method: "POST",
+      headers: { Cookie: h.session!, Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ plan, interval: "month" }),
+    }), billingEnv);
+    expect(checkout.status).toBe(303);
+    expect(checkout.headers.get("Location")).toBe("https://polar.sh/checkout/chk_grant");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({ products: [`prod_${plan}_m`], external_customer_id: h.account });
+    expect(await getAccountEntitlements(billingEnv, h.account!)).toMatchObject({
+      billingPlan: "free", plan, premiumGrant: { id: grant.id }, subscription: null,
+    });
+  });
+
+  it.each([
+    { cap: 2000, ending: "revocation" },
+    { cap: null, ending: "expiry" },
+  ] as const)("allows saved PAYG opt-out during a grant and keeps it off after $ending (cap $cap)", async ({ cap, ending }) => {
+    const h = await create();
+    const billingEnv = { ...env, POLAR_ACCESS_TOKEN: "polar_test_tok", POLAR_WEBHOOK_SECRET: WEBHOOK_SECRET, POLAR_PRODUCTS_JSON: PRODUCTS };
+    const activated = await sendSignedWebhook(billingEnv, {
+      type: "subscription.active",
+      data: {
+        id: `sub_${crypto.randomUUID()}`, product_id: "prod_pro_y", status: "active",
+        recurring_interval: "year", customer: { external_id: h.account },
+      },
+    });
+    expect(activated.status).toBe(200);
+    const setPreference = (body: unknown) => route(new Request(`${BASE}/dashboard/billing/payg`, {
+      method: "POST",
+      headers: { Cookie: h.session!, Origin: BASE, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    }), billingEnv);
+    expect((await setPreference({ payg_enabled: true, spend_cap_cents: cap })).status).toBe(200);
+    const grant = { id: crypto.randomUUID(), accountId: h.account!, plan: "team" as const, expiresAt: Date.now() + 60_000, reason: "PAYG preference testing" };
+    await createPremiumGrant(billingEnv, "operator:testing", grant);
+    expect(await getAccountEntitlements(billingEnv, h.account!)).toMatchObject({ billingPlan: "pro", plan: "team", paygEnabled: false });
+    expect(await env.ACCOUNTS.prepare("SELECT payg_enabled FROM accounts WHERE id = ?").bind(h.account).first()).toEqual({ payg_enabled: 1 });
+
+    const dashboard = () => route(new Request(`${BASE}/dashboard/billing`, { headers: { Cookie: h.session! } }), billingEnv);
+    const html = await (await dashboard()).text();
+    expect(html).toContain("Pay-as-you-go overage is paused");
+    expect(html).toContain("Your saved opt-in will resume");
+    expect(html).toContain("Turn off saved pay-as-you-go");
+    const paygForm = html.match(/<form\b[^>]*action="\/dashboard\/billing\/payg"[\s\S]*?<\/form>/)?.[0];
+    expect(paygForm).toContain('name="payg_enabled" value="0"');
+    expect(paygForm).not.toMatch(/<button\b[^>]*\bdisabled\b/);
+    expect(html).toContain('disabled>Current (Pro Annual)</button>');
+    expect(html).toContain('class="secondary sm">Team Annual ($320)</button>');
+    expect(html).not.toContain("Current (Team");
+    expect((await setPreference({ payg_enabled: true })).status).toBe(402);
+
+    // Submit the opt-out form without a cap field, preserving the saved cap.
+    const optedOut = await route(new Request(`${BASE}/dashboard/billing/payg`, {
+      method: "POST",
+      headers: { Cookie: h.session!, Origin: BASE, "Content-Type": "application/x-www-form-urlencoded" },
+      body: "payg_enabled=0",
+    }), billingEnv);
+    expect(optedOut.status).toBe(303);
+    expect(optedOut.headers.get("Location")).toBe("/dashboard/billing?saved=1");
+    expect(await env.ACCOUNTS.prepare("SELECT payg_enabled, payg_spend_cap_cents FROM accounts WHERE id = ?").bind(h.account).first())
+      .toEqual({ payg_enabled: 0, payg_spend_cap_cents: cap });
+    expect(await (await dashboard()).text()).not.toContain("Turn off saved pay-as-you-go");
+
+    if (ending === "revocation") await revokePremiumGrant(billingEnv, "operator:testing", grant.id, "Testing complete");
+    else vi.spyOn(Date, "now").mockReturnValue(grant.expiresAt + 1);
+    expect(await getAccountEntitlements(billingEnv, h.account!)).toMatchObject({ plan: "pro", premiumGrant: null, paygEnabled: false, paygSpendCapCents: cap });
+    const afterGrant = await (await dashboard()).text();
+    expect(afterGrant).not.toContain("Pay-as-you-go overage is paused");
+    expect(afterGrant.match(/<input\b[^>]*name="payg_enabled"[^>]*>/)?.[0]).toBeDefined();
+    expect(afterGrant.match(/<input\b[^>]*name="payg_enabled"[^>]*>/)?.[0]).not.toContain("checked");
   });
 
   it("redirects signed-in users from / and /auth to /dashboard, supports /?home=1, and shows contextual upgrade card on /dashboard", async () => {

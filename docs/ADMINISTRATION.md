@@ -178,15 +178,21 @@ against live grants in D1, so these checks agree with the application resolver.
 
 While any complimentary grant is active, PAYG is disabled for new consumption.
 The account's existing paid subscription and PAYG preference remain intact and
-resume after grants end. Existing billable usage from before a grant is still
+resume after grants end unless the account holder opts out. The billing dashboard
+keeps that opt-out available during a grant and bases paid checkout selection on
+the underlying billing tier. Existing billable usage from before a grant is still
 billable. New metered MCP calls and media bytes covered by the grant are recorded
 as complimentary units as well as total usage. Complimentary units remain exempt
 after expiry, revocation, or a later subscription signup, so testing cannot turn
 into a delayed overage charge. Finite included allowances still apply; this does
 not create an unlimited test account.
 
-MCP grant coverage is evaluated at the trusted entitlement-check timestamp, so
-an already admitted call stays exempt if its meter runs after expiry or revocation.
+MCP grant coverage is captured from the trusted entitlement check and carried
+into metering as a server-only decision. An already admitted call stays exempt
+after expiry or revocation, including revocation in the same millisecond. An
+ordinary admission is not reclassified by a later grant. The accounting month
+and analytics day use the fresh metering time so queued calls are not backdated
+into a closed usage period that reconciliation no longer reads.
 SFU reports contain a coalesced byte count. The server retains each session's last
 usage-report time; if any grant overlaps that interval, the whole report is
 complimentary. This deliberately favors the account holder because the server
@@ -251,8 +257,8 @@ fixed warning code. An unavailable analytics schema/read returns `503` rather
 than a misleading empty success. The counters are operational estimates: the
 existing relay meter buffers data in memory and may undercount after hibernation
 or eviction, including resumed sockets until they reconnect; SFU volume is
-client-reported. Daily attribution uses the meter's timestamp (the entitlement
-check for MCP, reporting/flush time for media and relay).
+client-reported. Daily attribution uses metering time: execution-time metering
+for MCP and reporting/flush time for media and relay.
 This API does not claim authoritative costs, complete request traffic, CPU,
 latency, actual D1/R2 disk usage, or unique visitors. Those remain Cloudflare
 provider metrics; the existing `scripts/idle-soak/cloudflare.mjs` adapter can
@@ -301,6 +307,42 @@ scopes. For an automated adapter, use a separate Access service credential if
 that gate is enabled. This PR does not provision Access or claim MFA is enforced.
 Do not interpret a normal Tendriller session or an unverified forwarded email
 header as proof of privileged identity.
+
+The supplied CLI does not send Access credentials. If noninteractive access is
+intended, separately configure an Access **Service Auth** policy for a dedicated
+service token and use an HTTP client that supplies both Access headers and the
+operator bearer credential. Access's
+[service-token procedure](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
+uses `CF-Access-Client-Id` and `CF-Access-Client-Secret`; keep `Authorization` for
+the Tendriller operator token. An identity-only/MFA policy requires a client with
+the corresponding Access login session instead of this service-token procedure.
+
+On the trusted operator machine, store these three header lines in a private
+`0600` file outside the checkout, substituting the actual credentials locally:
+
+```text
+Authorization: Bearer <operator token with analytics:read>
+CF-Access-Client-Id: <dedicated Access service client ID>
+CF-Access-Client-Secret: <dedicated Access service client secret>
+```
+
+For example, read aggregate metrics with a bounded request that never follows a
+redirect. The private parent directory must already exist; use a new output file.
+
+```sh
+umask 077
+curl --disable --proto '=https' --silent --show-error --fail-with-body \
+  --connect-timeout 5 --max-time 15 \
+  --header @/private/tendriller-admin/admin-access.headers \
+  --output /private/tendriller-admin/analytics-response.json \
+  --write-out '%{http_code}\n' \
+  https://tendriller.dev/api/admin/v1/analytics
+```
+
+Require HTTP `200` for this read; a redirect or Access denial is a configuration
+or authentication failure. Do not add `--location`, verbose tracing, or put raw
+credentials in command arguments. Use the canonical origin for the intended
+environment and retain the existing UUID/idempotency rules for mutations.
 
 If Access identity is later consumed in application code, verify the JWT signature,
 the fixed trusted issuer, the exact admin application's audience, expiration and
