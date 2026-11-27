@@ -8,9 +8,9 @@ const idSchema = { type: 'string', minLength: 1, maxLength: 128 };
 const dims = DEFAULT_EMBED_DIMS;
 
 /**
- * Local-first encrypted AI Knowledge & Memory base backed by a hash-pinned Chronolog v2
+ * Local-first encrypted AI Knowledge & Memory base backed by a hash-pinned Chronolog
  * `chronolog:sqlite` ES Module reducer (`@app/memory` in `$reducers`) using FTS5 + `sqlite-vec` + `chronolog/rls`.
- * Zero external vector DB, zero native C/C++ builds — identical across browser, Node, and Hosted MCP.
+ * Self-contained portable SQLite + vector search — identical across browser, Node, and Hosted MCP.
  */
 export const imports = Object.freeze({
   '@app/memory': HYBRID_MEMORY_REDUCER_SOURCE,

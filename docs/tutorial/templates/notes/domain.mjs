@@ -22,9 +22,9 @@ const evidenceSource = {
 const noteId = { type: 'string', minLength: 1, maxLength: 128 };
 
 /**
- * Pure deterministic Chronolog v2 ES Module reducer for shared notes.
+ * Pure deterministic Chronolog ES Module reducer for shared notes.
  * Hash-pinned in `$reducers.imports['app/notes']` and executed inside QuickJS-NG
- * on every replica (browser, native agent, and opt-in hosted MCP — no separate `domain.js`).
+ * on every replica (browser, native agent, and opt-in hosted MCP).
  */
 export const NOTES_REDUCER_SOURCE = `
 function isWriter(ctx, author) {

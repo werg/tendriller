@@ -1,4 +1,4 @@
-// Governance & security-posture helper for Chronolog v2 pages.
+// Governance & security-posture helper for Chronolog pages.
 // Surfaces clear, honest UX whenever a page deviates from the default private
 // OAuth + E2EE model (e.g. zero-OAuth openMembers public read/write, multisigMembers,
 // or custom $permissions ES Module reducers).
@@ -12,7 +12,7 @@ const BANNER_STYLE = `.tg-banner{display:flex;gap:.75rem;align-items:flex-start;
 @media(prefers-color-scheme:dark){.tg-banner{border-color:#293948;background:#131e28;color:#e6eef5}.tg-banner[data-tone=warn]{border-color:#5c451d;background:#261d0d;color:#f7dfa9}.tg-banner-badge{background:rgba(255,255,255,.12)}}`;
 
 /**
- * Inspect the live Chronolog v2 `$reducers` + `$permissions` topics and return a
+ * Inspect the live Chronolog `$reducers` + `$permissions` topics and return a
  * plain, user-readable description of this page's cryptographic governance model.
  */
 export function describeGovernance(session, { hostedMcpCount = 0 } = {}) {

@@ -1,8 +1,8 @@
 # State models: `chronolog/sql`, JSON reducers & pluggable authority
 
-In Chronolog v2, every Tendriller application is a single global deterministic reducer whose state is a map of topics. One topic (`$reducers`) maps each topic name to a hash-pinned QuickJS-NG ES Module (`cas:sha256-...`) stored in a Merkle-DAG Content-Addressed Store (CAS).
+In Chronolog, every Tendriller application is a single global deterministic reducer whose state is a map of topics. One topic (`$reducers`) maps each topic name to a hash-pinned QuickJS-NG ES Module (`cas:sha256-...`) stored in a Merkle-DAG Content-Addressed Store (CAS).
 
-There are **no separate events-only vs. SQL engine builds**, **no native C/C++ addons**, and **no `domain.js` bundle to keep in sync**. Every browser tab, Node 22+ agent, and opt-in hosted MCP Worker runs the exact same QuickJS-NG + `sqlite-cas.wasm` runtime.
+Every browser tab, Node 22.15+ agent, and opt-in Hosted MCP Worker runs the exact same unified QuickJS-NG + `sqlite-cas.wasm` runtime directly from `$reducers`.
 
 | Requirement | Start with |
 | --- | --- |

@@ -1,7 +1,7 @@
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-/** Zero DoltLite assets, zero `domain.js` — `sqlite-cas.wasm` ships inside `@chronolog/peer-session` and reducers live in `$reducers`. */
+/** `sqlite-cas.wasm` ships inside `@chronolog/peer-session` and reducers live directly in `$reducers`. */
 export async function buildPage(context, { root = new URL('./', import.meta.url), bundle } = {}) {
   const output = new URL('./dist/', root);
   await rm(output, { recursive: true, force: true });

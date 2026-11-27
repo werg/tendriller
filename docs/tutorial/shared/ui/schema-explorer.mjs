@@ -1,4 +1,4 @@
-// Reactive Live Schema & Reducers Explorer for Chronolog v2 apps.
+// Reactive Live Schema & Reducers Explorer for Chronolog apps.
 // Automatically re-renders whenever an admin, agent, or writer evolves `chronolog-db`
 // tables, RLS predicates, user-owned dynamic tables, or `$reducers` ES Module bindings.
 

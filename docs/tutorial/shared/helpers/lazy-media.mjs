@@ -1,4 +1,4 @@
-// Unified lazy-pull P2P media & attachment helper over Chronolog v2 `session.content`.
+// Unified lazy-pull P2P media & attachment helper over Chronolog `session.content`.
 // Never stuffs large blobs into eager CAS or host R2 storage: chunks are encrypted under
 // epoch keys (for private logs) or hash-addressed (for public logs) and pulled on demand
 // from local OPFS/SQLite cache or connected peers.
@@ -22,7 +22,7 @@ async function normalizeInputBytes(input, fallbackType = 'application/octet-stre
 }
 
 /**
- * Store media bytes via Chronolog v2's unified lazy-pull content pipe (`session.content.put`).
+ * Store media bytes via Chronolog's unified lazy-pull content pipe (`session.content.put`).
  * Returns a compact JSON-serializable `MediaRef` safe to store in `chronolog-db` or CRDT state.
  */
 export async function putMedia(session, input, {

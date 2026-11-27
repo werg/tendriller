@@ -244,7 +244,7 @@ tendril --page notes finality submit '{"record":"<canonical proof record hex>"}'
 
 ## Live SQL evolution, reducers, governance, lazy blobs & portable blueprints
 
-Chronolog v2 session commands let you evolve live logs, inspect governance, move lazy P2P blobs, and export secret-free blueprints directly through the running agent owner:
+Chronolog session commands let you evolve live logs, inspect governance, move lazy P2P blobs, and export secret-free blueprints directly through the running agent owner:
 
 ```sh
 # Live chronolog-db SQL migrations (optional --policies policies.json for Postgres-style write RLS)

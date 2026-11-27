@@ -25,7 +25,7 @@ function decodeBlueprintImports(blueprint) {
 }
 
 /**
- * Open or initialize a browser device's Chronolog v2 genesis and wrap key.
+ * Open or initialize a browser device's Chronolog genesis and wrap key.
  * On an uninitialized page, the owner's browser creates genesis (using either the
  * template's imports/topics or an embedded portable `configuration.blueprint`);
  * on an initialized page it pins the host's genesis and opens from local cache first.

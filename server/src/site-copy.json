@@ -502,7 +502,7 @@
     "pageMissing": {
       "eyebrow": "Page unavailable",
       "title": "This page is no longer hosted here",
-      "lead": "Page `{id}` was not found on this host. It may have expired, been removed, or belonged to a retired pre-v2 deployment.",
+      "lead": "Page `{id}` was not found on this host. It may have expired or been removed.",
       "localSafe": "**Your local data is untouched:** any admitted browser profile or local agent workspace (`.tendriller/`) still holds its retained device history. Export and reconcile local data before creating a replacement page."
     },
     "pageQuota": {

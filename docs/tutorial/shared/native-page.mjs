@@ -1,6 +1,5 @@
 // One optional page inside the workspace's single agent program.
-// Chronolog v2: zero native C/C++ builds, built-in QuickJS-NG + sqlite-cas.wasm,
-// and atomic `$permissions` + `$keys` admission.
+// Portable QuickJS-NG + sqlite-cas.wasm, and atomic `$permissions` + `$keys` admission.
 import { bytesToHex, createApplicationSession, describeApplication, encodeSignedOperation, genesisLogId, hexToBytes, verifySignedOperation } from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';

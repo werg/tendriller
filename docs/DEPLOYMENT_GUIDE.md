@@ -103,7 +103,7 @@ deleting the workspace or state.
 The `deploy/Dockerfile` uses Node 24 on Debian, a non-root user,
 and the workspace's locked runtime dependencies (`npm ci --ignore-scripts`).
 Both event/JSON topics and SQLite-CAS (`chronolog/sql` via `sqlite-cas.wasm`)
-run with zero native C/C++ builds on Node 22+ built-in `node:sqlite`.
+run on Node 22.15+ using built-in `node:sqlite`.
 
 Use the matching `deploy/Dockerfile.dockerignore`
 when building from the workspace root. It excludes the standard private store,

@@ -1,4 +1,4 @@
-// Shared browser Worker composition helper for Chronolog v2 Tendriller pages.
+// Shared browser Worker composition helper for Tendriller pages.
 // Collapses the ~70 lines of QuickJS/SQLite WASM loading, local-first bootstrap,
 // first-browser $publications adoption, admission, participation, blind mailbox sync,
 // and hosted MCP sealing into one maintained 3-line entry per page.
@@ -22,7 +22,7 @@ const compileWasm = async url => {
 const quickJsWasmPromise = compileWasm(quickJsWasmUrl);
 
 /**
- * Start the page's dedicated Chronolog v2 browser owner Worker.
+ * Start the page's dedicated Chronolog browser owner Worker.
  * Pass `sqliteWasmUrl` (imported from `@chronolog/peer-session/sqlite-cas.wasm`) when the
  * page uses `chronolog/sql` or `chronolog:sqlite`.
  */

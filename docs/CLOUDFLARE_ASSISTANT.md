@@ -16,8 +16,9 @@ ChatGPT or Claude can query and run commands on your pages even when no local
   X25519 `wrap_private_key` is never stored in D1 or DO SQLite. It is carried
   only inside the OAuth access/refresh tokens held by the MCP client. On each
   authenticated `/mcp` request, the Durable Object unseals the keys strictly in
-  RAM, runs the request, persists only encrypted Chronolog envelopes to
-  `mcp_store`, and discards all plaintext keys in `finally`.
+  RAM, restores from its cached epoch-encrypted materialized snapshot, runs the
+  request, persists opaque encrypted Chronolog envelopes back to the unified
+  blind mailbox, and discards all plaintext keys in `finally`.
 - **Instant revocation:** Revoking the OAuth grant on `/connections` or
   disconnecting the page invalidates the token and removes its wrapped keys.
 
@@ -32,12 +33,11 @@ and the hosted MCP participant do not establish a running request worker.
 
 ## Execution engines inside the Durable Object
 
-- **Hash-pinned in-chain `$reducers` (QuickJS-NG WASM):** Every Chronolog v2
+- **Hash-pinned in-chain `$reducers` (QuickJS-NG WASM):** Every Chronolog
   page carries its deterministic ES Module reducer code (or binds built-in
   `chronolog/sql`) directly inside its Merkle-DAG CAS and `$reducers` control
   topic. Hosted MCP executes `reduce()`, `query()`, and `describe()` inside a
-  fresh synchronous **QuickJS-NG WASM** sandbox (zero separate `domain.js`
-  upload, zero host/network access).
+  fresh synchronous **QuickJS-NG WASM** sandbox with zero host/network access.
 - **SQL apps (`chronolog/sql` + `sqlite-cas.wasm`):** Chronolog materializes
   SQL topics directly over a 4 KiB Merkle-paged **SQLite-CAS** VFS
   (`sqlite-cas.wasm` + FTS5 + `sqlite-vec`) with Postgres-style write RLS

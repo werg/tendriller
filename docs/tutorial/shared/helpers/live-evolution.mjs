@@ -1,4 +1,4 @@
-// Safe live schema & ES Module reducer evolution helpers for Chronolog v2.
+// Safe live schema & ES Module reducer evolution helpers for Chronolog.
 // Lets admins and agents hot-add or upgrade `$reducers` ES Modules (with local
 // QuickJS-NG dry-run validation before touching the live log), evolve `chronolog-db`
 // schemas and write-RLS policies atomically, and let writers manage personal tables.

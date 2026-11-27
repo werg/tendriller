@@ -1,6 +1,6 @@
 # Connect Tendriller to Google Antigravity
 
-Google Antigravity runs across four surfaces — **Antigravity CLI (`agy`)**, **Antigravity App (2.0)**, **Antigravity IDE / IDE Extensions (ACP)**, and the **Antigravity Python SDK**. This guide documents what each surface supports for Tendriller, how to install the **native Antigravity plugin**, how to connect both **local Chronolog v2 workspaces** and **account-linked `/mcp`** (including the Antigravity App side-panel MCP App), how to wake conversations reliably with `consumers/antigravity-bridge.mjs`, and the real platform boundaries that remain.
+Google Antigravity runs across four surfaces — **Antigravity CLI (`agy`)**, **Antigravity App (2.0)**, **Antigravity IDE / IDE Extensions (ACP)**, and the **Antigravity Python SDK**. This guide documents what each surface supports for Tendriller, how to install the **native Antigravity plugin**, how to connect both **local Chronolog workspaces** and **account-linked `/mcp`** (including the Antigravity App side-panel MCP App), how to wake conversations reliably with `consumers/antigravity-bridge.mjs`, and the real platform boundaries that remain.
 
 Start from the exact service origin requested by the user (e.g. `https://tendriller.dev` or staging). For building an app from scratch, follow [Build an app](BUILD_AN_APP.md) and [State models](STATE_MODELS.md); for multi-page conversation wake qualification, read [Same-conversation delivery](CONVERSATION_DELIVERY.md).
 
@@ -22,7 +22,7 @@ Start from the exact service origin requested by the user (e.g. `https://tendril
 
 End users do **not** need to edit config files, create OAuth apps, or configure sidecars to use Tendriller with Antigravity:
 
-1. **Prompt-only (works today with zero install):** Tell Antigravity what to build, mention `https://tendriller.dev` (or your service origin), and give your sign-in email. Antigravity reads `BUILD_AN_APP.md`, installs the Chronolog v2 starter (`npm ci --ignore-scripts`), publishes the signed browser UI, starts `npm run agent`, and — when live page wake is requested — starts `node consumers/antigravity-bridge.mjs --workspace /abs/workspace --pages <slug>` automatically using `$ANTIGRAVITY_CONVERSATION_ID`.
+1. **Prompt-only (works today with zero install):** Tell Antigravity what to build, mention `https://tendriller.dev` (or your service origin), and give your sign-in email. Antigravity reads `BUILD_AN_APP.md`, installs the starter (`npm ci --ignore-scripts`), publishes the signed browser UI, starts `npm run agent`, and — when live page wake is requested — starts `node consumers/antigravity-bridge.mjs --workspace /abs/workspace --pages <slug>` automatically using `$ANTIGRAVITY_CONVERSATION_ID`.
 2. **One-click MCP & Side-Panel Inbox (after operator CIMD/Marketplace setup):** Install the **Tendriller** plugin from the Antigravity Marketplace (or run `agy mcp add tendriller https://tendriller.dev/mcp`) and click **Authenticate**. On Antigravity App (`v2.34.0+`), `open_tendriller_inbox` immediately docks the interactive **Tendriller Inbox** in the side panel (`aux_pane`) and left sidebar (`global`) with zero extra setup.
 
 ## 2. One-time operator setup (enables zero-setup for all Antigravity users)
@@ -34,7 +34,7 @@ As the Tendriller host operator, two one-time steps eliminate manual setup for e
 
 ## 3. Agent & troubleshooting reference (local workspace & sandbox)
 
-Follow the standard Chronolog v2 zero-native-build flow (Node 22.15+, `npm ci --ignore-scripts`):
+Follow the standard starter flow (Node 22.15+, `npm ci --ignore-scripts`):
 
 ```sh
 npx tendril workspace init --service https://tendriller.dev --owner you@example.com --handle atlas
@@ -142,7 +142,7 @@ These boundaries belong to Google Antigravity itself (verified on Antigravity CL
 ## Related guides
 
 - [Same-conversation delivery](CONVERSATION_DELIVERY.md) — host qualification rules and two-request rehearsal
-- [Build an app](BUILD_AN_APP.md) — complete Chronolog v2 starter workflow
+- [Build an app](BUILD_AN_APP.md) — complete starter workflow
 - [MCP agent guide](MCP_AGENT_GUIDE.md) — `tendril_guide`, `register_agent`, and hosted `/mcp` tools
 - [Integration OAuth](INTEGRATION_OAUTH.md) — configuring `OAUTH_CONFIG_JSON` CIMD clients on a Tendriller host
 - [Agent requests and receipts](AGENT_REQUESTS.md) — `agentMessage`, `agentReceipt`, `agentFeed`, and presence cards

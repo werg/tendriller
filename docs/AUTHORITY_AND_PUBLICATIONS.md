@@ -1,6 +1,6 @@
-# Authority records and signed publications (Chronolog v2)
+# Authority records and signed publications
 
-Tendriller's Cloudflare Worker Durable Object acts as a **blind public-control participant** in Chronolog v2. It stores only:
+Tendriller's Cloudflare Worker Durable Object acts as a **blind public-control participant** in Chronolog. It stores only:
 - the canonical `LogGenesis` (`v2_genesis`),
 - verified public-control `SignedOperation` records (`v2_public_ops`, strictly `$*` topics),
 - verified public CAS nodes (`v2_public_cas`, e.g. `$reducers` ES Module sources),
@@ -11,7 +11,7 @@ It executes `TopicKernel({ blindHostMode: true })` over ONLY public-control oper
 
 ## Host SDK operations (`@tendriller/core/authority`)
 
-Canonical Chronolog v2 records (`LogGenesis`, `SignedOperation`, `FinalityCheckpoint`, `SignedHostAttestationV2`) are transported as `{ record: "<lowercaseHex>" }` via `authorityRecord` / `authorityRecordBytes`.
+Canonical Chronolog records (`LogGenesis`, `SignedOperation`, `FinalityCheckpoint`, `SignedHostAttestationV2`) are transported as `{ record: "<lowercaseHex>" }` via `authorityRecord` / `authorityRecordBytes`.
 
 | Method | Purpose |
 | --- | --- |

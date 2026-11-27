@@ -1,8 +1,8 @@
-// Multi-page agent federation helper: query multiple Chronolog v2 sessions in parallel
+// Multi-page agent federation helper: query multiple Chronolog sessions in parallel
 // with bounded concurrency, per-page error isolation, and revision attribution.
 
 /**
- * Run a declared query or read-only SQL query across several Chronolog v2 pages in parallel.
+ * Run a declared query or read-only SQL query across several Chronolog pages in parallel.
  * Each entry may provide an already-open `{ page, session }` OR a lazy `{ page, open }`
  * opener returning `{ session, detach? }` (matching `withSession`).
  */

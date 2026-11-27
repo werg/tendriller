@@ -1,4 +1,4 @@
-// Deterministic local-first AI memory & hybrid search helper for Chronolog v2 (`chronolog-db`).
+// Deterministic local-first AI memory & hybrid search helper for Chronolog (`chronolog-db`).
 // Combines SQLite-CAS FTS5 full-text search + sqlite-vec (`vec0`) vector similarity +
 // Postgres-style write RLS (`chronolog/rls`) with Reciprocal Rank Fusion (RRF).
 // Works 100% offline with zero external API keys (via deterministic feature-hashing vectors)
@@ -82,7 +82,7 @@ export function buildSafeFtsQuery(query) {
 }
 
 /**
- * Self-contained Chronolog v2 QuickJS-NG ES Module reducer for local-first AI memory & hybrid search.
+ * Self-contained Chronolog QuickJS-NG ES Module reducer for local-first AI memory & hybrid search.
  * Enforces Postgres-style write RLS (`chronolog/rls`) on `memories` in `mode: 'user'`, then
  * atomically maintains derived `memories_fts` (FTS5) and `memories_vec` (`vec0`) indexes so no
  * unauthorized writer can tamper with or desynchronize search indexes.

@@ -6,15 +6,15 @@ Tendriller lets you and your AI agent launch an interactive web app across your 
 
 ---
 
-## Under the hood: why Chronolog v2 is cool
+## Under the hood: why Chronolog is cool
 
-Every Tendriller app runs on one owned **Chronolog v2** peer session (`@chronolog/peer-session`): a **flat timestamp-ordered CRDT log with hash-pinned ES Module reducers and built-in deterministic `chronolog-db` (SQLite-CAS)**. Most local-first stacks force an awkward choice between a rigid centralized sync engine or a hand-rolled event log with fragile migrations and native C++ builds. Chronolog v2 collapses all of that into five composable primitives:
+Every Tendriller app runs on one owned **Chronolog** peer session (`@chronolog/peer-session`): a **flat timestamp-ordered CRDT log with hash-pinned ES Module reducers and built-in deterministic `chronolog-db` (SQLite-CAS)**. It brings everything together in five composable primitives:
 
 1. **A flat, timestamp-ordered operation set with instant snapshot reopen.** Every write is an immutable, Ed25519-signed operation ordered solely by `(authorTimestampMs, author, opId)` — no hash-linked commit chains, no coordinator, no server-assigned sequence numbers. Local materialized snapshot caching (`materialized-cache`) and portable epoch-encrypted snapshots (`exportMaterializedSnapshot`) let cold tabs and ephemeral Hosted MCP calls reopen in **O(1)** (or suffix-only replay) while automatically rewinding cleanly on late out-of-order arrivals.
-2. **Hash-pinned ES Module topic reducers (`$reducers`) that evolve live.** `$reducers` maps each topic to a content-addressed ES Module (`cas:sha256-...`) running in deterministic QuickJS-NG WASM. Dry-run and hot-publish new reducers or SQL migrations live (`shared/helpers/live-evolution.mjs`, `tendril reducers publish`), or omit `$reducers` mutations to freeze rules forever. Permissions (`$permissions`) are pluggable too — host-attested `attestedMembers`, zero-OAuth `openMembers` (with `blockAuthor` / `unblockAuthor` moderation), M-of-N `multisigMembers` (with signed peer join requests and 6-digit out-of-band verification codes), or a custom ES Module reducer. Every browser tab, Node 22.15+ agent, and opt-in Hosted MCP Worker runs the exact same code — **no separate `domain.js` bundle, zero native C/C++ addons, zero `node-gyp`**.
-3. **First-class `chronolog-db` (`chronolog/sql`, `chronolog/sqlite-helpers` & `chronolog:sqlite`) with FTS5 + `sqlite-vec`.** Bind topics directly to `chronolog/sql` for zero-boilerplate relational tables, use `chronolog/sqlite-helpers` (`defineSqlReducer`, `withDb`, `rowsToObjects`) for concise custom SQLite reducers, or build encrypted local-first AI memory with FTS5 BM25 + `sqlite-vec` k-NN + RRF hybrid search (`templates/knowledge/`). Every transaction runs over deterministic 4 KiB Merkle-paged SQLite (`sqlite-cas.wasm` — including FTS5 and `sqlite-vec` writes directly in `mode: 'user'`), with kernel-bound `actor()`, `op_id()`, `op_time()`, **Postgres-style write RLS (`chronolog/rls`)**, and safe **user-owned dynamic tables** (`CREATE TABLE` / `ALTER TABLE` / `DROP TABLE` as ordinary signed transactions).
+2. **Hash-pinned ES Module topic reducers (`$reducers`) that evolve live.** `$reducers` maps each topic to a content-addressed ES Module (`cas:sha256-...`) running in deterministic QuickJS-NG WASM. Dry-run and hot-publish new reducers or SQL migrations live (`shared/helpers/live-evolution.mjs`, `tendril reducers publish`), or omit `$reducers` mutations to freeze rules forever. Permissions (`$permissions`) are pluggable too — host-attested `attestedMembers`, zero-OAuth `openMembers` (with `blockAuthor` / `unblockAuthor` moderation), M-of-N `multisigMembers` (with signed peer join requests and 6-digit out-of-band verification codes), or a custom ES Module reducer. Every browser tab, Node 22.15+ agent, and opt-in Hosted MCP Worker runs the exact same hash-pinned ES Module code deterministically.
+3. **First-class `chronolog-db` (`chronolog/sql`, `chronolog/sqlite-helpers` & `chronolog:sqlite`) with FTS5 + `sqlite-vec`.** Bind topics directly to `chronolog/sql` for relational tables, use `chronolog/sqlite-helpers` (`defineSqlReducer`, `withDb`, `rowsToObjects`) for concise custom SQLite reducers, or build encrypted local-first AI memory with FTS5 BM25 + `sqlite-vec` k-NN + RRF hybrid search (`templates/knowledge/`). Every transaction runs over deterministic 4 KiB Merkle-paged SQLite (`sqlite-cas.wasm` — including FTS5 and `sqlite-vec` writes directly in `mode: 'user'`), with kernel-bound `actor()`, `op_id()`, `op_time()`, **Postgres-style write RLS (`chronolog/rls`)**, and safe **user-owned dynamic tables** (`CREATE TABLE` / `ALTER TABLE` / `DROP TABLE` as ordinary signed transactions).
 4. **Unified streaming P2P media, SW peer recovery, agent auto-pinning & portable blueprints.** Stream photos, audio, and large files lazily over P2P via `session.content` (`putStream` / `readStream` / `pin` / `pruneCache`) without bloating host storage; `tendril agent run` auto-pins recent content under a bounded budget so mobile uploads stay reachable after the phone sleeps; the browser Service Worker transparently recovers host-pruned (`404`/`410`) historical `$publications` assets from connected peers with SHA-256 verification; and `@tendriller/core/blueprint` + `/dashboard` **Remix** clone app logic/schema with zero private rows or keys.
-5. **Strict blind-host control partition + unified blind mailbox & zero-bundle Hosted MCP.** On private logs, Tendriller's Cloudflare Worker Durable Object runs `TopicKernel({ blindHostMode: true })` over *only* public `$*` control topics (`$permissions`, `$keys`, `$finality`, `$publications`) and relays *only* opaque AEAD envelopes through one unified blind store-and-forward mailbox (`v2_mailbox_envelopes` — zero plaintext and zero private SQLite pages on the host). Browsers, offline mobile devices, CLI agents, and opt-in RAM-only Hosted MCP (which also caches an epoch-encrypted materialized snapshot for fast `/mcp` calls, live `sqlSchemas`, read-only `query_sql`, and up-to-8-page `query_multiple_applications`) all converge seamlessly through the same blind mailbox.
+5. **Strict blind-host control partition + unified blind mailbox & Hosted MCP.** On private logs, Tendriller's Cloudflare Worker Durable Object runs `TopicKernel({ blindHostMode: true })` over *only* public `$*` control topics (`$permissions`, `$keys`, `$finality`, `$publications`) and relays *only* opaque AEAD envelopes through one unified blind store-and-forward mailbox (zero plaintext and zero private SQLite pages on the host). Browsers, offline mobile devices, CLI agents, and opt-in RAM-only Hosted MCP (which also caches an epoch-encrypted materialized snapshot for fast `/mcp` calls, live `sqlSchemas`, read-only `query_sql`, and up-to-8-page `query_multiple_applications`) all converge seamlessly through the same blind mailbox.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -36,13 +36,13 @@ Every Tendriller app runs on one owned **Chronolog v2** peer session (`@chronolo
 
 The name combines an agent's tendrils reaching new interfaces and sensors with a drill opening a path for them.
 
-**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **register agent → create page → write ES Module reducer (JSON/KV or `chronolog:sqlite` + `chronolog/rls`) & initialize v2 genesis → publish signed UI → owner sign-in → member admits browser (atomic `$permissions` + `$keys` HPKE lockboxes) → author and replicate → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). One agent (one credential, one signing key) maintains many pages from one local workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Deliver the [running application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
+**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **register agent → create page → write ES Module reducer (JSON/KV or `chronolog:sqlite` + `chronolog/rls`) & initialize log genesis → publish signed UI → owner sign-in → member admits browser (atomic `$permissions` + `$keys` HPKE lockboxes) → author and replicate → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). One agent (one credential, one signing key) maintains many pages from one local workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Deliver the [running application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
 
 Give each app a recognizable favicon: set `icon` to an emoji such as `🌱` and Tendriller converts it to an SVG automatically. HTTPS image URLs work too. See [favicons and page branding](docs/BROWSER_API.md#favicons-and-page-branding).
 
 ## Keep a page on your phone
 
-Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device admission remain owned by the Chronolog v2 session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).
+Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device admission remain owned by the Chronolog session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).
 
 **Page options → Set up voice input** offers explicit tap-to-talk and optional on-device wake phrases. Microphone use starts only after local consent; speech assets load on demand. Authored pages can reuse `mountVoiceControls` with a reviewed-text callback. See [voice lifecycle](docs/HANDS_FREE.md).
 
@@ -57,7 +57,7 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Same-conversation delivery](docs/CONVERSATION_DELIVERY.md) — active-turn steering, idle wake, multi-page checkpoints and host qualification
 - [Restart consumers](docs/AGENT_RESTART.md) — republish/agent-program restart checklist
 - [Reviewed media and AI](docs/AI_INPUT.md) — camera, voice, credential-owning native inference, and explicit review
-- [Session bootstrap](docs/SESSION_BOOTSTRAP.md) — native/browser identity, v2 genesis, admission, and safe resume
+- [Session bootstrap](docs/SESSION_BOOTSTRAP.md) — native/browser identity, genesis, admission, and safe resume
 - [Agent delivery](docs/AGENT_DELIVERY.md) — provisioning, process lifetime, and completion evidence
 - [Start from MCP](docs/MCP_AGENT_GUIDE.md) — using `tendril_guide` and account-linked `/mcp`
 - [Connect ChatGPT](docs/CHATGPT_INTEGRATION.md) — plugin install, workspace sharing, and per-app consent
@@ -68,8 +68,8 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Test a release locally](docs/LOCAL_HOST.md) — verified local host, test owner, publication, and admission
 
 ### Reference and operations
-- [Agent guide](agent.md) — concise agent workflow and Chronolog v2 reducer recipes
-- [Architecture](docs/ARCHITECTURE.md) — Chronolog v2 central-pipe design, blind Worker host, and package boundaries
+- [Agent guide](agent.md) — concise agent workflow and Chronolog reducer recipes
+- [Architecture](docs/ARCHITECTURE.md) — Chronolog central-pipe design, blind Worker host, and package boundaries
 - [Application contract](docs/APPLICATION_BACKENDS.md) — commands, stored and materialized operations, coherent reads, and optional finality
 - [Browser API](docs/BROWSER_API.md) — session adapter, Home Screen setup, sensors, voice, and offline cache
 - [Participant protocol](docs/PROTOCOL.md) — blind public-control sync, authorization, and signed publications
@@ -86,7 +86,7 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 
 ## Build and verify
 
-Requires Node 22.15+ (uses Node's built-in `node:sqlite`, zero native C/C++ builds!):
+Requires Node 22.15+ (uses Node's built-in `node:sqlite`):
 
 ```sh
 npm ci --ignore-scripts
@@ -107,6 +107,6 @@ npm run test:browser
 | `tools/` | Standalone CLI (`tendril`, `tendril-preview`), authored-file packing, and explicit preview |
 | `plugin/` | OpenAI ChatGPT plugin manifest, build script, setup skill, and review guide |
 | `scripts/` | Builds, boundary checks, release composition, qualification, and provisioning |
-| `docs/` | Guides, protocol reference, operations, and downloadable Chronolog v2 starter workspace |
+| `docs/` | Guides, protocol reference, operations, and downloadable Chronolog starter workspace |
 
 Pre-release target: storage is initialized cleanly from its fresh baseline schema (DO schema revision 15) with no legacy readers or migration layers.

@@ -4,13 +4,13 @@ const id = { type: 'string', minLength: 1, maxLength: 128 };
 const quantity = { type: 'integer', minimum: 0, maximum: 1_000_000 };
 
 /**
- * Chronolog v2 SQLite-CAS + Postgres-style write RLS domain backed directly by the
+ * Chronolog SQLite-CAS + Postgres-style write RLS domain backed directly by the
  * built-in `chronolog/sql` standard topic reducer — zero custom JS reducer boilerplate!
  *
  * - Every command submits declarative SQL statements + atomic preconditions to `chronolog/sql`
  * - `initialize` runs `migrate` to create tables and install Postgres-style write RLS triggers
  * - `runUserDdl` lets any writer create/alter/drop their own personal SQLite tables safely
- * - Zero DoltLite, zero native C/C++ addons, identical in browser, Node 22+, and hosted MCP Workers
+ * - Portable WebAssembly runtime, identical in browser, Node 22+, and hosted MCP Workers
  */
 export const imports = Object.freeze({});
 export const topics = Object.freeze({

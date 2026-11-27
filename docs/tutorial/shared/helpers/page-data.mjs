@@ -1,4 +1,4 @@
-// Agent-first Chronolog v2 page data. `npm run init -- <slug>` creates the page's
+// Agent-first Chronolog page data. `npm run init -- <slug>` creates the page's
 // v2 LogGenesis (pinning `$reducers` ES Modules, `$permissions`, `$keys`, `$finality`,
 // `$publications`, and the host attestation key) and epoch 0 key before any browser exists.
 import { openPageGenesis } from '@tendriller/core/admission';

@@ -1,6 +1,6 @@
-# Membership, permissions, and key distribution (Chronolog v2)
+# Membership, permissions, and key distribution
 
-In Chronolog v2, cryptographic membership and epoch key distribution are ordinary public-control topics governed by audited standard ES Modules pinned in `$reducers`:
+In Chronolog, cryptographic membership and epoch key distribution are ordinary public-control topics governed by audited standard ES Modules pinned in `$reducers`:
 - **`$permissions`** (`chronolog/permissions` — `attestedMembers`): stores `members` (`publicKey`, optional X25519 `wrapKey`, independent boolean flags `reader`, `writer`, `administrator`, `publisher`, `finalizer`) and `admission` policy (`hostKey`, `mode`, `accounts`, `grant`, `invites`).
 - **`$keys`** (`chronolog/keys` — `hpkeEpochs`): stores each epoch's `keyCommitment` and per-recipient **HPKE lockboxes** (`{ encapsulatedKey, ciphertext }`) sealed to each reader's X25519 `wrapKey`!
 

@@ -1,5 +1,4 @@
-// Chronolog v2 ships portable `sqlite-cas.wasm` directly inside `@chronolog/peer-session`
-// (zero native C/C++ builds, zero separate browser WASM copy step).
+// Chronolog ships portable `sqlite-cas.wasm` directly inside `@chronolog/peer-session`.
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 

@@ -1,6 +1,6 @@
 # Knowledge & AI Memory starter (`knowledge`)
 
-A local-first, end-to-end encrypted AI knowledge base and memory store powered by **Chronolog v2 `chronolog-db`** (`chronolog/sql` with built-in **FTS5** full-text search, **`sqlite-vec`** vector similarity, and Postgres-style write RLS via `chronolog/rls`).
+A local-first, end-to-end encrypted AI knowledge base and memory store powered by **Chronolog `chronolog-db`** (`chronolog/sql` with built-in **FTS5** full-text search, **`sqlite-vec`** vector similarity, and Postgres-style write RLS via `chronolog/rls`).
 
 ## What it demonstrates
 

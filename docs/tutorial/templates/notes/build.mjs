@@ -1,7 +1,7 @@
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-/** Only this page's dedicated dist/ is publishable; reducers live in `$reducers` CAS, never a separate `domain.js`. */
+/** Only this page's dedicated dist/ is publishable; reducers live directly in `$reducers` CAS. */
 export async function buildPage(context, { root = new URL('./', import.meta.url), bundle } = {}) {
   const output = new URL('./dist/', root);
   await rm(output, { recursive: true, force: true });

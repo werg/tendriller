@@ -7,7 +7,7 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const types = { html: 'text/html; charset=utf-8', mjs: 'text/javascript', js: 'text/javascript', json: 'application/json', wasm: 'application/wasm', css: 'text/css', png: 'image/png', webp: 'image/webp', svg: 'image/svg+xml' };
 
 /**
- * Signed Chronolog v2 code publication.
+ * Signed Chronolog code publication.
  * Signs a public-control `$publications` operation (`chronolog/publications`) and uploads
  * only referenced asset bytes not yet stored on the host.
  */
@@ -71,6 +71,6 @@ export async function publishPage(context, { root, session } = {}) {
     page_url: context.page.pageUrl,
     publicationId: receipt.opId,
     version: receipt.version,
-    next: 'Open this ready signed page. The owner signs in and syncs directly with peers over Chronolog v2.',
+    next: 'Open this ready signed page. The owner signs in and syncs directly with peers over Chronolog.',
   };
 }

@@ -1,13 +1,13 @@
 # Architecture
 
-Tendriller is built around **Chronolog v2 (`chronolog`) as the central pipe**. Every application runs over one owned Chronolog v2 session (`@chronolog/peer-session`) that combines:
+Tendriller is built around **Chronolog (`chronolog`) as the central pipe**. Every application runs over one owned Chronolog session (`@chronolog/peer-session`) that combines:
 - a flat, timestamp-ordered CRDT operation set (`(authorTimestampMs, author, opId)`),
-- a Merkle-DAG Content-Addressed Store (`ContentAddressedStore` over `node:sqlite` or IndexedDB — zero native C/C++ builds),
+- a Merkle-DAG Content-Addressed Store (`ContentAddressedStore` over `node:sqlite` or IndexedDB),
 - a deterministic QuickJS-NG WASM sandbox (`TopicKernel`) running hash-pinned ES Module reducers from `$reducers`,
 - built-in deterministic SQLite-CAS (`chronolog:sqlite`, `sqlite-cas.wasm` with FTS5 + `sqlite-vec` + `chronolog/rls`), and
-- end-to-end encrypted peer replication (direct WebRTC + hibernating WebSocket relay) plus ephemeral signals (`@chronolog/signals`).
+- end-to-end encrypted peer replication (direct WebRTC + hibernating WebSocket relay + blind store-and-forward mailbox) plus ephemeral signals (`@chronolog/signals`).
 
-## Chronolog v2 as the central pipe
+## Chronolog as the central pipe
 
 | Pipe / transport | Package | Role and boundary |
 | --- | --- | --- |
@@ -22,9 +22,9 @@ Tendriller is built around **Chronolog v2 (`chronolog`) as the central pipe**. E
 
 | Component | Owner | Why it is structured this way |
 | --- | --- | --- |
-| Application state, reducers, SQLite-CAS, replication, signals | Chronolog v2 session (peers) | All application data and epoch keys stay strictly on admitted devices. Zero server-side application database. |
-| Blind public-control host (`server/`) | Tendriller Cloudflare Worker + Durable Objects (schema revision 15) | Provides authenticated HTTPS origins, OAuth 2.1, immutable signed R2 asset hosting, WebRTC introductions/relay, and a blind `TopicKernel({ blindHostMode: true })` over `$*` public control topics. Reconciles active served code releases and WebSocket access automatically on late revocations. Zero `node:*` imports. |
-| Opt-in hosted MCP participant (`server/src/mcp-participant.ts`) | Tendriller Worker DO (RAM-only per call) | Zero plaintext keys and zero plaintext data at rest: X25519-sealed keys unwrap strictly in RAM from the OAuth Bearer token, hydrate an ephemeral `ApplicationSession` with static `quickjs-ng` + `sqlite-cas.wasm` directly from `$reducers` (no separate `domain.js`!), persist only encrypted envelopes + sealed private CAS chunks back to `mcp_store`, and discard all plaintext material on exit. |
+| Application state, reducers, SQLite-CAS, replication, signals | Chronolog session (peers) | All application data and epoch keys stay strictly on admitted devices. Zero server-side application database. |
+| Blind public-control host (`server/`) | Tendriller Cloudflare Worker + Durable Objects | Provides authenticated HTTPS origins, OAuth 2.1, immutable signed R2 asset hosting, WebRTC introductions/relay, a blind store-and-forward mailbox, and a blind `TopicKernel({ blindHostMode: true })` over `$*` public control topics. Reconciles active served code releases and WebSocket access automatically on late revocations. Zero `node:*` imports. |
+| Opt-in hosted MCP participant (`server/src/mcp-participant.ts`) | Tendriller Worker DO (RAM-only per call) | Zero plaintext keys and zero plaintext data at rest: X25519-sealed keys unwrap strictly in RAM from the OAuth Bearer token, hydrate an ephemeral `ApplicationSession` with static `quickjs-ng` + `sqlite-cas.wasm` directly from `$reducers`, read/write opaque AEAD envelopes against the unified blind mailbox + an epoch-encrypted materialized snapshot cache, and discard all plaintext material on exit. |
 | Browser runtime & standalone tools (`runtime/`, `tools/`) | `@tendriller/runtime`, `@tendriller/tools` | Intentionally zero `@chronolog/*` runtime dependency in `runtime/` so page boot, offline cache, sensors, and voice stay tiny and decoupled. |
 | Owner lifecycle & host glue (`session/`) | `@tendriller/core/{browser-owner,worker-owner,native-owner,admission,participation,native-rtc,diagnostics}` | Thin browser (WebLock dedicated Worker + tab RTC host) and Node (IPC supervisor + `node:sqlite` effect journal) wrappers over `@chronolog/peer-session`. |
 | Multi-participant coordination (`collaboration/`) | `@tendriller/core/collaboration` | Optional ES Module reducer over `chronolog:sqlite` and client for addressed tasks, claims, and fan-in. |
