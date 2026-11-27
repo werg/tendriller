@@ -104,12 +104,17 @@ async function importWrapKey(saved) {
   return Object.freeze({ publicKey: saved.publicKey, privateKey: await importWrapPrivateKey(Uint8Array.from(Buffer.from(saved.privateKey, 'hex'))) });
 }
 
-/** One page device: its own native store, always signed by the shared agent key.
+/** One page device: its own native store, always signed by the shared agent key and wrap key.
  * Every store is served by Chronolog's one pooled SQLite worker for this process. */
-export async function openPageDevice({ path, signer, create = false }) {
+export async function openPageDevice({ path, signer, wrapKey, create = false }) {
   const { openNativeDevice } = await import('@chronolog/peer-session/native');
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  return openNativeDevice({ path, managedSigner: signer, ...(create ? { create: true } : {}) });
+  return openNativeDevice({
+    path,
+    managedSigner: signer,
+    ...(wrapKey ? { managedWrapKey: wrapKey } : {}),
+    ...(create ? { create: true } : {}),
+  });
 }
 
 const HANDLE_RE = /^[a-z][a-z0-9_-]{1,31}$/u;
@@ -543,7 +548,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
         // The agent's key-wrap key (opaque, non-extractable private CryptoKey) for receiving wrapped page keys.
         wrapKey: wrap,
         devicePath: join(page.directory, 'device.sqlite'),
-        openDevice: ({ create = false } = {}) => openPageDevice({ path: join(page.directory, 'device.sqlite'), signer: shared, create }),
+        openDevice: ({ create = false } = {}) => openPageDevice({ path: join(page.directory, 'device.sqlite'), signer: shared, wrapKey: wrap, create }),
         readPrivate: (name, optional = false) => readJson(privatePath(name), optional),
         savePrivate: (name, value) => savePrivateJson(privatePath(name), value),
         privatePath,

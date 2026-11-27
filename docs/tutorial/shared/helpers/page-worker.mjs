@@ -1,7 +1,7 @@
 // Shared browser Worker composition helper for Tendriller pages.
-// Collapses the ~70 lines of QuickJS/SQLite WASM loading, local-first bootstrap,
-// first-browser $publications adoption, admission, participation, blind mailbox sync,
-// and hosted MCP sealing into one maintained 3-line entry per page.
+// Uses WebAssembly.compileStreaming, lazy SQLite WASM loading, inline boot configuration
+// (zero configuration.json round-trip when provided), lock-free multi-tab IndexedDB,
+// and stealable network leadership so sibling tabs never bounce host sockets.
 import quickJsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
@@ -14,9 +14,12 @@ import { admitBrowserSession, bootstrapBrowser, finalizeFirstBrowserGenesis } fr
 import { hostedMcpExtensions } from './hosted-mcp.mjs';
 
 const compileWasm = async url => {
-  const res = await fetch(new URL(url, self.location.href));
-  if (!res.ok) throw Error(`Failed to load WASM (${res.status})`);
-  return WebAssembly.compile(await res.arrayBuffer());
+  const response = await fetch(new URL(url, self.location.href));
+  if (!response.ok) throw Error(`Failed to load WASM (${response.status})`);
+  if (typeof WebAssembly.compileStreaming === 'function') {
+    try { return await WebAssembly.compileStreaming(response.clone()); } catch { /* Fallback if MIME isn't application/wasm */ }
+  }
+  return WebAssembly.compile(await response.arrayBuffer());
 };
 
 const quickJsWasmPromise = compileWasm(quickJsWasmUrl);
@@ -34,13 +37,19 @@ export function servePageWorker({
   configUrl = './configuration.json',
   extraExtensions,
 } = {}) {
-  const sqliteWasmPromise = sqliteWasmUrl ? compileWasm(sqliteWasmUrl) : Promise.resolve(undefined);
+  let sqliteWasmPromise = null;
+  const sqliteWasmLoader = sqliteWasmUrl
+    ? () => (sqliteWasmPromise ??= compileWasm(sqliteWasmUrl))
+    : undefined;
 
   return serveBrowserOwner({
-    async load({ signal }) {
-      const response = await fetch(new URL(configUrl, self.location.href), { signal });
-      if (!response.ok) throw Error('Application configuration is unavailable');
-      const configuration = await response.json();
+    async load({ signal, configuration: inlineConfig }) {
+      let configuration = inlineConfig;
+      if (!configuration || typeof configuration !== 'object' || !configuration.applicationId) {
+        const response = await fetch(new URL(configUrl, self.location.href), { signal });
+        if (!response.ok) throw Error('Application configuration is unavailable');
+        configuration = await response.json();
+      }
       const profileId = browserProfileId(configuration.applicationId);
       return {
         profileId,
@@ -48,14 +57,13 @@ export function servePageWorker({
           const device = await openBrowserDevice({ name: profileId, create: true });
           try { return device.identity.publicKey; } finally { await device.close(); }
         },
-        async openSession({ signal: openSignal, openDirectConnection }) {
+        async openSession({ signal: openSignal, openDirectConnection, initialNetworkActive = true }) {
           const device = await openBrowserDevice({ name: profileId, create: true });
           let session, participation, admission;
           try {
-            const [opened, wasmModule, sqliteWasmModule] = await Promise.all([
+            const [opened, wasmModule] = await Promise.all([
               bootstrapBrowser({ configuration, device, imports, topics, signal: openSignal }),
               quickJsWasmPromise,
-              sqliteWasmPromise,
             ]);
             const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
             session = await createApplicationSession({
@@ -64,7 +72,7 @@ export function servePageWorker({
               genesis: opened.genesisBytes,
               casNodes: opened.casNodes,
               wasmModule,
-              ...(sqliteWasmModule ? { sqliteWasmModule } : {}),
+              ...(sqliteWasmLoader ? { sqliteWasmLoader } : {}),
               ...(epochKeys ? { epochKeys } : {}),
               ...(definition ? { definition } : {}),
             });
@@ -82,6 +90,7 @@ export function servePageWorker({
             participation = participateApplication(session, {
               peers: opened.peers,
               openDirectConnection,
+              active: initialNetworkActive,
               onNotification: () => void admission.refresh(),
             });
             Object.defineProperty(session, 'participation', { value: participation });
@@ -107,11 +116,19 @@ export function servePageWorker({
                 return found ? { bytes: found.bytes, type: target.type || 'application/octet-stream', source: found.source } : null;
               },
             });
+            const baseHref = new URL('_tendril/', configuration.page_url).href;
             const custom = typeof extraExtensions === 'function' ? extraExtensions({ session, admission, opened }) : [];
-            const extList = [admission.extensions, hostedMcpExtensions({ session, admission }), pubRecoveryExtension, ...(Array.isArray(custom) ? custom : custom ? [custom] : [])];
+            const extList = [
+              admission.extensions,
+              hostedMcpExtensions({ session, admission, base: baseHref }),
+              pubRecoveryExtension,
+              ...(Array.isArray(custom) ? custom : custom ? [custom] : []),
+            ];
             return {
               session,
               extensions: composeOwnerExtensions(...extList),
+              onWake() { void admission?.refresh(); },
+              setNetworkActive(active) { participation?.setActive?.(active); },
               async close() { admission.close(); await participation.close(); },
             };
           } catch (error) {

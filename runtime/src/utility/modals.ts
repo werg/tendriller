@@ -1199,9 +1199,8 @@ export function createAppModal(
 
   const renderPub = () => {
     const pinned = api.publication?.pinned;
-    const pol = api.publication?.policy === "careful" ? "Careful updates" : "Live auto-update";
     const pubId = api.identity?.publication ? ` · Release ${api.identity.publication.slice(0, 12)}` : "";
-    pubMeta.textContent = `${pinned ? "Pinned to this version" : pol}${pubId}`;
+    pubMeta.textContent = `${pinned ? "Pinned to this version" : "Live auto-update"}${pubId}`;
     updateNowBtn.hidden = !api.publication?.updateAvailable;
   };
   updateNowBtn.addEventListener("click", () => {

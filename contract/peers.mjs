@@ -200,6 +200,37 @@ export function createPeersClient({ base, request: dispatch, applicationId, init
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
+    async fetchSnapshot(options = {}) {
+      if (typeof globalThis.fetch !== 'function' || !/^https?:\/\//i.test(prefix)) return null;
+      const headers = options.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {};
+      const res = await globalThis.fetch(`${prefix}/peers/snapshot`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (res.status === 204 || res.status === 304 || res.status === 404) return null;
+      if (!res.ok) return null;
+      return {
+        bytes: new Uint8Array(await res.arrayBuffer()),
+        etag: res.headers.get('ETag'),
+        opCount: Number(res.headers.get('X-Tendril-Snapshot-Ops') ?? 0),
+        historyDigest: res.headers.get('X-Tendril-Snapshot-Digest'),
+      };
+    },
+    async uploadSnapshot(bytes, options = {}) {
+      if (typeof globalThis.fetch !== 'function' || !/^https?:\/\//i.test(prefix)) return null;
+      const res = await globalThis.fetch(`${prefix}/peers/snapshot`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (!res.ok) return null;
+      return res.json().catch(() => null);
+    },
     async discover(options = {}) { return validatePeerDirectory(await discovery('read', {}, options)); },
     async advertise(value, options = {}) {
       return validatePeerAdvertisementPresence(await discovery('advertise', { advertisement: validatePeerAdvertisement(value) }, options));

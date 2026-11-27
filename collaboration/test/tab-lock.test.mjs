@@ -5,30 +5,39 @@ import { openBrowserOwner, TAB_OWNER_PROTOCOL } from '../../session/browser.mjs'
 import { serveBrowserOwner } from '../../session/worker.mjs';
 
 const testDefinition = defineApplication({
-  id: 'tendriller.call-room',
+  id: 'tendriller.multi-tab',
   version: '1',
   commands: {},
   queries: {},
 });
 
 function createMockBrowserEnv() {
-  const heldLocks = new Map(); // name -> { waiters: [] }
+  const heldLocks = new Map(); // name -> { release }
   const locks = {
     async request(name, optsOrCb, maybeCb) {
       const opts = typeof optsOrCb === 'function' ? {} : (optsOrCb ?? {});
       const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb;
       if (heldLocks.has(name)) {
         if (opts.ifAvailable) return await cb(null);
-        await new Promise(resolve => heldLocks.get(name).waiters.push(resolve));
+        if (opts.steal) {
+          const prev = heldLocks.get(name);
+          heldLocks.delete(name);
+          prev?.onStolen?.();
+        } else {
+          await new Promise(resolve => heldLocks.get(name).waiters.push(resolve));
+        }
       }
-      const entry = { waiters: [] };
+      let stolen = false;
+      const entry = { waiters: [], onStolen: () => { stolen = true; } };
       heldLocks.set(name, entry);
       try {
         return await cb({ name });
       } finally {
-        heldLocks.delete(name);
-        const next = entry.waiters.shift();
-        if (next) next();
+        if (!stolen && heldLocks.get(name) === entry) {
+          heldLocks.delete(name);
+          const next = entry.waiters.shift();
+          if (next) next();
+        }
       }
     },
   };
@@ -54,7 +63,7 @@ function createMockBrowserEnv() {
   return { locks, MockBroadcastChannel };
 }
 
-test('single-active-tab lock auto-takes over for foreground tabs, respects hidden/opt-out, and hands over cleanly', async () => {
+test('multi-tab lock-free browser owners open concurrently over direct MessagePort and elect a stealable network leader', async () => {
   const env = createMockBrowserEnv();
   const origNav = globalThis.navigator;
   const origLoc = globalThis.location;
@@ -62,19 +71,26 @@ test('single-active-tab lock auto-takes over for foreground tabs, respects hidde
   const origBC = globalThis.BroadcastChannel;
   const origWorker = globalThis.Worker;
 
-  // Wire a minimal in-process Worker pair backed by serveBrowserOwner + mock session.
+  const networkRoles = [];
+  const syncCalls = [];
+
   class MockWorker extends EventTarget {
     constructor() {
       super();
       this.terminated = false;
       const workerScope = new EventTarget();
-      workerScope.postMessage = data => {
-        if (!this.terminated) queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: structuredClone(data) })));
+      workerScope.postMessage = (data, transfer) => {
+        if (!this.terminated) {
+          queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: structuredClone(data), ports: transfer ?? [] })));
+        }
       };
       this._scope = workerScope;
+      const idx = networkRoles.length;
+      networkRoles.push(null);
+      syncCalls.push(0);
       this._server = serveBrowserOwner({
         scope: workerScope,
-        profileId: 'profile-call-1',
+        profileId: 'profile-multi-1',
         async openSession() {
           const lifetime = new AbortController();
           const fakeSession = {
@@ -86,6 +102,8 @@ test('single-active-tab lock auto-takes over for foreground tabs, respects hidde
             status: { phase: 'ready', canAuthor: true, database: 'ready', connectedPeers: 0, pendingOperations: 0, materializationError: null },
             onStatus: () => () => {},
             onChange: () => () => {},
+            onFacts: () => () => {},
+            syncFromStore: async () => { syncCalls[idx]++; return { applied: 0 }; },
             operations: { get: async () => null, list: async () => [], retry: async () => { throw Error('none'); }, subscribe: async function* () {} },
             signals: { delivery: 'neighbors', send: async () => {}, subscribe: async function* () {} },
             content: { stage: async () => { throw Error('unused'); }, read: async () => { throw Error('unused'); } },
@@ -93,12 +111,18 @@ test('single-active-tab lock auto-takes over for foreground tabs, respects hidde
             authority: { bundle: () => ({}) },
             async close() { lifetime.abort(); },
           };
-          return { session: fakeSession, async close() { await fakeSession.close(); } };
+          return {
+            session: fakeSession,
+            setNetworkActive(active) { networkRoles[idx] = active; },
+            async close() { await fakeSession.close(); },
+          };
         },
       });
     }
-    postMessage(data) {
-      if (!this.terminated) queueMicrotask(() => this._scope.dispatchEvent(new MessageEvent('message', { data: structuredClone(data) })));
+    postMessage(data, transfer) {
+      if (!this.terminated) {
+        queueMicrotask(() => this._scope.dispatchEvent(new MessageEvent('message', { data: structuredClone(data), ports: transfer ?? [] })));
+      }
     }
     terminate() {
       this.terminated = true;
@@ -106,75 +130,42 @@ test('single-active-tab lock auto-takes over for foreground tabs, respects hidde
     }
   }
 
-  let visibilityState = 'visible';
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: env.locks } });
-  Object.defineProperty(globalThis, 'location', { configurable: true, value: new URL('https://app.example/call/') });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: { get visibilityState() { return visibilityState; }, addEventListener() {}, removeEventListener() {} } });
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: new URL('https://app.example/notes/') });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} } });
   globalThis.BroadcastChannel = env.MockBroadcastChannel;
   globalThis.Worker = MockWorker;
 
   try {
-    let tab1Replaced = null;
+    assert.equal(TAB_OWNER_PROTOCOL, 'tendriller/tab-owner/v3');
     const tab1 = await openBrowserOwner({
-      workerUrl: 'https://app.example/call/worker.mjs',
-      profileId: 'profile-call-1',
+      workerUrl: 'https://app.example/notes/worker.mjs',
+      profileId: 'profile-multi-1',
       applicationId: 'a'.repeat(64),
       persistStorage: false,
-      onOwnerReplaced: info => { tab1Replaced = info; },
+    });
+    // Opening a second concurrent tab for the same profile succeeds immediately without throwing!
+    const tab2 = await openBrowserOwner({
+      workerUrl: 'https://app.example/notes/worker.mjs',
+      profileId: 'profile-multi-1',
+      applicationId: 'a'.repeat(64),
+      persistStorage: false,
     });
     assert.equal(tab1.mode, 'dedicated');
-    assert.equal(typeof tab1.rtc.getPeer, 'function');
-    assert.equal(typeof tab1.rtc.onPeer, 'function');
-    assert.equal(TAB_OWNER_PROTOCOL, 'tendriller/tab-owner/v2');
-
-    // Explicit takeover:false fails immediately with TAB_ACTIVE_ELSEWHERE and exposes takeover().
-    let optOutError;
-    try {
-      await openBrowserOwner({
-        workerUrl: 'https://app.example/call/worker.mjs',
-        profileId: 'profile-call-1',
-        applicationId: 'a'.repeat(64),
-        persistStorage: false,
-        takeover: false,
-      });
-    } catch (err) { optOutError = err; }
-    assert.equal(optOutError?.code, 'TAB_ACTIVE_ELSEWHERE');
-    assert.equal(typeof optOutError.takeover, 'function');
-    assert.equal(tab1Replaced, null);
-
-    // Default 'auto' in a hidden background tab must NOT steal from the active foreground tab.
-    visibilityState = 'hidden';
-    let hiddenError;
-    try {
-      await openBrowserOwner({
-        workerUrl: 'https://app.example/call/worker.mjs',
-        profileId: 'profile-call-1',
-        applicationId: 'a'.repeat(64),
-        persistStorage: false,
-      });
-    } catch (err) { hiddenError = err; }
-    assert.equal(hiddenError?.code, 'TAB_ACTIVE_ELSEWHERE');
-    assert.equal(tab1Replaced, null);
-
-    // Default 'auto' in a visible foreground tab/PWA seamlessly takes over from Tab 1 -> Tab 2!
-    visibilityState = 'visible';
-    let tab2Replaced = null;
-    const tab2 = await openBrowserOwner({
-      workerUrl: 'https://app.example/call/worker.mjs',
-      profileId: 'profile-call-1',
-      applicationId: 'a'.repeat(64),
-      persistStorage: false,
-      onOwnerReplaced: info => { tab2Replaced = info; },
-    });
     assert.equal(tab2.mode, 'dedicated');
-    assert.equal(tab1Replaced?.reason, 'tab_takeover');
+    assert.equal(typeof tab1.rtc.getPeer, 'function');
+    assert.equal(typeof tab2.rtc.getPeer, 'function');
 
-    // Calling optOutError.takeover() also hands off cleanly from Tab 2 -> Tab 3!
-    const tab3 = await optOutError.takeover();
-    assert.equal(tab3.mode, 'dedicated');
-    assert.equal(tab2Replaced?.reason, 'tab_takeover');
+    // Allow microtasks for leader election to settle: tab 1 holds network leadership.
+    await new Promise(r => setTimeout(r, 40));
+    assert.equal(networkRoles[0], true);
 
-    await tab3.detach();
+    // Detaching tab 1 promotes tab 2 cleanly.
+    await tab1.detach();
+    await new Promise(r => setTimeout(r, 40));
+    assert.equal(networkRoles[1], true);
+
+    await tab2.detach();
   } finally {
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: origNav });
     Object.defineProperty(globalThis, 'location', { configurable: true, value: origLoc });

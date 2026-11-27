@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApplicationSession, openApplicationDevice } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
-import { createPageGenesis, deviceWrapKey } from '../../session/admission.mjs';
+import { createPageGenesis } from '../../session/admission.mjs';
 import { queryMultipleSessions } from '../../docs/tutorial/shared/helpers/multi-page.mjs';
 
 test('queryMultipleSessions fans out read-only SQL queries across multiple Chronolog v2 sessions with error isolation', async () => {
   const mkSqlPage = async (topicName, tableName, rows) => {
     const dev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-    const wrap = await deviceWrapKey(dev.store);
+    const wrap = dev.wrapKey;
     const created = await createPageGenesis({
       identity: dev.identity,
       wrapKey: wrap.publicKey,

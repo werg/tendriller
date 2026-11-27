@@ -25,6 +25,7 @@ export interface DashboardPageSummary {
   fallback_bare_url?: string | null;
   subdomain?: string | null;
   icon?: string | null;
+  icon_url?: string | null;
   theme_color?: string | null;
   version: number;
   held: boolean;
@@ -135,6 +136,8 @@ export function renderDashboardContent(view: DashboardViewData): { body: string;
   const favicon = (info: DashboardPageSummary | null, name: string, id: string) => {
     if (!info) return avatar(name, id);
     if (info.icon && isEmojiIcon(info.icon)) return `<span class="avatar favicon emoji" aria-hidden="true">${emojiIconSvg(info.icon)}</span>`;
+    if (info.icon_url)
+      return `<span class="avatar favicon" aria-hidden="true"><img src="${escape(info.icon_url)}" alt="" width="44" height="44" loading="lazy" referrerpolicy="no-referrer"></span>`;
     if (info.icon && /^https:\/\//.test(info.icon))
       return `<span class="avatar favicon" aria-hidden="true"><img src="${escape(info.icon)}" alt="" width="44" height="44" loading="lazy" referrerpolicy="no-referrer"></span>`;
     return `<span class="avatar favicon" aria-hidden="true">${iconSvg(name, info.theme_color ?? DEFAULT_THEME_COLOR)}</span>`;

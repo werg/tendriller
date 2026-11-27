@@ -6,7 +6,7 @@ import { isPublicationWatch, notifyPublicationWatchers } from "./publication-wat
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers, openRendezvousHubStream, handlePeerHubData, closePeerHubStream, type PeerState } from './peers';
 import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expireRelays } from './peer-relay';
-import { isInvitationSocket, handleInvitationMessage, openInvitationHubStream, handleInvitationHubData, type InvitationState } from './peer-invitations';
+import { closeInvitationSocket, isInvitationSocket, handleInvitationMessage, openInvitationHubStream, handleInvitationHubData, type InvitationState } from './peer-invitations';
 import { closeAllHubSubscribers, deleteHubSubscriber, getHubSubscriber, hubStreamKey, listHubSubscribers, type HubStreamDataResult, type HubStreamOpenResult, type HubStreamRef, type HubSubscriber } from './hub-streams';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
@@ -33,10 +33,11 @@ import { ACCESS_WRITE_INTERVAL, ACCOUNT_STORAGE_LIMIT, AD_HOC_IDLE, DAY, HOUR, P
 import { accountLimits } from './service-state';
 import { getAccountEntitlements, quotaError } from './billing/entitlements';
 import { handlePage, pageAccessDenied } from './page';
+import { dashboardIconUrl, serveIconBlob } from './page-icon';
 import { isEmojiIcon } from './pwa';
 import { enforceOrgDepartureOnPage, matchingPageGroupRule } from './groups/org-groups';
 import { agentPageApi, barePageUrl, pageUrl, publicBase } from './urls';
-import { AGENT_HEADER, AGENT_SCOPES, authenticateAgent, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession, requireAgentScope } from './access';
+import { AGENT_HEADER, AGENT_SCOPES, authenticateAgent, authenticateLocalPage, currentPrincipal, invalidatePagePolicyCache, pagePolicy, readPageSession, requireAgentScope } from './access';
 import { agentPageSummary } from './agent';
 import { claimCreatorAgents } from './agents';
 import type { Role } from '../../contract/index.mjs';
@@ -140,6 +141,13 @@ export class Tendril extends DurableObject<Env> {
         throw new HttpError(404, "not_found", "No such tendril");
       }
       if (kind === "remix-source" && req.method === "GET") return this.remixSource(req);
+      if (kind === "icon-blob" && (req.method === "GET" || req.method === "HEAD")) {
+        if (this.db.get<boolean>("disabled", false)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+        const parts = url.pathname.split("/");
+        const tag = decodeURIComponent(parts[2] ?? "");
+        const file = decodeURIComponent(parts[3] ?? "");
+        return await serveIconBlob(this, tag, file, req.method === "HEAD");
+      }
       await this.admitTraffic(kind);
       if (kind === "agent" || kind === "page" || kind === "claim") {
         await recoverLifetimeChange(this);
@@ -168,6 +176,7 @@ export class Tendril extends DurableObject<Env> {
         const body = await readJson(req, 4096);
         if (body.disabled !== true && body.disabled !== false) throw new HttpError(400, "bad_request");
         this.db.set("disabled", body.disabled);
+        invalidatePagePolicyCache(this);
         if (body.disabled) this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
         else this.db.del("disabled_at");
         if (body.disabled) {
@@ -204,24 +213,29 @@ export class Tendril extends DurableObject<Env> {
         return json(agentPageSummary(this, agentId));
       }
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
-        if (url.pathname === "/account/summary" && req.method === "GET") return json({
-          name: this.db.get("name", "Tendril"),
-          page_url: this.mainPageUrl(),
-          bare_url: this.barePageUrl(),
-          fallback_page_url: this.mainPageUrl({ fallback: true }),
-          fallback_bare_url: this.barePageUrl({ fallback: true }),
-          subdomain: this.activeSubdomain(),
-          icon: this.db.get<string | null>("icon", null), theme_color: this.db.get<string | null>("theme_color", null),
-          version: this.db.get("current", 0), held: this.db.get("disabled", false),
-          bytes: this.storageUsed(),
-          agents: (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants")?.n ?? 0)
-            + (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_connections")?.n ?? 0),
-          primary_agent_id: this.db.get<string | null>("primary_agent_id", null),
-          guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
-          open_readers: this.db.get<boolean>("v2_open_readers", false),
-          open_writers: this.db.get<boolean>("v2_open_writers", false),
-          last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
-        });
+        if (url.pathname === "/account/summary" && req.method === "GET") {
+          const iconUrl = await dashboardIconUrl(this);
+          return json({
+            name: this.db.get("name", "Tendril"),
+            page_url: this.mainPageUrl(),
+            bare_url: this.barePageUrl(),
+            fallback_page_url: this.mainPageUrl({ fallback: true }),
+            fallback_bare_url: this.barePageUrl({ fallback: true }),
+            subdomain: this.activeSubdomain(),
+            icon: this.db.get<string | null>("icon", null),
+            icon_url: iconUrl,
+            theme_color: this.db.get<string | null>("theme_color", null) ?? this.db.get<string | null>("authored_theme_color", null),
+            version: this.db.get("current", 0), held: this.db.get("disabled", false),
+            bytes: this.storageUsed(),
+            agents: (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants")?.n ?? 0)
+              + (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_connections")?.n ?? 0),
+            primary_agent_id: this.db.get<string | null>("primary_agent_id", null),
+            guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
+            open_readers: this.db.get<boolean>("v2_open_readers", false),
+            open_writers: this.db.get<boolean>("v2_open_writers", false),
+            last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
+          });
+        }
         if (url.pathname === "/account/subdomain" && req.method === "POST") {
           const body = await readJson(req, 4096);
           const next = body.subdomain === null ? null : typeof body.subdomain === "string" ? body.subdomain.trim().toLowerCase() || null : undefined;
@@ -414,12 +428,14 @@ export class Tendril extends DurableObject<Env> {
   }
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     if (isDiscoverySocket(ws)) closeDiscoverySocket(this, ws);
+    if (isInvitationSocket(ws)) closeInvitationSocket(ws);
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch {}
     if (isPeerSocket(ws)) closePeer(this, ws);
     if (isRelaySocket(ws)) closeRelay(this, ws);
   }
   async webSocketError(ws: WebSocket): Promise<void> {
     if (isDiscoverySocket(ws)) { closeDiscoverySocket(this, ws); try { ws.close(1011); } catch {} return; }
+    if (isInvitationSocket(ws)) { closeInvitationSocket(ws); try { ws.close(1011); } catch {} return; }
     if (isRelaySocket(ws)) { closeRelay(this, ws); return; }
     if (isPeerSocket(ws)) closePeer(this, ws);
     else try { ws.close(1011, "Participant transport failed"); } catch {}
@@ -517,9 +533,16 @@ export class Tendril extends DurableObject<Env> {
     const key = newPageKey(), keyHash = await sha256Hex(key);
     const appId = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
 
+    const iconVal = typeof body.icon === "string" && body.icon.length <= 512 && (/^https:\/\/\S+$/.test(body.icon) || isEmojiIcon(body.icon))
+      ? body.icon : null;
+    const themeColorVal = typeof body.theme_color === "string" && /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30})$/.test(body.theme_color)
+      ? body.theme_color : null;
+
     this.transaction(() => {
       this.db.set("id", id);
       this.db.set("name", name);
+      if (iconVal !== null) this.db.set("icon", iconVal);
+      if (themeColorVal !== null) this.db.set("theme_color", themeColorVal);
       this.db.set("owner_account", account);
       this.db.set("claimed_at", now);
       if (label) this.db.set("owner_label", label.login.slice(0, 80));
@@ -591,6 +614,8 @@ export class Tendril extends DurableObject<Env> {
     return json({
       id: this.tid,
       name: this.db.get("name", "Tendril"),
+      icon: this.db.get<string | null>("icon", null),
+      theme_color: this.db.get<string | null>("theme_color", null),
       entry: ver?.entry || "index.html",
       files,
     });

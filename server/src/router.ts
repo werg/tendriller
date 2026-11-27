@@ -33,6 +33,7 @@ import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parseBarePagePath, parseKeyedPagePath, parsePageHostLabel, publicBase, type PageRoute } from "./urls";
 import { serviceReadiness } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
+import { verifyIconToken } from "./page-icon";
 import type { CacheContext } from "./immutable-cache";
 
 function stub(env: Env, id: string): DurableObjectStub {
@@ -103,6 +104,7 @@ async function routeInner(
 
   const rootRuntime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
   const rootBrand = path === '/favicon.ico' || /^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path);
+  const rootIconBlob = /^\/_tendril\/icon-blob\/([a-z2-7]{12})\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})\/(icon\.svg|icon-maskable\.svg|any-192\.png|any-512\.png|maskable-512\.png|authored)$/.exec(path);
   const publicRead = (req.method === 'GET' || req.method === 'HEAD') && req.headers.get('Upgrade')?.toLowerCase() !== 'websocket';
 
   let pageHost: { id: string; customHost: string | null; hostKind: "custom_domain" | "subdomain" | "id" } | null = null;
@@ -131,6 +133,11 @@ async function routeInner(
   }
 
   if (publicRead && rootRuntime) return runtimeAsset(env, req, rootRuntime[1], rootRuntime[2], context);
+  if (publicRead && rootIconBlob) {
+    const [, tid, tag, sig, file] = rootIconBlob;
+    if (!await verifyIconToken(env, tid!, tag!, sig!)) return errorResponse(404, "not_found", "Not found");
+    return stub(env, tid!).fetch(new Request(`https://tendril.internal/icon-blob/${encodeURIComponent(tag!)}/${encodeURIComponent(file!)}`, { method: req.method }));
+  }
   if (publicRead && rootBrand) {
     const response = await asset(env, url, path === '/favicon.ico' ? '/_tendril/brand/favicon.ico' : path);
     response.headers.set('X-Content-Type-Options', 'nosniff');

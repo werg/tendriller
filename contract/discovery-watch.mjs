@@ -18,17 +18,23 @@ export function validatePeerDiscoveryWatchOptions({ timeoutMs = PEER_DISCOVERY_W
   return { timeoutMs, retryMs, maxRetryMs };
 }
 
-/** One owned receive-only subscription, reconnecting only after transport failure. */
+/** One owned receive-only subscription with zero-wake edge ping/pong liveness detection. */
 export function createPeerDiscoveryWatcher(openSocket, options = {}) {
   const { signal } = options, { timeoutMs, retryMs, maxRetryMs } = validatePeerDiscoveryWatchOptions(options);
-  let ended = false, failure, socket, detach = () => {}, openTimer, retryTimer, failures = 0;
+  const pingIntervalMs = options.pingIntervalMs ?? 0;
+  const pongTimeoutMs = options.pongTimeoutMs ?? 5_000;
+  let ended = false, failure, socket, detach = () => {}, openTimer, retryTimer, pingTimer, pongTimer, failures = 0;
   let reading = false, waiting, resolveReady, rejectReady, resolveClosed, probing, probeController;
   const queue = [], ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const closed = new Promise(resolve => { resolveClosed = resolve; });
   ready.catch(() => {});
   const wake = () => { waiting?.(); waiting = undefined; };
+  function clearLiveness() {
+    clearTimeout(pingTimer); pingTimer = undefined;
+    clearTimeout(pongTimer); pongTimer = undefined;
+  }
   function disconnect(code = 1000, reason = 'Discovery watch disconnected') {
-    clearTimeout(openTimer); openTimer = undefined; detach(); detach = () => {};
+    clearTimeout(openTimer); openTimer = undefined; clearLiveness(); detach(); detach = () => {};
     const previous = socket; socket = undefined;
     try { if (previous?.readyState < 2) previous.close(code, reason); } catch {}
   }
@@ -40,11 +46,32 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
   }
   const cancelled = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
   // A browser or worker that regains its network reconnects now instead of sitting out
-  // the backoff it accumulated while offline.
+  // the backoff it accumulated while offline, or probes an open socket for half-open death.
   const network = options.network === undefined ? (typeof globalThis.addEventListener === 'function' ? globalThis : null) : options.network;
+  function sendPing() {
+    if (ended || !socket || socket.readyState !== 1 || pongTimer) return;
+    try {
+      socket.send('{"t":"ping"}');
+      pongTimer = setTimeout(() => {
+        pongTimer = undefined;
+        if (!ended && socket) retry();
+      }, pongTimeoutMs);
+      pongTimer.unref?.();
+    } catch { retry(); }
+  }
+  function schedulePing() {
+    clearTimeout(pingTimer);
+    if (ended || !pingIntervalMs || pingIntervalMs <= 0) return;
+    pingTimer = setTimeout(() => { pingTimer = undefined; sendPing(); }, pingIntervalMs);
+    pingTimer.unref?.();
+  }
   function reachable() {
-    if (ended || !retryTimer) return;
-    clearTimeout(retryTimer); retryTimer = undefined; failures = 0; connect();
+    if (ended) return;
+    if (retryTimer) {
+      clearTimeout(retryTimer); retryTimer = undefined; failures = 0; connect();
+    } else if (socket?.readyState === 1) {
+      sendPing();
+    }
   }
   function scheduleRetry() {
     if (ended || retryTimer) return;
@@ -89,10 +116,17 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
       try {
         if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).byteLength > PEER_DISCOVERY_WATCH_LIMITS.messageBytes)
           throw fail('invalid_discovery_notification', 'Discovery accepts bounded JSON notifications only');
-        const value = validatePeerDiscoveryNotification(JSON.parse(event.data));
+        const parsed = JSON.parse(event.data);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.t === 'pong' && Object.keys(parsed).length === 1) {
+          clearTimeout(pongTimer); pongTimer = undefined;
+          schedulePing();
+          return;
+        }
+        const value = validatePeerDiscoveryNotification(parsed);
         if (value.type === 'ready') {
           if (opened) throw fail('invalid_discovery_notification', 'Repeated ready notification');
           opened = true; failures = 0; clearTimeout(openTimer); openTimer = undefined;
+          schedulePing();
           queue.push(value); resolveReady();
         } else {
           if (!opened) throw fail('invalid_discovery_notification', 'Changed notification before ready');
@@ -121,6 +155,7 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
   network?.addEventListener('online', reachable);
   if (signal?.aborted) cancelled(); else connect();
   return Object.freeze({ ready, closed,
+    probe() { sendPing(); },
     notifications: { async *[Symbol.asyncIterator]() {
       if (reading) throw fail('reader_exists', 'Discovery notifications have one consumer');
       reading = true;

@@ -82,14 +82,14 @@ export function mountUtility(api: RuntimeApi): () => void {
   // ── Floating Status Cards (Broadcast, Publication Update, Install Suggestion) ──
   const updateCard = el("aside", undefined, "float-card"); updateCard.hidden = true;
   updateCard.setAttribute("aria-label", "Publication update"); updateCard.setAttribute("role", "status"); updateCard.setAttribute("aria-live", "polite");
-  const openUpdate = el("a", "Open update", "btn primary full");
-  openUpdate.href = api.identity?.documentPath && api.identity.documentPath !== "index.html"
-    ? new URL(encodePublicationPath(api.identity.documentPath), api.identity.base).href : (api.identity?.base || "/");
+  const updateCardDetail = el("p", api.publication?.pinned
+    ? "This address shows a fixed version. Open the latest version when you are ready."
+    : "Waiting to switch until your current work finishes.");
+  const openUpdate = btn("Update now", "btn primary full");
+  openUpdate.addEventListener("click", () => { api.publication?.update?.(); });
   updateCard.append(
     el("strong", "New version published"),
-    el("p", api.publication?.pinned
-      ? "This address shows a fixed version. Open the latest version when you are ready."
-      : "This page switches to it as soon as no unsaved changes are open."),
+    updateCardDetail,
     openUpdate,
   );
 
@@ -184,8 +184,8 @@ export function mountUtility(api: RuntimeApi): () => void {
 
   const popBody = el("div", undefined, "pop-body");
   const popUpdateBanner = el("div", undefined, "pop-banner"); popUpdateBanner.hidden = true;
-  const popUpdateLink = el("a", "Update", "btn primary sm");
-  popUpdateLink.href = openUpdate.href;
+  const popUpdateLink = btn("Update", "btn primary sm");
+  popUpdateLink.addEventListener("click", () => { api.publication?.update?.(); });
   popUpdateBanner.append(el("div", "New version available"), popUpdateLink);
   popBody.append(popUpdateBanner);
 
@@ -520,22 +520,20 @@ export function mountUtility(api: RuntimeApi): () => void {
   };
 
   // ── Floating Broadcast Card & Updates ─────────────────────────────────
-  let pendingUpdateNotice: ReturnType<typeof setTimeout> | undefined;
-  const offUpdate = api.publication.onUpdate(({ version, kind }) => {
+  const offUpdate = api.publication.onUpdate(({ version, kind, phase, reasons }) => {
     if (disposed) return;
-    clearTimeout(pendingUpdateNotice);
-    pendingUpdateNotice = undefined;
     const pending = version !== null && kind !== "hot-swapped";
-    updateCard.hidden = !pending || (!api.publication.pinned && api.publication.policy !== "careful");
-    if (pending && !api.publication.pinned && api.publication.policy !== "careful") {
-      // Safe live updates navigate immediately. If the old document remains,
-      // inform the user that a draft, hold or interrupted navigation deferred it.
-      pendingUpdateNotice = setTimeout(() => {
-        pendingUpdateNotice = undefined;
-        if (!disposed && api.publication.updateAvailable) updateCard.hidden = false;
-      }, 300);
+    const resolvedPhase = phase ?? (pending ? (api.publication.pinned ? "pinned" : "deferred") : "current");
+    const showCard = pending && (resolvedPhase === "deferred" || resolvedPhase === "pinned");
+    if (showCard) {
+      updateCardDetail.textContent = resolvedPhase === "pinned"
+        ? "This address shows a fixed version. Open the latest version when you are ready."
+        : reasons && reasons.length > 0
+          ? `Paused (${reasons[0]}). Switches automatically when clear, or update now.`
+          : "This page switches as soon as your current work finishes, or update now.";
     }
-    popUpdateBanner.hidden = version === null || kind === "hot-swapped";
+    updateCard.hidden = !showCard;
+    popUpdateBanner.hidden = !pending;
     updateMenuMeta();
   });
 
@@ -840,7 +838,6 @@ export function mountUtility(api: RuntimeApi): () => void {
 
   return () => {
     disposed = true;
-    clearTimeout(pendingUpdateNotice);
     clearHoldTimer();
     stopFollowing();
     chatModal.dispose();

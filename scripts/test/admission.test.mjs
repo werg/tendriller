@@ -7,7 +7,7 @@ import {
   bytesToHex, createApplicationSession, createSigningIdentity, defineApplication, defineCommand,
   defineQuery, encodeSignedOperation, hexToBytes, openApplicationDevice, signOperationCore,
 } from '@chronolog/peer-session';
-import { createAdmission, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
+import { createAdmission, openPageGenesis } from '../../session/admission.mjs';
 import { authorityRecord } from '../../contract/authority.mjs';
 import { createAdmissionHost } from './helpers/admission-host.mjs';
 
@@ -65,7 +65,7 @@ async function world({ owner } = {}) {
   const opened = [];
   async function participant({ principal, subject = 'device', create = true, signer, store = new MemoryStore(), ownerGrant } = {}) {
     const device = await openApplicationDevice({ store, create: true, ...(signer ? { managedSigner: signer } : {}) });
-    const wrapKey = await deviceWrapKey(device.store);
+    const wrapKey = device.wrapKey;
     const peers = host.client(principal);
     const openedGenesis = await openPageGenesis({
       store: device.store,
@@ -173,7 +173,7 @@ test('browser-first: the owner browser creates; the agent is admitted from its s
 
     const signer = await createSigningIdentity(), store = new MemoryStore();
     const agentDevice = await openApplicationDevice({ store, create: true, managedSigner: signer });
-    const agentWrap = await deviceWrapKey(agentDevice.store);
+    const agentWrap = agentDevice.wrapKey;
     await agentDevice.close();
     await w.host.grantAgent({ publicKey: signer.publicKey, wrapKey: agentWrap.publicKey, handle: 'atlas' });
 

@@ -1,5 +1,5 @@
 import { createPeersClient } from '@tendriller/core/peers';
-import { createAdmission, deviceWrapKey, openPageGenesis } from '@tendriller/core/admission';
+import { createAdmission, openPageGenesis } from '@tendriller/core/admission';
 import { authorityRecord } from '@tendriller/core/authority';
 
 function decodeBlueprintImports(blueprint) {
@@ -51,7 +51,7 @@ export async function bootstrapBrowser({ configuration, device, imports, topics,
       return value;
     },
   });
-  const wrapKey = await deviceWrapKey(device.store);
+  const wrapKey = device.wrapKey;
   const bp = configuration.blueprint ?? null;
   let effectiveImports = imports ?? configuration.imports;
   let effectiveTopics = topics ?? configuration.topics;

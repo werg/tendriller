@@ -5,8 +5,8 @@
 // atomically via `session.admitMember(...)` (which updates `$permissions` AND seals
 // HPKE lockboxes into `$keys` in one public-control operation).
 import {
-  bytesToHex, createLogGenesis, createWrapKeyPair, decodeLogGenesis, decodeRecord,
-  decodeSignedOperation, encodeRecord, genesisLogId, hexToBytes, importWrapPrivateKey, signRecord,
+  bytesToHex, createLogGenesis, decodeLogGenesis, decodeRecord,
+  decodeSignedOperation, encodeRecord, genesisLogId, hexToBytes, operationIdDigest, signRecord,
   verifyHostAttestationV2, verifyRecord, verifySignedOperation,
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
@@ -21,7 +21,6 @@ function decodeCasLinks(encoded) {
   return links;
 }
 
-const WRAP_KEY = 'tendriller/admission/wrap-key';
 const GENESIS = applicationId => `tendriller/admission/genesis/${applicationId}`;
 const INVITE = applicationId => `tendriller/admission/invite/${applicationId}`;
 const ENROLLMENT_REQUEST_DOMAIN = 'chronolog/enrollment-request/v2';
@@ -33,21 +32,6 @@ const codeOf = error => String(error?.code ?? error?.message ?? 'ADMISSION_FAILE
 const randomHex = bytes => bytesToHex(crypto.getRandomValues(new Uint8Array(bytes)));
 const sha256Hex = async bytes => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
 const conflict = error => error?.status === 409 || /CONFLICT|initialized/iu.test(codeOf(error));
-
-/** The device's long-lived X25519 key-wrap key, kept beside its signer in the device store. */
-export async function deviceWrapKey(store) {
-  let saved = await store.get(WRAP_KEY);
-  if (saved === null) {
-    const pair = await createWrapKeyPair();
-    await store.put(WRAP_KEY, encodeRecord(pair));
-    saved = await store.get(WRAP_KEY);
-  }
-  const value = decodeRecord(saved);
-  if (!HEX.test(value?.publicKey ?? '') || !(value.privateKey instanceof Uint8Array)) {
-    throw failure('WRAP_KEY_INVALID', 'The retained key-wrap key is damaged; restore this device profile.');
-  }
-  return Object.freeze({ publicKey: value.publicKey, privateKey: await importWrapPrivateKey(value.privateKey) });
-}
 
 export const DEFAULT_OWNER_GRANT = Object.freeze({ reader: true, writer: true, administrator: true });
 const ROLE_GRANTS = Object.freeze({
@@ -403,7 +387,7 @@ function attestedAccountAuthorized(admission, payload) {
  * administrators admit/remove/rotate members atomically via `session.admitMember` / `session.removeMember`.
  */
 export function createAdmission(session, {
-  peers, wrapKey, store, subject = 'device', now = () => Date.now(),
+  peers, wrapKey = session.device?.wrapKey, store, subject = 'device', now = () => Date.now(),
   memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {}, onEpochRotated = null,
 } = {}) {
   const identity = session.device.identity;
@@ -418,6 +402,8 @@ export function createAdmission(session, {
   const creatorKey = session.genesis?.initialTopics?.$permissions?.members?.[0]?.publicKey ?? null;
   const admittedMeta = new Map();
   const seenMetaOps = new Set();
+  const uploadedControlOps = new Set();
+  const uploadedControlCas = new Set();
   let notices = [], pending = [], lastError = null, lastReportedError = null;
   let state = snapshot();
 
@@ -587,19 +573,34 @@ export function createAdmission(session, {
     await indexPublicOpsMeta(facts.publicOps);
     const filteredCas = filterReferencedPublicCas(facts);
     const knownOpIds = [];
+    const outgoingOps = [];
     for (const raw of facts.publicOps) {
-      try { knownOpIds.push(bytesToHex((await verifySignedOperation(decodeSignedOperation(raw))).opId)); } catch {}
+      try {
+        const opId = bytesToHex(operationIdDigest(decodeSignedOperation(raw).coreBytes));
+        knownOpIds.push(opId);
+        if (!uploadedControlOps.has(opId)) outgoingOps.push({ opId, record: authorityRecord(raw) });
+      } catch {}
     }
+    const knownCasHashes = filteredCas.map(n => n.hash);
+    const outgoingCas = filteredCas
+      .filter(n => !uploadedControlCas.has(n.hash))
+      .map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) }));
     const synced = await peers.syncControl({
-      publicOps: facts.publicOps.map(authorityRecord),
-      casNodes: filteredCas.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
-      checkpoints: facts.checkpoints.map(cp => authorityRecord(encodeRecord(cp))),
+      ...(outgoingOps.length ? { publicOps: outgoingOps.map(o => o.record) } : {}),
+      ...(outgoingCas.length ? { casNodes: outgoingCas } : {}),
+      ...(facts.checkpoints.length ? { checkpoints: facts.checkpoints.map(cp => authorityRecord(encodeRecord(cp))) } : {}),
       knownOpIds,
-      knownCasHashes: filteredCas.map(n => n.hash),
+      knownCasHashes,
     }, { signal: lifetime.signal });
+    for (const o of outgoingOps) uploadedControlOps.add(o.opId);
+    for (const c of outgoingCas) uploadedControlCas.add(c.hash);
     const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
     const incomingCas = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
     const incomingCps = (synced.checkpoints ?? []).map(r => decodeRecord(authorityRecordBytes(r, 256 * 1024)));
+    for (const raw of incomingOps) {
+      try { uploadedControlOps.add(bytesToHex(operationIdDigest(decodeSignedOperation(raw).coreBytes))); } catch {}
+    }
+    for (const node of incomingCas) uploadedControlCas.add(node.hash);
     if (incomingOps.length || incomingCas.length || incomingCps.length) {
       await session.mergeFacts({
         publicOps: incomingOps,
@@ -609,9 +610,6 @@ export function createAdmission(session, {
         checkpoints: incomingCps,
       });
       await indexPublicOpsMeta(incomingOps);
-    }
-    if (wrapKey?.privateKey && session.isReader(identity.publicKey)) {
-      await session.unlockEpochsFromKeysTopic(wrapKey.privateKey, wrapKey.publicKey).catch(() => {});
     }
   }
 
@@ -852,8 +850,16 @@ export function createAdmission(session, {
       const hasCurrentKey = !session.genesis.privateLog || session.currentEpoch() < 0 || session.hasEpochKey(session.currentEpoch());
       if (!me) {
         if (!wasMember && hasHostAdmission) await attest();
-      } else if (hasHostAdmission && hasCurrentKey && (session.isAdministrator(identity.publicKey) || session.isReader(identity.publicKey))) {
-        await adminDuties();
+      } else {
+        // Any admitted key holder proactively heals missing HPKE lockboxes for members
+        // (e.g. after multisig admission, delayed wrap keys, or concurrent epoch rotation).
+        if (hasCurrentKey && session.genesis.privateLog && typeof session.backfillMissingEpochBoxes === 'function') {
+          const sealed = await session.backfillMissingEpochBoxes().catch(() => 0);
+          if (sealed > 0) await syncWithHost().catch(() => {});
+        }
+        if (hasHostAdmission && hasCurrentKey && (session.isAdministrator(identity.publicKey) || session.isReader(identity.publicKey))) {
+          await adminDuties();
+        }
       }
       lastError = null;
       lastReportedError = null;
@@ -896,12 +902,18 @@ export function createAdmission(session, {
   };
 
   async function administer(work) {
-    await syncWithHost();
     requireAdmin();
     const res = await work();
-    await syncWithHost();
     observeMembership();
     emit();
+    // Propagate promptly when online without ever blocking a local admin RPC on a 20s timeout.
+    const sync = syncWithHost().then(() => { observeMembership(); emit(); }).catch(() => {});
+    let budgetTimer;
+    await Promise.race([
+      sync,
+      new Promise(resolve => { budgetTimer = setTimeout(resolve, 1500); budgetTimer.unref?.(); }),
+    ]);
+    clearTimeout(budgetTimer);
     return res;
   }
 
@@ -938,6 +950,7 @@ export function createAdmission(session, {
         const cur = session.permissions().admission ?? {};
         const removed = [...new Set([...(cur.removed ?? []), publicKey])];
         await session.submit({
+          awaitMaterialized: true,
           updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, removed } } }],
         });
         const epoch = session.keysState().currentEpoch;
@@ -951,7 +964,7 @@ export function createAdmission(session, {
       if (mode !== 'attested' && mode !== 'strict') throw failure('ADMISSION_MODE_INVALID');
       return administer(async () => {
         const cur = session.permissions().admission ?? {};
-        await session.submit({ updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, mode } } }] });
+        await session.submit({ awaitMaterialized: true, updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, mode } } }] });
         return { mode };
       });
     },
@@ -959,7 +972,7 @@ export function createAdmission(session, {
       const grant = policyGrant(input);
       return administer(async () => {
         const cur = session.permissions().admission ?? {};
-        await session.submit({ updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, grant } } }] });
+        await session.submit({ awaitMaterialized: true, updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, grant } } }] });
         return { ownerGrant: grant };
       });
     },
@@ -968,7 +981,7 @@ export function createAdmission(session, {
         const metadata = await peers.application({ signal: lifetime.signal });
         if (!HEX.test(metadata.hostAttestationKey ?? '')) throw failure('attestation_unconfigured');
         const cur = session.permissions().admission ?? {};
-        await session.submit({ updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, hostKey: metadata.hostAttestationKey } } }] });
+        await session.submit({ awaitMaterialized: true, updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, hostKey: metadata.hostAttestationKey } } }] });
         return { hostKey: metadata.hostAttestationKey };
       });
     },
@@ -977,6 +990,7 @@ export function createAdmission(session, {
         const existing = session.permissions().members.find(m => m.publicKey === publicKey);
         if (!existing) throw failure('MEMBER_UNKNOWN');
         await session.submit({
+          awaitMaterialized: true,
           updates: [{
             topic: '$permissions',
             input: {
@@ -1016,6 +1030,7 @@ export function createAdmission(session, {
         const entry = { inviteId, role, binding: normalized, expiresAt: now() + expiresInMs, secretDigest: await sha256Hex(secret), revoked: false, redemptions: 0 };
         const cur = session.permissions().admission ?? {};
         await session.submit({
+          awaitMaterialized: true,
           updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, invites: [...(cur.invites ?? []), entry] } } }],
         });
         return { inviteId, role, binding: normalized, expiresAt: entry.expiresAt, fragment: `invite=${inviteId}.${bytesToHex(secret)}` };
@@ -1027,6 +1042,7 @@ export function createAdmission(session, {
         const invites = cur.invites ?? [];
         if (!invites.some(i => i.inviteId === inviteId)) throw failure('INVITE_UNKNOWN');
         await session.submit({
+          awaitMaterialized: true,
           updates: [{ topic: '$permissions', input: { action: 'setAdmission', admission: { ...cur, invites: invites.map(i => i.inviteId === inviteId ? { ...i, revoked: true } : i) } } }],
         });
         return { revoked: inviteId };
@@ -1059,7 +1075,7 @@ export function createAdmission(session, {
           ...(openRead === undefined ? {} : { openRead: Boolean(openRead) }),
           ...(openWrite === undefined ? {} : { openWrite: Boolean(openWrite) }),
         };
-        await session.submit({ visibility: 'public', updates: [{ topic: '$permissions', input }] });
+        await session.submit({ visibility: 'public', awaitMaterialized: true, updates: [{ topic: '$permissions', input }] });
         const raw = session.topic?.('$permissions') ?? {};
         return { openRead: raw.openRead === true, openWrite: raw.openWrite === true };
       });
@@ -1131,19 +1147,7 @@ export function createAdmission(session, {
     },
   };
 
-  let unlocking = null;
-  function maybeUnlockEpochs() {
-    if (closed || !wrapKey?.privateKey) return;
-    const epoch = session.keysState().currentEpoch;
-    if (epoch < 0 || session.hasEpochKey(epoch) || !session.isReader(identity.publicKey)) return;
-    if (unlocking) return;
-    unlocking = session.unlockEpochsFromKeysTopic(wrapKey.privateKey, wrapKey.publicKey)
-      .catch(() => {})
-      .finally(() => { unlocking = null; emit(); });
-  }
-
-  const stopChanges = session.onChange(() => { observeMembership(); maybeUnlockEpochs(); emit(); });
-  maybeUnlockEpochs();
+  const stopChanges = session.onChange(() => { observeMembership(); emit(); });
   void refresh();
   return Object.freeze({
     get state() { return state; },

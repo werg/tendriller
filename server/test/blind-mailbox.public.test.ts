@@ -10,7 +10,7 @@ import {
 } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
 import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
-import { createPageGenesis, deviceWrapKey } from '../../session/admission.mjs';
+import { createPageGenesis } from '../../session/admission.mjs';
 import { create, inDO, req, type Handle } from './helpers';
 
 function enrollReq(h: Handle, body: Record<string, unknown>, options: { anonymous?: boolean } = {}): Promise<Response> {
@@ -30,8 +30,8 @@ describe('Chronolog v2 blind store-and-forward mailbox & blockedAuthors moderati
     const h = await create();
     const aliceDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
     const bobDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-    const aliceWrap = await deviceWrapKey(aliceDev.store);
-    const bobWrap = await deviceWrapKey(bobDev.store);
+    const aliceWrap = aliceDev.wrapKey;
+    const bobWrap = bobDev.wrapKey;
 
     const created = await createPageGenesis({
       identity: aliceDev.identity,
@@ -132,9 +132,7 @@ describe('Chronolog v2 blind store-and-forward mailbox & blockedAuthors moderati
     const adminDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
     const guestDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
     const spamDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-    const adminWrap = await deviceWrapKey(adminDev.store);
-    await deviceWrapKey(guestDev.store);
-    await deviceWrapKey(spamDev.store);
+    const adminWrap = adminDev.wrapKey;
 
     const created = await createPageGenesis({
       identity: adminDev.identity,
@@ -216,8 +214,8 @@ describe('Chronolog v2 blind store-and-forward mailbox & blockedAuthors moderati
     const h = await create();
     const signerA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
     const candidate = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-    const wrapA = await deviceWrapKey(signerA.store);
-    const wrapCand = await deviceWrapKey(candidate.store);
+    const wrapA = signerA.wrapKey;
+    const wrapCand = candidate.wrapKey;
 
     const created = await createPageGenesis({
       identity: signerA.identity,

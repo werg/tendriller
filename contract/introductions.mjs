@@ -135,18 +135,23 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
           confirmedAdvertisement = epoch === advertisementEpoch && request === advertisementRequest ? key : undefined;
         } catch (error) { confirmedAdvertisement = undefined; throw error; }
       },
+      probe() {
+        try { activeWatcher?.probe?.(); } catch {}
+        try { activeListener?.probe?.(); } catch {}
+      },
       async withdraw({ signal }) {
         signal.throwIfAborted();
         invalidateAdvertisement();
         await peers.withdraw(identity, { signal });
       },
-      async *invitations({ signal }) {
+      async *invitations({ signal, onReady }) {
         signal.throwIfAborted();
         if (activeListener) invalid('The owned session has one invitation listener');
         const listener = peers.listenInvitations(identity, { signal });
         invalidateAdvertisement(); activeListener = listener; nextListener.resolve(listener);
         try {
           await listener.ready;
+          try { onReady?.(); } catch {}
           for await (const value of listener.invitations) {
             signal.throwIfAborted();
             const token = validatePeerInvitation(value);

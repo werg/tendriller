@@ -8,6 +8,7 @@ import { sha256Hex } from "./ids";
 import runtimeRelease from "./runtime-release.json";
 import { holdingPage, injectRuntime, type PublicationManifest } from "./inject";
 import { appleTouchIcon, iconRasterRequest, rasterFavicon } from "./icon-raster";
+import { allPageBases, extractAuthoredBranding } from "./page-icon";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 import { assetResponse, etagMatches, immutableObject } from "./immutable-cache";
@@ -222,6 +223,19 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     await t.hold("High static screening score on young account");
   }
   await options.beforeCommit();
+  // Extract authored <link rel="icon"> and <meta name="theme-color"> from entry HTML once at publish time
+  // so manifest.webmanifest, /dashboard, and icon rasterization share one canonical SSOT.
+  let authoredBranding: ReturnType<typeof extractAuthoredBranding> | null = null;
+  try {
+    const entryFile = files.get(entry);
+    if (entryFile && t.env.FILES) {
+      const obj = await t.env.FILES.get(fileKey(t, entryFile.hash), { range: { offset: 0, length: 65536 } });
+      if (obj) {
+        const htmlHead = await obj.text();
+        authoredBranding = extractAuthoredBranding(htmlHead, files, allPageBases(t));
+      }
+    }
+  } catch { /* non-fatal; falls back to meta/generated icon */ }
   const publishedAt = t.now();
   const prunedHashes = new Set<string>();
   const n = t.transaction(() => {
@@ -236,6 +250,12 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     t.db.run("UPDATE versions SET entry=? WHERE version=?", entry, next);
     t.db.set("latest", next);
     t.db.set("current", next);
+    if (authoredBranding) {
+      if (authoredBranding.icon) t.db.set("authored_icon", authoredBranding.icon);
+      else t.db.del("authored_icon");
+      if (authoredBranding.themeColor) t.db.set("authored_theme_color", authoredBranding.themeColor);
+      else t.db.del("authored_theme_color");
+    }
     options.commit(next);
     addActivity(t, {
       kind: "version",
@@ -369,21 +389,35 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     // current host configuration. Reloading may refresh them without changing
     // the publication or adding a discovery poll to a running application.
     headers.set("Cache-Control", "private, no-cache");
-    if (req.method === 'HEAD') return new Response(null, { headers });
-    const [broadcastKeys, bcSummary] = await Promise.all([
+    const [broadcastKeys, bcSummary, appleIcon] = await Promise.all([
       publicBroadcastKeys(t.env).then(r => r.keys).catch(() => []),
       broadcastSummary(t.env).catch(() => ({ latestSeq: 0, activeCount: 0, criticalCount: 0 })),
+      appleTouchIcon(t, base, new URL(base, req.url).href, { background: true }).catch(() => null),
     ]);
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base),
+    const pubManifest = publicationManifest(t, version, base);
+    const rasterIcon = rasterFavicon(t, base);
+    const brand = branding();
+    const rasterReq = iconRasterRequest(t, role);
+    const etagInput = `${file.hash}|${version}|${base}|${role}|${linkView ?? ""}|${pubManifest.runtime.id}|${bcSummary.latestSeq}|${brand.name}|${brand.icon ?? ""}|${brand.themeColor ?? ""}|${appleIcon?.href ?? ""}|${rasterIcon?.href ?? ""}|${rasterReq?.key ?? ""}|${JSON.stringify(introductions ?? null)}`;
+    const htmlTag = `W/"${(await sha256Hex(etagInput)).slice(0, 24)}"`;
+    headers.set("ETag", htmlTag);
+    const linkHints = [`<${pubManifest.runtime.base}tendril.js>; rel=preload; as=script`];
+    headers.set("Link", linkHints.join(", "));
+    if (etagMatches(req.headers.get("If-None-Match"), htmlTag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    if (req.method === 'HEAD') return new Response(null, { headers });
+    const rawHtml = await obj.text();
+    const html = injectRuntime(rawHtml, { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: pubManifest,
       broadcastKeys,
       ...(bcSummary.activeCount > 0 ? { broadcastLatestSeq: bcSummary.latestSeq } : {}),
       viewerRole: role,
       ...(linkView ? { defaultView: linkView } : {}),
       branding: {
-        ...branding(),
-        appleIcon: await appleTouchIcon(t, base, new URL(base, req.url).href).catch(() => null),
-        rasterIcon: rasterFavicon(t, base),
-      }, iconRaster: iconRasterRequest(t, role) });
+        ...brand,
+        appleIcon,
+        rasterIcon,
+      }, iconRaster: rasterReq });
     return new Response(html, { headers });
   }
   headers.set("Content-Length", String(file.size));

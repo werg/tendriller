@@ -72,18 +72,24 @@ function notify(t: Tendril, except?: string) {
       if (listener.value.connection === except) continue;
       if (listener.kind === 'ws') {
         try { await fresh(t, listener.value.principal); if (listener.ws.readyState === WebSocket.READY_STATE_OPEN) listener.ws.send(JSON.stringify({ type: 'changed' })); }
-        catch { try { listener.ws.close(4003, 'Peer discovery access unavailable'); } catch {} }
+        catch (err) {
+          const revoked = err instanceof HttpError && err.status === 403;
+          try { listener.ws.close(revoked ? 4003 : 1013, revoked ? 'Peer discovery access unavailable' : 'Transient discovery error; reconnect'); } catch {}
+        }
       } else {
         try {
           await fresh(t, listener.value.principal);
-          const delivered = await deliverHubData(t, listener.sub, JSON.stringify({ type: 'changed' }));
-          if (!delivered) {
+          const delivery = await deliverHubData(t, listener.sub, JSON.stringify({ type: 'changed' }));
+          if (delivery === 'gone') {
             closeHubSubscriber(t, listener.sub, 1001, 'Hub stream unavailable', { notify: false });
             removeDiscoveryConnection(t, listener.value.connection);
           }
-        } catch {
-          closeHubSubscriber(t, listener.sub, 4003, 'Peer discovery access unavailable');
-          removeDiscoveryConnection(t, listener.value.connection);
+          // On 'transient_error', preserve the hub subscriber row so future updates still deliver.
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 403) {
+            closeHubSubscriber(t, listener.sub, 4003, 'Peer discovery access unavailable');
+            removeDiscoveryConnection(t, listener.value.connection);
+          }
         }
       }
     }

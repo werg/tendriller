@@ -56,6 +56,11 @@ export async function buildPublicArtifacts() {
   writeJson(join(runtime, "inputs.json"), graphs["kernel.mjs"].inputs);
   writeJson(join(runtime, "build-metrics.json"), graphs);
   cpSync(join(root, "node_modules/phonon-tts"), join(assets, "tts"), { recursive: true });
+  // Serve immutable Chronolog WASM binaries under public /_tendril/runtime/<id>/wasm/
+  // so pages can WebAssembly.compileStreaming directly from the edge cache without duplicating WASM per page.
+  mkdirSync(join(assets, "wasm"), { recursive: true });
+  copyFileSync(join(root, "node_modules/@jitl/quickjs-ng-wasmfile-release-sync/dist/emscripten-module.wasm"), join(assets, "wasm/quickjs-ng.wasm"));
+  copyFileSync(join(root, "node_modules/@chronolog/peer-session/wasm/sqlite-cas.wasm"), join(assets, "wasm/sqlite-cas.wasm"));
   mkdirSync(join(assets, "brand"), { recursive: true });
   for (const [source, target] of [["tendriller-logo-ai-compressed.png", "logo.png"], ["tendriller-logo-ai.webp", "logo.webp"], ["tendriller-icon-64.png", "icon-64.png"], ["tendriller-icon-180.png", "icon-180.png"], ["tendriller-icon-192.png", "icon-192.png"], ["tendriller-icon-512.png", "icon-512.png"], ["tendriller-favicon.ico", "favicon.ico"]])
     copyFileSync(join(root, "docs/assets", source), join(assets, "brand", target));

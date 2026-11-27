@@ -12,19 +12,42 @@ export function validatePeerInvitation(value) {
   return Object.freeze({ channel: value.channel, requesterPeerId: validatePeerId(value.requesterPeerId) });
 }
 
-/** Receive-only connection hints, with consumption ACKs bounding host-side pending work. */
-export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs = PEER_INVITATION_LIMITS.openTimeoutMs } = {}) {
+/** Receive-only connection hints with zero-wake edge ping/pong liveness detection and consumption ACKs. */
+export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs = PEER_INVITATION_LIMITS.openTimeoutMs, pingIntervalMs = 0, pongTimeoutMs = 5_000 } = {}) {
   peerId = validatePeerId(peerId);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000)
     throw failure('invalid_invitation', 'Invalid invitation listener open timeout');
   let ended = false, opened = false, error, reading = false, waiting, receivedBytes = 0, sentBytes = 0, receivedInvitations = 0;
-  let resolveReady, rejectReady, resolveClosed;
+  let resolveReady, rejectReady, resolveClosed, pingTimer, pongTimer;
   const queue = [], ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const closed = new Promise(resolve => { resolveClosed = resolve; });
   void ready.catch(() => {});
+  const clearLiveness = () => {
+    clearTimeout(pingTimer); pingTimer = undefined;
+    clearTimeout(pongTimer); pongTimer = undefined;
+  };
+  const sendPing = () => {
+    if (ended || !opened || socket.readyState !== 1 || pongTimer) return;
+    try {
+      socket.send('{"t":"ping"}');
+      pongTimer = setTimeout(() => {
+        pongTimer = undefined;
+        if (!ended) close(failure('invitation_timeout', 'Invitation liveness probe timed out'), 1006, 'Invitation liveness timeout');
+      }, pongTimeoutMs);
+      pongTimer.unref?.();
+    } catch {
+      close(failure('invitation_failed', 'Invitation ping failed'), 1011, 'Invitation ping failed');
+    }
+  };
+  const schedulePing = () => {
+    clearTimeout(pingTimer);
+    if (ended || !pingIntervalMs || pingIntervalMs <= 0) return;
+    pingTimer = setTimeout(() => { pingTimer = undefined; sendPing(); }, pingIntervalMs);
+    pingTimer.unref?.();
+  };
   const finish = (cause, code = 1000, reason = 'Invitation listener closed') => {
     if (ended) return;
-    ended = true; error = cause; clearTimeout(timer);
+    ended = true; error = cause; clearTimeout(timer); clearLiveness();
     for (const [type, listener] of listeners) socket.removeEventListener(type, listener);
     signal?.removeEventListener('abort', cancelled);
     if (!opened) rejectReady(cause || failure('invitation_closed', reason));
@@ -44,10 +67,15 @@ export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs
       if (typeof event.data !== 'string' || bytes(event.data) > PEER_INVITATION_LIMITS.messageBytes)
         throw failure('invalid_invitation', 'Invitations contain bounded routing hints only');
       const value = JSON.parse(event.data); receivedBytes += bytes(event.data);
+      if (value && typeof value === 'object' && !Array.isArray(value) && value.t === 'pong' && Object.keys(value).length === 1) {
+        clearTimeout(pongTimer); pongTimer = undefined;
+        schedulePing();
+        return;
+      }
       if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3)
         throw failure('invalid_invitation', 'Invalid invitation frame');
       if (value.t === 'ready' && !opened && value.version === 1 && value.peerId === peerId) {
-        opened = true; clearTimeout(timer); resolveReady(); return;
+        opened = true; clearTimeout(timer); schedulePing(); resolveReady(); return;
       }
       if (!opened || value.t !== 'invitation') throw failure('invalid_invitation', 'Unexpected invitation frame');
       if (queue.length >= PEER_INVITATION_LIMITS.pending) throw failure('invitation_backpressure', 'Invitation consumer is not keeping up');
@@ -65,6 +93,7 @@ export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs
   if (signal?.aborted) cancelled();
   else if (socket.readyState > 1) disconnected();
   return Object.freeze({ ready, closed,
+    probe() { sendPing(); },
     get stats() { return Object.freeze({ receivedBytes, sentBytes, receivedInvitations, closed: ended }); },
     invitations: { async *[Symbol.asyncIterator]() {
       if (reading) throw failure('reader_exists', 'Invitations have one consumer');

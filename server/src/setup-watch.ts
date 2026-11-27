@@ -84,14 +84,19 @@ export function notifySetupChanged(t: Tendril): void {
       try {
         if (!await authorized(t, value.principal)) { ws.close(4003, 'Setup access revoked'); continue; }
         ws.send(snapshot(t));
-      } catch { try { ws.close(4003, 'Setup access unavailable'); } catch {} }
+      } catch (err) {
+        const revoked = err instanceof HttpError && err.status === 403;
+        try { ws.close(revoked ? 4003 : 1013, revoked ? 'Setup access unavailable' : 'Transient setup error; reconnect'); } catch {}
+      }
     }
     for (const sub of listHubSubscribers<SetupState>(t, TAG)) {
       try {
         if (!await authorized(t, sub.state.principal)) { closeHubSubscriber(t, sub, 4003, 'Setup access revoked'); continue; }
-        const delivered = await deliverHubData(t, sub, snapshot(t));
-        if (!delivered) closeHubSubscriber(t, sub, 1001, 'Hub stream unavailable', { notify: false });
-      } catch { closeHubSubscriber(t, sub, 4003, 'Setup access unavailable'); }
+        const delivery = await deliverHubData(t, sub, snapshot(t));
+        if (delivery === 'gone') closeHubSubscriber(t, sub, 1001, 'Hub stream unavailable', { notify: false });
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 403) closeHubSubscriber(t, sub, 4003, 'Setup access unavailable');
+      }
     }
   });
 }

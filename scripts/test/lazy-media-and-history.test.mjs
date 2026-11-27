@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApplicationSession, openApplicationDevice } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
-import { createPageGenesis, deviceWrapKey } from '../../session/admission.mjs';
+import { createPageGenesis } from '../../session/admission.mjs';
 import { getMediaBytes, putMedia } from '../../docs/tutorial/shared/helpers/lazy-media.mjs';
 import { listPublicationHistory, rollbackPublication } from '../../docs/tutorial/shared/helpers/publications-view.mjs';
 import { runSessionCommand } from '../../tools/cli/lib/session.mjs';
@@ -14,8 +14,8 @@ import { runSessionCommand } from '../../tools/cli/lib/session.mjs';
 test('lazy-media putMedia/getMediaBytes transfers encrypted private and public blobs lazily across connected peers + CLI content put/get', async () => {
   const devA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const devB = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const wrapA = await deviceWrapKey(devA.store);
-  const wrapB = await deviceWrapKey(devB.store);
+  const wrapA = devA.wrapKey;
+  const wrapB = devB.wrapKey;
 
   const created = await createPageGenesis({
     identity: devA.identity,
@@ -41,7 +41,6 @@ test('lazy-media putMedia/getMediaBytes transfers encrypted private and public b
       finalizer: false,
     });
     await peerB.mergeFacts(await peerA.exportFacts());
-    await peerB.unlockEpochsFromKeysTopic(wrapB.privateKey, wrapB.publicKey);
     assert.equal(peerB.hasEpochKey(0), true);
 
     // Connect Peer B's content source directly to Peer A's local content store (lazy P2P pull!)

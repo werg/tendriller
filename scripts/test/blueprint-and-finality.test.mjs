@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApplicationSession, openApplicationDevice } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
-import { createPageGenesis, deviceWrapKey } from '../../session/admission.mjs';
+import { createPageGenesis } from '../../session/admission.mjs';
 import {
   BLUEPRINT_FORMAT,
   createGenesisFromBlueprint,
@@ -17,8 +17,8 @@ import { runSessionCommand } from '../../tools/cli/lib/session.mjs';
 test('PageBlueprint exports reducers + SQL DDL/RLS with ZERO private rows/keys and instantiates a fresh isolated log', async () => {
   const devA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const devB = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const wrapA = await deviceWrapKey(devA.store);
-  const wrapB = await deviceWrapKey(devB.store);
+  const wrapA = devA.wrapKey;
+  const wrapB = devB.wrapKey;
 
   const customMod = `export default { reduce(s, tx) { return { ok: true, state: { last: tx.payload?.v ?? null } }; }, query(s) { return s ?? { last: null }; } };`;
   const created = await createPageGenesis({

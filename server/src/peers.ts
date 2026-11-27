@@ -11,11 +11,11 @@ import { handlePeerParticipant } from './peer-participant';
 import { handleDiscoveryWatch, exchangeDiscovery } from './discovery';
 import { handleInvitations, sendPeerInvitation } from './peer-invitations';
 import { handleRelay } from './peer-relay';
-import { handleEnrollment } from './authority';
+import { handleEnrollment, handleSnapshot } from './authority';
 import { exchangePeerPublication } from './peer-publications';
 import { handleRealtimeIce, handleRealtimeSfu } from './realtime';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|enrollment|publication|invite|discovery|discovery\/watch|ice|sfu\/(?:sessions|tracks|renegotiate|close|usage|room))$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|enrollment|publication|snapshot|invite|discovery|discovery\/watch|ice|sfu\/(?:sessions|tracks|renegotiate|close|usage|room))$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -94,7 +94,7 @@ async function sendToEndpoint(t: Tendril, ep: PeerEndpoint, text: string): Promi
     if (ep.ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
     try { ep.ws.send(text); return true; } catch { return false; }
   }
-  return await deliverHubData(t, ep.sub, text);
+  return (await deliverHubData(t, ep.sub, text)) === 'delivered';
 }
 function closeEndpoint(t: Tendril, ep: PeerEndpoint, code: number, reason: string, { notify = true } = {}): void {
   if (ep.kind === 'ws') {
@@ -110,6 +110,7 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
   if (!authorized(t, principal) || !await freshPrincipal(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
   if (path === 'peers/discovery/watch') return handleDiscoveryWatch(t, req, url, principal);
   if (path === 'peers/enrollment') return handleEnrollment(t, req, principal);
+  if (path === 'peers/snapshot') return handleSnapshot(t, req, principal);
   if (path === 'peers/publication') {
     if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
     const input = await readJson(req, 12 * 1024 * 1024) as Record<string, unknown>;

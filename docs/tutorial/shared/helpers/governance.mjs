@@ -195,6 +195,7 @@ export function mountGovernanceBanner({ root, session, runtime = globalThis.wind
 export async function blockAuthor(session, publicKey, { reason, operationId } = {}) {
   return session.submit({
     visibility: 'public',
+    awaitMaterialized: true,
     ...(operationId ? { operationId } : {}),
     updates: [{
       topic: '$permissions',
@@ -211,6 +212,7 @@ export async function blockAuthor(session, publicKey, { reason, operationId } = 
 export async function unblockAuthor(session, publicKey, { operationId } = {}) {
   return session.submit({
     visibility: 'public',
+    awaitMaterialized: true,
     ...(operationId ? { operationId } : {}),
     updates: [{ topic: '$permissions', input: { action: 'unblockAuthor', publicKey } }],
   });
@@ -220,6 +222,7 @@ export async function unblockAuthor(session, publicKey, { operationId } = {}) {
 export async function setOpenAccess(session, { openRead, openWrite, operationId } = {}) {
   return session.submit({
     visibility: 'public',
+    awaitMaterialized: true,
     ...(operationId ? { operationId } : {}),
     updates: [{
       topic: '$permissions',
@@ -236,6 +239,7 @@ export async function setOpenAccess(session, { openRead, openWrite, operationId 
 export async function proposeMultisig(session, proposal, { operationId } = {}) {
   return session.submit({
     visibility: 'public',
+    awaitMaterialized: true,
     ...(operationId ? { operationId } : {}),
     updates: [{ topic: '$permissions', input: { action: 'propose', ...proposal } }],
   });
@@ -245,6 +249,7 @@ export async function proposeMultisig(session, proposal, { operationId } = {}) {
 export async function approveMultisig(session, proposalId, { operationId } = {}) {
   return session.submit({
     visibility: 'public',
+    awaitMaterialized: true,
     ...(operationId ? { operationId } : {}),
     updates: [{ topic: '$permissions', input: { action: 'approve', proposalId } }],
   });
@@ -254,6 +259,7 @@ export async function approveMultisig(session, proposalId, { operationId } = {})
 export async function cancelMultisig(session, proposalId, { operationId } = {}) {
   return session.submit({
     visibility: 'public',
+    awaitMaterialized: true,
     ...(operationId ? { operationId } : {}),
     updates: [{ topic: '$permissions', input: { action: 'cancel', proposalId } }],
   });
@@ -306,14 +312,13 @@ export async function approveMultisigAndSeal(session, proposalId, { wrapKeyByPub
   let sealed = false;
   if (
     targetPk &&
-    targetWrap &&
     session.genesis?.privateLog !== false &&
     session.isReader?.(targetPk) &&
-    typeof session.sealEpochKeys === 'function'
+    typeof session.backfillMissingEpochBoxes === 'function'
   ) {
     try {
-      await session.sealEpochKeys([{ publicKey: targetPk, wrapKey: targetWrap }]);
-      sealed = true;
+      const count = await session.backfillMissingEpochBoxes();
+      sealed = count > 0;
     } catch { /* another online key holder may already have sealed or will seal on sync */ }
   }
   return { outcome: 'accepted', sealed };

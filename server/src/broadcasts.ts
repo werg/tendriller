@@ -118,9 +118,25 @@ async function ensureSigningKey(env: Env): Promise<BroadcastPrivateJwk> {
   return winner?.private_jwk ? JSON.parse(winner.private_jwk) as BroadcastPrivateJwk : generated.privateJwk;
 }
 
+const BROADCAST_CACHE_TTL_MS = 60_000;
+const keysCache = new WeakMap<object, { key: string; expiresAt: number; value: { issuer: string; keys: BroadcastPublicJwk[] } }>();
+const summaryCache = new WeakMap<object, { expiresAt: number; value: { latestSeq: number; activeCount: number; criticalCount: number } }>();
+
+function invalidateBroadcastCache(env: Env): void {
+  if (env.ACCOUNTS) {
+    keysCache.delete(env.ACCOUNTS);
+    summaryCache.delete(env.ACCOUNTS);
+  }
+}
+
 /** Public Ed25519 keys trusted to verify signed broadcasts from this service origin. Never leaks private material. */
 export async function publicBroadcastKeys(env: Env): Promise<{ issuer: string; keys: BroadcastPublicJwk[] }> {
   const issuer = issuerOrigin(env);
+  const cacheSig = `${issuer}|${env.BROADCAST_SIGNING_JWK ?? ''}|${env.BROADCAST_PUBLIC_JWKS ?? ''}`;
+  if (env.ACCOUNTS) {
+    const cached = keysCache.get(env.ACCOUNTS);
+    if (cached && cached.key === cacheSig && cached.expiresAt > Date.now()) return cached.value;
+  }
   const byKid = new Map<string, BroadcastPublicJwk>();
   if (env.BROADCAST_SIGNING_JWK?.trim()) {
     const priv = await parseConfiguredPrivateKey(env.BROADCAST_SIGNING_JWK.trim());
@@ -147,7 +163,9 @@ export async function publicBroadcastKeys(env: Env): Promise<{ issuer: string; k
       }
     } catch { /* table not yet applied in partial migration tests */ }
   }
-  return { issuer, keys: [...byKid.values()] };
+  const value = { issuer, keys: [...byKid.values()] };
+  if (env.ACCOUNTS) keysCache.set(env.ACCOUNTS, { key: cacheSig, expiresAt: Date.now() + BROADCAST_CACHE_TTL_MS, value });
+  return value;
 }
 
 function rowToSigned(row: BroadcastRow): SignedBroadcast {
@@ -212,6 +230,7 @@ export async function createBroadcast(env: Env, actor: string, rawInput: unknown
     env.ACCOUNTS.prepare('INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .bind(crypto.randomUUID(), actor, 'broadcast_publish', id, `${input.kind}/${input.severity}: ${input.title}`, now),
   ]);
+  invalidateBroadcastCache(env);
   return signed;
 }
 
@@ -224,6 +243,7 @@ export async function revokeBroadcast(env: Env, actor: string, id: string, reaso
   if (!res) return false;
   await env.ACCOUNTS.prepare('INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), actor, 'broadcast_revoke', id, reason.slice(0, 500), now).run();
+  invalidateBroadcastCache(env);
   return true;
 }
 
@@ -487,9 +507,11 @@ export async function listAllBroadcastsForAdmin(env: Env, limit = 50): Promise<S
   }
 }
 
-/** Lightweight readiness summary (never throws if migration hasn't run). */
+/** Lightweight readiness summary (isolate-cached 60s; never throws if migration hasn't run). */
 export async function broadcastSummary(env: Env): Promise<{ latestSeq: number; activeCount: number; criticalCount: number }> {
   if (!env.ACCOUNTS) return { latestSeq: 0, activeCount: 0, criticalCount: 0 };
+  const cached = summaryCache.get(env.ACCOUNTS);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
   await syncReleaseBroadcasts(env);
   try {
     const now = Date.now();
@@ -498,11 +520,13 @@ export async function broadcastSummary(env: Env): Promise<{ latestSeq: number; a
       SUM(CASE WHEN revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) AND signature_b64 != '' THEN 1 ELSE 0 END) AS active_count,
       SUM(CASE WHEN revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) AND signature_b64 != '' AND severity IN ('urgent', 'critical') THEN 1 ELSE 0 END) AS critical_count
       FROM system_broadcasts`).bind(now, now).first<{ latest_seq: number; active_count: number | null; critical_count: number | null }>();
-    return {
+    const value = {
       latestSeq: row?.latest_seq ?? 0,
       activeCount: row?.active_count ?? 0,
       criticalCount: row?.critical_count ?? 0,
     };
+    summaryCache.set(env.ACCOUNTS, { expiresAt: now + BROADCAST_CACHE_TTL_MS, value });
+    return value;
   } catch {
     return { latestSeq: 0, activeCount: 0, criticalCount: 0 };
   }

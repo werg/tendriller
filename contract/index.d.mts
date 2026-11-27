@@ -31,9 +31,12 @@ export interface RuntimeArtifactFeatures {
   speech: { model: string; url: string; sha256: string; size?: number; total_size?: number; languages?: string[];
     engine: { script: string; script_sha256: string; script_size?: number; wasm: string; wasm_sha256: string; wasm_size?: number } } | null;
 }
+export type PublicationUpdatePhase = "current" | "applying" | "deferred" | "pinned";
 export interface PublicationUpdate {
   readonly version: number | null;
   readonly kind?: "hot-swapped" | "reload" | "reverted";
+  readonly phase?: PublicationUpdatePhase;
+  readonly reasons?: readonly string[];
   readonly publication?: PublicationManifest | null;
   readonly changedPaths?: readonly string[];
 }
@@ -446,8 +449,8 @@ export interface RuntimeServices {
     readonly current: PublicationManifest | null;
     /** True only when this document was opened at its immutable /_publications/ID/ URL. */
     readonly pinned: boolean;
-    /** "live" (default) switches as soon as no typed text is pending; "careful" (<meta name="tendriller-updates" content="careful">) also waits for any focused or changed control and shows an update prompt. */
-    readonly policy: "live" | "careful";
+    /** Always "live": switches automatically as soon as no draft, composition, pointer gesture, or app hold defers it. */
+    readonly policy: "live";
     /** A newer release requires a full document reload; the page switches at its next safe point. */
     readonly updateAvailable: boolean;
     /** Fetch the latest selected publication manifest from `_tendril/info` on demand (zero polling). */

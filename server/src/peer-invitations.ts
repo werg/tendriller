@@ -24,6 +24,9 @@ const attachment = (ws: WebSocket): Attachment | null => {
   return value?.kind === 'peer-invitations' ? value : null;
 };
 export const isInvitationSocket = (ws: WebSocket): boolean => attachment(ws) !== null;
+export function closeInvitationSocket(ws: WebSocket): void {
+  try { ws.serializeAttachment(null); } catch {}
+}
 function identity(t: Tendril, principal: Principal): string {
   return participantIdentity(t, principal).route;
 }
@@ -179,9 +182,12 @@ export async function sendPeerInvitation(t: Tendril, principal: Principal, input
     catch { retireWs(recipient.ws, 1011, 'Invitation delivery failed'); throw new HttpError(503, 'peer_unavailable'); }
   } else {
     putHubSubscriber<InvitationState>(t, { ...latestHubSub!, state: nextState });
-    const delivered = await deliverHubData(t, latestHubSub!, payload);
-    if (!delivered) {
+    const delivery = await deliverHubData(t, latestHubSub!, payload);
+    if (delivery === 'gone') {
       deleteHubSubscriber(t, latestHubSub!.key);
+      throw new HttpError(503, 'peer_unavailable');
+    }
+    if (delivery === 'transient_error') {
       throw new HttpError(503, 'peer_unavailable');
     }
   }

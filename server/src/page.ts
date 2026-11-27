@@ -12,6 +12,7 @@ import { serviceDescriptor } from "./descriptor";
 import { AGENT_SCOPES, accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
 import { currentIconRaster, iconRasterResponse, iconRasterTag, remoteIconSize, storeIconRaster } from "./icon-raster";
+import { buildManifestIcons, resolvedSvgResponse } from "./page-icon";
 import { addActivity } from "./activity";
 import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from "./agent-grants";
 import { createJoinCode, listAccountAgents } from "./agents";
@@ -415,6 +416,11 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (sub === "manifest.webmanifest" && (m === "GET" || m === "HEAD")) {
     const meta = tendrilMeta(t);
     const name = t.db.get("name", "Tendril");
+    const customSize = meta.icon && /^https:\/\//.test(meta.icon)
+      ? await remoteIconSize(t, meta.icon, new URL(base, req.url).href)
+      : null;
+    const icons = await buildManifestIcons(t, customSize);
+    const authoredTheme = t.db.get<string | null>("authored_theme_color", null);
     const body: Record<string, unknown> = {
       name,
       short_name: meta.short_name ?? name.slice(0, 12),
@@ -422,12 +428,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       start_url: base,
       scope: base,
       display: "standalone",
-      theme_color: meta.theme_color ?? DEFAULT_THEME_COLOR,
+      launch_handler: { client_mode: ["focus-existing", "auto"] },
+      theme_color: meta.theme_color ?? authoredTheme ?? DEFAULT_THEME_COLOR,
       background_color: meta.background_color ?? "#ffffff",
-      icons: pageIcons(base, meta.icon, {
-        rasterTag: currentIconRaster(t) ? iconRasterTag(currentIconRaster(t)!.key) : null,
-        customSize: meta.icon && /^https:\/\//.test(meta.icon) ? await remoteIconSize(t, meta.icon, new URL(base, req.url).href) : null,
-      }),
+      icons,
     };
     if (meta.shortcuts && meta.shortcuts.length > 0) {
       body.shortcuts = resolveShortcuts(meta.shortcuts, base);
@@ -452,28 +456,23 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const icon = t.db.get<string | null>("icon", null);
     if (sub === "icon" && icon && /^https:\/\//.test(icon)) return new Response(null, { status: 302,
       headers: { Location: icon, "Cache-Control": "private, no-cache" } });
-    const svg = icon && isEmojiIcon(icon) ? emojiIconSvg(icon)
-      : iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR);
-    return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
+    return resolvedSvgResponse(t, false, m === "HEAD");
   }
 
-  if ((sub === "icon-512.png" || sub === "icon-maskable-512.png") && (m === "GET" || m === "HEAD")) {
-    const response = iconRasterResponse(t, sub === "icon-512.png" ? "any" : "maskable", m === "HEAD");
+  if ((sub === "icon-512.png" || sub === "icon-192.png" || sub === "icon-maskable-512.png") && (m === "GET" || m === "HEAD")) {
+    const which = sub === "icon-512.png" ? "any" : sub === "icon-192.png" ? "any192" : "maskable";
+    const response = iconRasterResponse(t, which, m === "HEAD");
     if (!response) throw new HttpError(404, "not_found", "No rendered icon yet");
     return response;
   }
   if (sub === "icon-raster" && m === "POST") {
     // The owner's browser draws the page's own icon SVGs into PNGs (it has the emoji font).
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
-    storeIconRaster(t, await readJson(req, 1_200_000));
+    storeIconRaster(t, await readJson(req, 1_400_000));
     return new Response(null, { status: 204 });
   }
   if (sub === "icon-maskable.svg" && (m === "GET" || m === "HEAD")) {
-    const icon = t.db.get<string | null>("icon", null);
-    const themeColor = t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR;
-    const svg = icon && isEmojiIcon(icon) ? maskableEmojiIconSvg(icon, themeColor)
-      : maskableIconSvg(t.db.get("name", "Tendril"), themeColor);
-    return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
+    return resolvedSvgResponse(t, true, m === "HEAD");
   }
 
   throw new HttpError(404, "not_found", `No route _tendril/${sub}`);

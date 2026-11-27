@@ -6,7 +6,9 @@ import { addActivity } from './activity';
 import { brandMark } from './brand';
 import { renderQrSvg } from './qr';
 import { listVersions, pointers } from './files';
-import { escapeHtml } from './inject';
+import { emojiIconSvg, escapeHtml, iconSvg } from './inject';
+import { dashboardIconUrl } from './page-icon';
+import { DEFAULT_THEME_COLOR, isEmojiIcon } from './pwa';
 import { HttpError, readBody } from './http';
 import { avatar, icon, renderShell } from './accounts/ui';
 import { copyAttrs, renderCopyText, SITE_COPY } from './site-copy';
@@ -20,6 +22,9 @@ import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimary
 export interface PageManagementView {
   tid: string;
   rawName: string;
+  icon?: string | null;
+  iconUrl?: string | null;
+  themeColor?: string | null;
   base: string;
   publicBase: string;
   owner: boolean;
@@ -201,6 +206,15 @@ export function renderPageManagementHtml(view: PageManagementView): string {
     </div></details>
   </div>`;
 
+  const pageAvatar = view.icon && isEmojiIcon(view.icon)
+    ? `<span class="avatar favicon emoji" aria-hidden="true">${emojiIconSvg(view.icon)}</span>`
+    : view.iconUrl
+      ? `<span class="avatar favicon" aria-hidden="true"><img src="${text(view.iconUrl)}" alt="" width="44" height="44" referrerpolicy="no-referrer"></span>`
+      : view.icon && /^https:\/\//.test(view.icon)
+        ? `<span class="avatar favicon" aria-hidden="true"><img src="${text(view.icon)}" alt="" width="44" height="44" referrerpolicy="no-referrer"></span>`
+        : view.themeColor
+          ? `<span class="avatar favicon" aria-hidden="true">${iconSvg(view.rawName, view.themeColor)}</span>`
+          : avatar(view.rawName, view.tid);
   const facts = view.owner ? `<div class="page-meta"><span>${icon('layers')} ${view.currentVersion ? `Version ${text(view.currentVersion)}` : 'Not published yet'}</span><span>${icon('bot')} ${view.rosterAgents.length} ${view.rosterAgents.length === 1 ? 'agent' : 'agents'}</span><span>${icon('link')} ${view.shareLinks.length} ${view.shareLinks.length === 1 ? 'link' : 'links'}</span></div>` : '';
   return renderShell({
     title: 'Manage page',
@@ -208,7 +222,7 @@ export function renderPageManagementHtml(view: PageManagementView): string {
     brandBase: brandPrefix,
     nav: `<nav>${view.owner ? `<a class="nav-link" href="#add">${icon('user-plus')} Add people</a>` : ''}<a class="nav-link" href="${text(view.base)}">Return to page</a></nav>`,
     themeToggle: editable,
-    body: `<div class="page-head"><div class="page-head-row"><div style="display:flex;gap:.9rem;align-items:center">${avatar(view.rawName, view.tid)}<div><span class="eyebrow"${c('pageManage.eyebrow', pm.eyebrow)}>${txt(pm.eyebrow)}</span><h1 style="margin:0">${pageName}</h1>${facts}</div></div><span class="badge${view.owner ? ' ok' : ''}">${text(view.role)} access</span></div></div>${view.message ? `<p class="notice" role="status">${icon('check')}<span>${text(view.message)}</span></p>` : ''}${view.owner ? ownerSections : `<section class="card"><p${c('pageManage.nonOwnerNotice', pm.nonOwnerNotice)}>${txt(pm.nonOwnerNotice)}</p></section>`}`,
+    body: `<div class="page-head"><div class="page-head-row"><div style="display:flex;gap:.9rem;align-items:center">${pageAvatar}<div><span class="eyebrow"${c('pageManage.eyebrow', pm.eyebrow)}>${txt(pm.eyebrow)}</span><h1 style="margin:0">${pageName}</h1>${facts}</div></div><span class="badge${view.owner ? ' ok' : ''}">${text(view.role)} access</span></div></div>${view.message ? `<p class="notice" role="status">${icon('check')}<span>${text(view.message)}</span></p>` : ''}${view.owner ? ownerSections : `<section class="card"><p${c('pageManage.nonOwnerNotice', pm.nonOwnerNotice)}>${txt(pm.nonOwnerNotice)}</p></section>`}`,
     footer: `<span>Tendriller</span><span class="foot-links"><a href="${text(view.publicBase + '/dashboard')}">Account dashboard</a><a href="${text(view.base + '_tendril/report')}">Report this page</a></span>`,
   });
 }
@@ -370,9 +384,13 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
   const subdomainAllowed = Boolean(ent && subdomainPlanAllowed(ent));
   const bareUrl = owner ? (subdomainAllowed ? t.barePageUrl() : t.barePageUrl({ fallback: true })) : '';
   const fallbackBareUrl = owner ? t.barePageUrl({ fallback: true }) : '';
+  const iconUrl = await dashboardIconUrl(t);
   const html = renderPageManagementHtml({
     tid: t.tid,
     rawName,
+    icon: t.db.get<string | null>('icon', null),
+    iconUrl,
+    themeColor: t.db.get<string | null>('theme_color', null) ?? t.db.get<string | null>('authored_theme_color', null) ?? DEFAULT_THEME_COLOR,
     base,
     publicBase: t.env.PUBLIC_BASE,
     owner,

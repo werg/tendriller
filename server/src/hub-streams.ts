@@ -90,20 +90,32 @@ export function deleteHubSubscriber(t: Tendril, key: string): boolean {
   return true;
 }
 
-/** One-shot push from Tendril to AgentHub. Returns false when the stream/connection is gone. */
-export async function deliverHubData(t: Tendril, ref: HubStreamRef, text: string): Promise<boolean> {
+export type HubDeliveryResult = 'delivered' | 'gone' | 'transient_error';
+
+/** One-shot push from Tendril to AgentHub. Distinguishes permanent stream absence from transient DO/network errors. */
+export async function deliverHubData(t: Tendril, ref: HubStreamRef, text: string): Promise<HubDeliveryResult> {
   const hub = t.env.AGENT_HUB;
-  if (!hub) return false;
+  if (!hub) return 'gone';
   try {
     const response = await hub.get(hub.idFromName(ref.agentId)).fetch(new Request('https://hub.internal/stream/deliver', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ connId: ref.connId, s: ref.streamId, kind: 'data', text }),
     }));
+    if (response.status === 404 || response.status === 410) {
+      await response.body?.cancel().catch(() => {});
+      return 'gone';
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      return 'transient_error';
+    }
     const body = await response.json().catch(() => null) as { delivered?: unknown } | null;
-    return Boolean(response.ok && body?.delivered === true);
+    if (body?.delivered === true) return 'delivered';
+    if (body?.delivered === false) return 'gone';
+    return 'transient_error';
   } catch {
-    return false;
+    return 'transient_error';
   }
 }
 

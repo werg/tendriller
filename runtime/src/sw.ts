@@ -13,7 +13,7 @@ const SHARE_INBOX_CACHE = "tendril-share-inbox:" + encodeURIComponent(SCOPE);
 const SHARE_TTL_MS = 5 * 60 * 1000;
 const SHARE_MAX_FILES = 4;
 const SHARE_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
-const NETWORK_TIMEOUT_MS = 6000;
+const NETWORK_TIMEOUT_MS = 600;
 interface Registry {
   latest?: string;
   publications: Record<string, PublicationManifest>;

@@ -36,7 +36,9 @@ import { closePeerHubStream, type PeerState } from './peers';
 import { notifyMcpSyncWatchers } from './publication-watch';
 import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
 import { selectedApplication } from './application';
-import { HttpError, json, readJson } from './http';
+import { HttpError, json, readBody, readJson } from './http';
+import { sha256Hex } from './ids';
+import { etagMatches } from './immutable-cache';
 import { pageHostForLabel, pageUrl } from './urls';
 import { isActiveCustomDomainForPage } from './custom-domains';
 import { isActiveSubdomainForPage } from './subdomains';
@@ -55,6 +57,97 @@ const MAX_MAILBOX_ITEM_BYTES = 256 * 1024;
 const MAX_MAILBOX_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_MAILBOX_CAS_ITEMS = 2048;
 const MAX_MAILBOX_CAS_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024;
+const SNAPSHOT_META_KEY = 'v2_latest_snapshot';
+const CONTROL_CACHE_KEY = 'v2_control_cache';
+
+interface CachedControlPayload {
+  fingerprint: string;
+  stateRoot: string;
+  historyDigest: string;
+  permissions: {
+    members: readonly ControlMember[];
+    readers: string[];
+    writers: string[];
+    administrators: string[];
+    publishers: string[];
+    openReaders: boolean;
+    openWriters: boolean;
+    blockedAuthors: string[];
+    admission: ControlAdmissionPolicy | null;
+  };
+  keys: MaterializedControlState['keys'];
+  finality: MaterializedControlState['finality'];
+  publications: MaterializedControlState['publications'];
+  finalizedPublications: MaterializedControlState['finalizedPublications'];
+  hasActiveFinality: boolean;
+  closedThroughMs: string | null;
+  everMembers: string[];
+  referencedCasHashes: string[];
+}
+
+function controlCacheFingerprint(t: Tendril, logId: string): string {
+  const opMeta = t.db.one<{ n: number; last_id: string | null }>('SELECT COUNT(*) AS n, MAX(op_id) AS last_id FROM v2_public_ops');
+  const casMeta = t.db.one<{ n: number; last_h: string | null }>('SELECT COUNT(*) AS n, MAX(hash) AS last_h FROM v2_public_cas');
+  const cpMeta = t.db.one<{ n: number; max_ct: number | null }>('SELECT COUNT(*) AS n, MAX(closed_through) AS max_ct FROM v2_checkpoints');
+  return `${logId}|o:${opMeta?.n ?? 0}:${opMeta?.last_id ?? ''}|c:${casMeta?.n ?? 0}:${casMeta?.last_h ?? ''}|p:${cpMeta?.n ?? 0}:${cpMeta?.max_ct ?? ''}`;
+}
+
+function hydrateCachedControl(genesisBytes: Uint8Array, logId: string, cached: CachedControlPayload): MaterializedControlState {
+  return {
+    logId,
+    genesis: decodeLogGenesis(genesisBytes),
+    genesisBytes,
+    stateRoot: cached.stateRoot,
+    historyDigest: cached.historyDigest,
+    permissions: {
+      members: cached.permissions.members,
+      readers: new Set(cached.permissions.readers),
+      writers: new Set(cached.permissions.writers),
+      administrators: new Set(cached.permissions.administrators),
+      publishers: new Set(cached.permissions.publishers),
+      openReaders: cached.permissions.openReaders,
+      openWriters: cached.permissions.openWriters,
+      blockedAuthors: new Set(cached.permissions.blockedAuthors),
+      admission: cached.permissions.admission,
+    },
+    keys: cached.keys,
+    finality: cached.finality,
+    publications: cached.publications,
+    finalizedPublications: cached.finalizedPublications,
+    hasActiveFinality: cached.hasActiveFinality,
+    closedThroughMs: cached.closedThroughMs !== null ? BigInt(cached.closedThroughMs) : null,
+    everMembers: new Set(cached.everMembers),
+    referencedCasHashes: new Set(cached.referencedCasHashes),
+  };
+}
+
+function serializeCachedControl(fingerprint: string, state: MaterializedControlState): CachedControlPayload {
+  return {
+    fingerprint,
+    stateRoot: state.stateRoot,
+    historyDigest: state.historyDigest,
+    permissions: {
+      members: state.permissions.members,
+      readers: [...state.permissions.readers],
+      writers: [...state.permissions.writers],
+      administrators: [...state.permissions.administrators],
+      publishers: [...state.permissions.publishers],
+      openReaders: state.permissions.openReaders,
+      openWriters: state.permissions.openWriters,
+      blockedAuthors: [...state.permissions.blockedAuthors],
+      admission: state.permissions.admission,
+    },
+    keys: state.keys,
+    finality: state.finality,
+    publications: state.publications,
+    finalizedPublications: state.finalizedPublications,
+    hasActiveFinality: state.hasActiveFinality,
+    closedThroughMs: state.closedThroughMs !== null ? state.closedThroughMs.toString() : null,
+    everMembers: [...state.everMembers],
+    referencedCasHashes: [...state.referencedCasHashes],
+  };
+}
 
 export const ENROLLMENT_REQUEST_DOMAIN = 'chronolog/enrollment-request/v2';
 
@@ -537,12 +630,17 @@ export async function replayBlindHostControl(input: {
   };
 }
 
-/** Read and materialize the current v2 blind-host control state (cached until next DB write). */
+/** Read and materialize the current v2 blind-host control state (persisted across DO hibernation). */
 export async function readControlState(t: Tendril): Promise<MaterializedControlState | null> {
   return t.db.cachedAsync('v2:control-state', async () => {
     const genesisBytes = readStoredGenesisBytes(t);
     if (!genesisBytes) return null;
     const logId = bytesToHex(genesisLogId(genesisBytes));
+    const fingerprint = controlCacheFingerprint(t, logId);
+    const persisted = t.db.get<CachedControlPayload | null>(CONTROL_CACHE_KEY, null);
+    if (persisted && persisted.fingerprint === fingerprint) {
+      return hydrateCachedControl(genesisBytes, logId, persisted);
+    }
     const publicCas = listPublicCasRows(t);
     const opRows = listPublicOpRows(t);
     const publicOps: KernelOperationInput[] = [];
@@ -553,7 +651,9 @@ export async function readControlState(t: Tendril): Promise<MaterializedControlS
       publicOps.push({ opId, core });
     }
     const checkpoints = listCheckpointRows(t).map(row => decodeRecord<FinalityCheckpoint>(row.raw));
-    return replayBlindHostControl({ genesisBytes, publicCas, publicOps, checkpoints });
+    const computed = await replayBlindHostControl({ genesisBytes, publicCas, publicOps, checkpoints });
+    try { t.db.set(CONTROL_CACHE_KEY, serializeCachedControl(fingerprint, computed)); } catch {}
+    return computed;
   });
 }
 
@@ -627,6 +727,10 @@ export function reconcileHostEffects(t: Tendril, state: MaterializedControlState
     historyDigest: state.historyDigest,
     closedThroughMs: state.closedThroughMs !== null ? state.closedThroughMs.toString() : null,
   });
+  try {
+    const fp = controlCacheFingerprint(t, state.logId);
+    t.db.set(CONTROL_CACHE_KEY, serializeCachedControl(fp, state));
+  } catch {}
 }
 
 export async function applicationMetadata(t: Tendril): Promise<HostApplication> {
@@ -1579,6 +1683,7 @@ export async function notarizeBlindFrontier(
       copy.buffer,
     );
     t.db.del('v2_control_summary');
+    t.db.del(CONTROL_CACHE_KEY);
   });
   notifyDiscoveryWatchers(t);
   return {
@@ -1586,4 +1691,124 @@ export async function notarizeBlindFrontier(
     closedThroughMs: closedThroughMs.toString(),
     includedCount: inclusions.length,
   };
+}
+
+interface StoredSnapshotMeta {
+  hash: string;
+  author: string;
+  epoch: number;
+  stateRoot: string;
+  historyDigest: string;
+  opCount: number;
+  size: number;
+  uploadedAt: number;
+}
+
+/**
+ * Blind R2-cached encrypted Chronolog Snapshot Bundle slot (`GET` / `POST _tendril/peers/snapshot`).
+ * The host never decrypts application state; it verifies only the outer Ed25519 member
+ * signature against `$permissions` and stores the opaque epoch-encrypted bundle in R2 so
+ * cold browsers hydrate in 1 fetch instead of replaying hundreds of mailbox ops.
+ */
+export async function handleSnapshot(t: Tendril, req: Request, principal: Principal): Promise<Response> {
+  if (!t.env.FILES) throw new HttpError(503, 'storage_unavailable', 'Snapshot storage is unavailable');
+  const state = await readControlState(t);
+  if (!state) throw new HttpError(409, 'application_uninitialized');
+
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    const meta = t.db.get<StoredSnapshotMeta | null>(SNAPSHOT_META_KEY, null);
+    if (!meta) return new Response(null, { status: 204, headers: { 'Cache-Control': 'private, no-cache' } });
+    const etag = `"${meta.hash}"`;
+    const headers = new Headers({
+      'Content-Type': 'application/octet-stream',
+      'Cache-Control': 'private, no-cache',
+      'ETag': etag,
+      'X-Tendril-Snapshot-Epoch': String(meta.epoch),
+      'X-Tendril-Snapshot-Ops': String(meta.opCount),
+      'X-Tendril-Snapshot-Root': meta.stateRoot,
+      'X-Tendril-Snapshot-Digest': meta.historyDigest,
+      'X-Content-Type-Options': 'nosniff',
+    });
+    if (etagMatches(req.headers.get('If-None-Match'), etag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    if (req.method === 'HEAD') {
+      headers.set('Content-Length', String(meta.size));
+      return new Response(null, { status: 200, headers });
+    }
+    const obj = await t.env.FILES.get(`t/${t.tid}/snapshots/${meta.hash}`);
+    if (!obj) {
+      t.db.del(SNAPSHOT_META_KEY);
+      return new Response(null, { status: 204, headers: { 'Cache-Control': 'private, no-cache' } });
+    }
+    headers.set('Content-Length', String(obj.size));
+    return new Response(obj.body, { status: 200, headers });
+  }
+
+  if (req.method === 'POST') {
+    const rawBuf = await readBody(req, MAX_SNAPSHOT_BYTES);
+    const raw = new Uint8Array(rawBuf);
+    if (raw.byteLength < 32) throw new HttpError(400, 'invalid_snapshot', 'Snapshot bundle is empty');
+    let signed: Signed<{
+      version?: number;
+      logId?: string;
+      epoch?: number;
+      stateRoot?: string;
+      historyDigest?: string;
+      opCount?: number;
+    }>;
+    try {
+      signed = decodeRecord(raw);
+    } catch {
+      throw new HttpError(400, 'invalid_snapshot', 'Malformed snapshot bundle');
+    }
+    const payload = signed?.payload;
+    if (
+      !payload || typeof payload !== 'object' ||
+      payload.version !== 2 ||
+      payload.logId !== state.logId ||
+      typeof signed.signer !== 'string' || !/^[0-9a-f]{64}$/.test(signed.signer) ||
+      typeof payload.stateRoot !== 'string' || typeof payload.historyDigest !== 'string' ||
+      typeof payload.opCount !== 'number' || !Number.isSafeInteger(payload.opCount) || payload.opCount < 0
+    ) {
+      throw new HttpError(400, 'invalid_snapshot', 'Invalid snapshot metadata');
+    }
+    const allowedAuthor = state.permissions.openWriters
+      ? !state.permissions.blockedAuthors.has(signed.signer)
+      : (state.permissions.writers.has(signed.signer) || state.permissions.administrators.has(signed.signer) || state.permissions.readers.has(signed.signer));
+    if (!allowedAuthor) {
+      throw new HttpError(403, 'forbidden', 'Snapshot signer is not an admitted member');
+    }
+    const ok = await verifyRecord('chronolog/materialized-snapshot/v2', signed, signed.signer).catch(() => false);
+    if (!ok) throw new HttpError(400, 'invalid_snapshot_signature', 'Snapshot signature verification failed');
+
+    const prev = t.db.get<StoredSnapshotMeta | null>(SNAPSHOT_META_KEY, null);
+    if (prev && prev.opCount > payload.opCount && prev.epoch === (payload.epoch ?? -1)) {
+      return json({ stored: false, reason: 'stale', currentOps: prev.opCount, hash: prev.hash });
+    }
+    const hash = await sha256Hex(rawBuf);
+    if (prev?.hash === hash) {
+      return json({ stored: true, deduplicated: true, hash, opCount: prev.opCount });
+    }
+    await t.env.FILES.put(`t/${t.tid}/snapshots/${hash}`, rawBuf, {
+      httpMetadata: { contentType: 'application/octet-stream' },
+    });
+    const nextMeta: StoredSnapshotMeta = {
+      hash,
+      author: signed.signer,
+      epoch: typeof payload.epoch === 'number' ? payload.epoch : -1,
+      stateRoot: payload.stateRoot,
+      historyDigest: payload.historyDigest,
+      opCount: payload.opCount,
+      size: raw.byteLength,
+      uploadedAt: t.now(),
+    };
+    t.db.set(SNAPSHOT_META_KEY, nextMeta);
+    if (prev && prev.hash !== hash) {
+      t.ctx.waitUntil(t.env.FILES.delete(`t/${t.tid}/snapshots/${prev.hash}`).catch(() => {}));
+    }
+    return json({ stored: true, hash, opCount: nextMeta.opCount, size: nextMeta.size }, 201);
+  }
+
+  throw new HttpError(405, 'method_not_allowed');
 }

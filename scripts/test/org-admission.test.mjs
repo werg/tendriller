@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import * as p from '@chronolog/peer-session';
 import { ContentAddressedStore, MemoryBytesStore, TopicKernel, computeCasHash, decodeCasNode, hashCasNode, seedStandardModules } from '@chronolog/peer-session/kernel';
 import { openNativeDevice } from '@chronolog/peer-session/native';
-import { createAdmission, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
+import { createAdmission, openPageGenesis } from '../../session/admission.mjs';
 import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
 import { pageConnectionCommands, pageConnectionQueries, rekeyAllPageConnections } from '../../docs/tutorial/shared/helpers/connections.mjs';
 import { generateConnectionKey } from '../../contract/connections.mjs';
@@ -193,7 +193,7 @@ test('createAdmission seamlessly admits org members via admin-signed group polic
 
   // 1. Owner creates genesis page authority & signs group policy for github-team:acme/eng
   const ownerDev = await openNativeDevice({ path: join(dir, 'owner.sqlite'), create: true });
-  const ownerWrap = await deviceWrapKey(ownerDev.store);
+  const ownerWrap = ownerDev.wrapKey;
   const ownerPeers = host.peersFor('owner_acc');
   const ownerGenesis = await openPageGenesis({
     store: ownerDev.store,
@@ -229,7 +229,7 @@ test('createAdmission seamlessly admits org members via admin-signed group polic
 
   // 2. Alice (verified org member) opens page & enrolls device
   const aliceDev = await openNativeDevice({ path: join(dir, 'alice.sqlite'), create: true });
-  const aliceWrap = await deviceWrapKey(aliceDev.store);
+  const aliceWrap = aliceDev.wrapKey;
   const alicePeers = host.peersFor('alice_org');
   const aliceGenesis = await openPageGenesis({
     store: aliceDev.store,

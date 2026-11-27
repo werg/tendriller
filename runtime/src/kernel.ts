@@ -106,6 +106,21 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     registration = undefined;
     throw error;
   });
+  // Auto-register the scoped Service Worker on idle or PWA install/standalone launch
+  // so repeat visits serve immutable assets + SWR HTML instantaneously without requiring
+  // a manual "Save offline" click. Honors `__TENDRIL_NO_SW__` for tests/isolation.
+  if (options.watchPublication === true && cfg.publication && typeof navigator !== "undefined" && "serviceWorker" in navigator && !(window as any).__TENDRIL_NO_SW__) {
+    const autoWarmSw = () => { void registerOffline().catch(() => {}); };
+    const standalone = typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches;
+    if (standalone) {
+      autoWarmSw();
+    } else if (typeof (window as any).requestIdleCallback === "function") {
+      (window as any).requestIdleCallback(autoWarmSw, { timeout: 3000 });
+    } else {
+      setTimeout(autoWarmSw, 1500);
+    }
+    window.addEventListener("appinstalled", autoWarmSw, { once: true });
+  }
   const tracker = installSensorWrappers();
   const installation = createInstallation();
   const transport = createTransportBinding();

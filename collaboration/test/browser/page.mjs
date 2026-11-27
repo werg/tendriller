@@ -21,8 +21,6 @@ window.ready = (async () => {
     workerUrl,
     profileId,
     applicationId: '91'.repeat(32),
-    takeover: query.get('takeover') === '1',
-    onOwnerReplaced() { window.ownerReplacedCount++; },
     context: {
       viewId: sessionStorage.getItem('fixture-view') || query.get('view') || crypto.randomUUID(),
       documentPath: location.pathname,
@@ -41,7 +39,7 @@ window.ready = (async () => {
   });
   window.reattach = async () => {
     await window.attachment.detach();
-    const next = await openBrowserOwner({ ...ownerOptions, takeover: false });
+    const next = await openBrowserOwner(ownerOptions);
     window.attachment = next;
     window.session = next.session;
     return next.session.endpoint;

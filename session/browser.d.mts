@@ -6,19 +6,13 @@ export interface BrowserOwnerOptions {
   profileId: string;
   applicationId: string;
   context?: { viewId?: string; documentPath?: string; publicationId?: string; runId?: string };
-  /** Single-active-tab lock handoff over BroadcastChannel. Default `'auto'` seamlessly takes over when this tab/PWA is visible (and never steals while hidden); `false` fails immediately with `TAB_ACTIVE_ELSEWHERE`; `true` takes over unconditionally. */
-  takeover?: 'auto' | boolean;
-  /** Compatibility hint (all sessions run in a private 1:1 dedicated Worker). */
-  mode?: 'auto' | 'dedicated' | 'elected';
-  requiresDedicatedWorker?: boolean;
+  /** Optional inline page configuration forwarded to the Worker in `boot` (skips fetching `configuration.json`). */
+  configuration?: unknown;
   createPeerConnection?: (configuration: RTCConfiguration) => RtcPeerConnection;
   signal?: AbortSignal;
   timeoutMs?: number;
   /** Ask the browser to keep this origin's storage out of best-effort eviction (default true). */
   persistStorage?: boolean;
-  /** Default 240000; 0 disables. Keeps Chromium in-memory OPFS record directories active while visible. */
-  storageKeepAliveMs?: number;
-  onOwnerReplaced?: (context: { previous: string; current?: string; reason?: string }) => void;
 }
 
 export interface BrowserOwnerAttachment {
@@ -32,8 +26,7 @@ export interface BrowserOwnerAttachment {
   detach(): Promise<void>;
 }
 
-export declare const TAB_OWNER_PROTOCOL: 'tendriller/tab-owner/v2';
+export declare const TAB_OWNER_PROTOCOL: 'tendriller/tab-owner/v3';
 export declare function openBrowserOwner(options: BrowserOwnerOptions): Promise<BrowserOwnerAttachment>;
-export declare function createBrowserIdentity(options: Pick<BrowserOwnerOptions, 'workerUrl' | 'profileId' | 'signal' | 'timeoutMs' | 'persistStorage'>): Promise<string>;
+export declare function createBrowserIdentity(options: Pick<BrowserOwnerOptions, 'workerUrl' | 'profileId' | 'configuration' | 'signal' | 'timeoutMs' | 'persistStorage'>): Promise<string>;
 export declare function requestPersistentStorage(): Promise<boolean | null>;
-export declare function keepStorageInUse(options?: { intervalMs?: number; storagePersisted?: Promise<boolean | null> | boolean | null; now?: () => number; onTick?: (tick: { ms: number; directories: number }) => void }): () => void;

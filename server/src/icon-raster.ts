@@ -6,20 +6,32 @@ import type { Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "./pwa";
 import { fileKey, servedVersion, versionFile } from "./files";
+import { allPageBases, type AuthoredIconRecord } from "./page-icon";
 
 export const ICON_RASTER_SIZE = 512;
+export const ICON_RASTER_SMALL_SIZE = 192;
 const MAX_PNG_BYTES = 400 * 1024;
 const SIZE_LOOKUP_MS = 2500;
 
-interface StoredRaster { key: string; any: string; maskable: string }
+export interface StoredRaster { key: string; any: string; any192?: string; maskable: string }
 
-/** Identity of the SVG pair the rasters were drawn from (emoji or default page initial+theme). */
+/** Identity of the SVG pair the rasters were drawn from (emoji, authored SVG, or default page initial+theme). */
 export function iconRasterKey(t: Tendril): string | null {
   const icon = t.db.get<string | null>("icon", null);
-  const themeColor = t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR;
+  const authoredTheme = t.db.get<string | null>("authored_theme_color", null);
+  const themeColor = t.db.get<string | null>("theme_color", null) ?? authoredTheme ?? DEFAULT_THEME_COLOR;
   if (icon) {
     if (!isEmojiIcon(icon)) return null;
     return JSON.stringify([1, icon, themeColor]);
+  }
+  // Never overwrite an authored raster icon with a generated green-letter PNG!
+  // If the page authored an SVG <link rel="icon">, rasterize THAT SVG (keyed on its content).
+  const authored = t.db.get<AuthoredIconRecord | null>("authored_icon", null);
+  if (authored) {
+    const isSvg = authored.type === "image/svg+xml" || /\.svg(?:$|[?#])/i.test(authored.href);
+    if (!isSvg) return null;
+    const identity = authored.hash ?? authored.dataUri?.slice(0, 256) ?? authored.href;
+    return JSON.stringify([3, identity, themeColor]);
   }
   const letter = (t.db.get("name", "Tendril").trim()[0] ?? "T").toUpperCase();
   return JSON.stringify([2, letter, themeColor]);
@@ -44,27 +56,34 @@ export function iconRasterRequest(t: Tendril, role: string): { key: string } | u
   return role === "owner" && key && !currentIconRaster(t) ? { key } : undefined;
 }
 
-/** Validates a base64 512px PNG and returns it unchanged. */
-function validPng(value: unknown): string {
+/** Validates a base64 square PNG of expected pixel dimensions and returns it unchanged. */
+function validPng(value: unknown, expectedSize = ICON_RASTER_SIZE): string {
   if (typeof value !== "string" || value.length > Math.ceil(MAX_PNG_BYTES * 4 / 3) + 4) throw new HttpError(400, "invalid_icon", "Expected a base64 PNG");
   let bytes: Uint8Array;
   try { bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0)); } catch { throw new HttpError(400, "invalid_icon", "Expected a base64 PNG"); }
   const size = imageSize(bytes);
-  if (size?.type !== "image/png" || size.width !== ICON_RASTER_SIZE || size.height !== ICON_RASTER_SIZE)
-    throw new HttpError(400, "invalid_icon", `Expected a ${ICON_RASTER_SIZE}x${ICON_RASTER_SIZE} PNG`);
+  if (size?.type !== "image/png" || size.width !== expectedSize || size.height !== expectedSize)
+    throw new HttpError(400, "invalid_icon", `Expected a ${expectedSize}x${expectedSize} PNG`);
   return value;
 }
 
 export function storeIconRaster(t: Tendril, body: Record<string, unknown>): void {
   const key = iconRasterKey(t);
   if (!key || body.key !== key) throw new HttpError(409, "icon_changed", "The page icon changed; reload to draw the current one");
-  t.db.set("icon_raster", { key, any: validPng(body.any), maskable: validPng(body.maskable) } satisfies StoredRaster);
+  const any192 = body.any192 !== undefined && body.any192 !== null ? validPng(body.any192, ICON_RASTER_SMALL_SIZE) : undefined;
+  t.db.set("icon_raster", {
+    key,
+    any: validPng(body.any, ICON_RASTER_SIZE),
+    ...(any192 ? { any192 } : {}),
+    maskable: validPng(body.maskable, ICON_RASTER_SIZE),
+  } satisfies StoredRaster);
 }
 
-export function iconRasterResponse(t: Tendril, which: "any" | "maskable", head: boolean): Response | null {
+export function iconRasterResponse(t: Tendril, which: "any" | "any192" | "maskable", head: boolean): Response | null {
   const stored = currentIconRaster(t);
   if (!stored) return null;
-  const bytes = Uint8Array.from(atob(stored[which]), c => c.charCodeAt(0));
+  const b64 = which === "any192" ? (stored.any192 ?? stored.any) : stored[which];
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   return new Response(head ? null : bytes, { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
 }
 
@@ -73,7 +92,7 @@ export function iconRasterResponse(t: Tendril, which: "any" | "maskable", head: 
  * transparency black, so emoji pages use the opaque full-bleed PNG; custom
  * images are used when they are PNG or JPEG (by extension or measured type).
  */
-export async function appleTouchIcon(t: Tendril, base: string, requestBase: string): Promise<{ href: string; sizes?: string } | null> {
+export async function appleTouchIcon(t: Tendril, base: string, requestBase: string, { background = false } = {}): Promise<{ href: string; sizes?: string } | null> {
   const icon = t.db.get<string | null>("icon", null);
   if (!icon || isEmojiIcon(icon)) {
     const raster = currentIconRaster(t);
@@ -81,6 +100,16 @@ export async function appleTouchIcon(t: Tendril, base: string, requestBase: stri
   }
   if (!/^https:\/\//.test(icon)) return null;
   if (/\.png(?:$|[?#])/i.test(icon)) return { href: icon };
+  if (background) {
+    const cached = t.db.get<{ type: string; width: number; height: number } | { failed: number } | null>("icon_size:" + icon, null);
+    if (cached && "width" in cached) {
+      return (cached.type === "image/png" || cached.type === "image/jpeg") ? { href: icon, sizes: `${cached.width}x${cached.height}` } : null;
+    }
+    if (!cached || ("failed" in cached && t.now() - cached.failed >= 3_600_000)) {
+      t.ctx.waitUntil(remoteIconSize(t, icon, requestBase).catch(() => null));
+    }
+    return null;
+  }
   const size = await remoteIconSize(t, icon, requestBase);
   return size && (size.type === "image/png" || size.type === "image/jpeg") ? { href: icon, sizes: `${size.width}x${size.height}` } : null;
 }
@@ -138,7 +167,7 @@ async function publishedIconSize(t: Tendril, icon: string, pageBases: string[]):
 
 /** Real dimensions of an authored HTTPS icon, looked up once and remembered. */
 export async function remoteIconSize(t: Tendril, icon: string, requestBase: string): Promise<Size | null> {
-  const published = await publishedIconSize(t, icon, [t.mainPageUrl(), requestBase]).catch(() => null);
+  const published = await publishedIconSize(t, icon, allPageBases(t, requestBase)).catch(() => null);
   if (published !== undefined) return published;
   const cacheKey = "icon_size:" + icon;
   const cached = t.db.get<{ type: string; width: number; height: number } | { failed: number } | null>(cacheKey, null);

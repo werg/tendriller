@@ -5,17 +5,18 @@
 import type { TendrilConfig } from "./types";
 
 const SIZE = 512;
+const SMALL_SIZE = 192;
 
-async function draw(url: string): Promise<string> {
+async function draw(url: string, size = SIZE): Promise<string> {
   const image = new Image();
   image.decoding = "async";
   image.src = url;
   await image.decode();
   const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = SIZE;
+  canvas.width = canvas.height = size;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("No 2D canvas");
-  context.drawImage(image, 0, 0, SIZE, SIZE);
+  context.drawImage(image, 0, 0, size, size);
   const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("PNG encoding failed");
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -29,10 +30,12 @@ export function rasterizeHomeScreenIcon(cfg: TendrilConfig): void {
   if (!request || typeof document === "undefined" || typeof fetch !== "function") return;
   const run = async () => {
     const base = new URL(cfg.base, location.href);
-    const [any, maskable] = await Promise.all([draw(new URL("_tendril/icon.svg", base).href), draw(new URL("_tendril/icon-maskable.svg", base).href)]);
+    const anyUrl = new URL("_tendril/icon.svg", base).href;
+    const maskUrl = new URL("_tendril/icon-maskable.svg", base).href;
+    const [any, any192, maskable] = await Promise.all([draw(anyUrl, SIZE), draw(anyUrl, SMALL_SIZE), draw(maskUrl, SIZE)]);
     const response = await fetch(new URL("_tendril/icon-raster", base).href, {
       method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: request.key, any, maskable }),
+      body: JSON.stringify({ key: request.key, any, any192, maskable }),
     });
     if (!response.ok) return;
     // Replace the manifest link node so Chromium re-fetches the updated manifest and

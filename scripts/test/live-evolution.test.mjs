@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApplicationSession, openApplicationDevice } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
-import { createPageGenesis, deviceWrapKey } from '../../session/admission.mjs';
+import { createPageGenesis } from '../../session/admission.mjs';
 import {
   dryRunReducerModule,
   evolveSqlSchema,
@@ -27,8 +27,7 @@ test('dryRunReducerModule rejects broken ES Modules before touching live logs', 
 test('hot-publishing a new ES Module reducer and evolving SQL schema + personal DDL converge across peers without redeploy', async () => {
   const adminDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const writerDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const adminWrap = await deviceWrapKey(adminDev.store);
-  await deviceWrapKey(writerDev.store);
+  const adminWrap = adminDev.wrapKey;
 
   const created = await createPageGenesis({
     identity: adminDev.identity,

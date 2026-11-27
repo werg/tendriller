@@ -73,9 +73,25 @@ export function authenticateAgent(t: Tendril, req: Request): AgentPrincipal {
   return { kind: 'agent', agentId, scopes: [...grant.scopes], revision: grant.revision };
 }
 
-/** Check page-owner and optional visitor account policy in one primary read. */
+const POLICY_TTL_MS = 20_000;
+const policyCache = new WeakMap<Tendril, Map<string, { value: "active" | "page" | "visitor"; expiresAt: number }>>();
+const accountActiveCache = new WeakMap<Tendril, Map<string, { value: boolean; expiresAt: number }>>();
+
+/** Clear cached D1 policy/account decisions for this Durable Object (e.g. on hold/disable). */
+export function invalidatePagePolicyCache(t: Tendril): void {
+  policyCache.delete(t);
+  accountActiveCache.delete(t);
+}
+
+/** Check page-owner and optional visitor account policy in one primary read (DO-cached 20s). */
 export async function pagePolicy(t: Tendril, visitor: string | null = null): Promise<"active" | "page" | "visitor"> {
   if (t.db.get("disabled", false)) return "page";
+  const now = t.now();
+  const owner = t.db.get<string | null>("owner_account", null);
+  const cacheKey = `${owner ?? ""}|${visitor ?? ""}`;
+  let map = policyCache.get(t);
+  const hit = map?.get(cacheKey);
+  if (hit && hit.expiresAt > now) return hit.value;
   const status = await t.env.ACCOUNTS.prepare(`SELECT t.state,t.owner_account,a.id AS owner_id,a.suspended_at,a.deleting_at,
     CASE WHEN ?1 IS NULL OR ?1=t.owner_account THEN 1 ELSE EXISTS(
       SELECT 1 FROM accounts WHERE id=?1 AND suspended_at IS NULL AND deleting_at IS NULL
@@ -86,14 +102,34 @@ export async function pagePolicy(t: Tendril, visitor: string | null = null): Pro
     && status.owner_account === t.db.get<string | null>("owner_account", null)
     && (!status.owner_account || !!status.owner_id)
     && status.suspended_at === null && status.deleting_at === null;
-  return !pageActive ? "page" : status.visitor_active ? "active" : "visitor";
+  const result: "active" | "page" | "visitor" = !pageActive ? "page" : status.visitor_active ? "active" : "visitor";
+  if (result === "active") {
+    if (!map) policyCache.set(t, map = new Map());
+    if (map.size > 64) map.clear();
+    map.set(cacheKey, { value: result, expiresAt: now + POLICY_TTL_MS });
+  } else {
+    map?.delete(cacheKey);
+  }
+  return result;
 }
 
 export async function pageAccessAllowed(t: Tendril): Promise<boolean> {
   return await pagePolicy(t) === "active";
 }
 export async function accountActive(t: Tendril, accountId: string): Promise<boolean> {
-  return !!await t.env.ACCOUNTS.prepare("SELECT 1 FROM accounts WHERE id=? AND suspended_at IS NULL AND deleting_at IS NULL").bind(accountId).first();
+  const now = t.now();
+  let map = accountActiveCache.get(t);
+  const hit = map?.get(accountId);
+  if (hit && hit.expiresAt > now) return hit.value;
+  const ok = !!await t.env.ACCOUNTS.prepare("SELECT 1 FROM accounts WHERE id=? AND suspended_at IS NULL AND deleting_at IS NULL").bind(accountId).first();
+  if (ok) {
+    if (!map) accountActiveCache.set(t, map = new Map());
+    if (map.size > 64) map.clear();
+    map.set(accountId, { value: true, expiresAt: now + POLICY_TTL_MS });
+  } else {
+    map?.delete(accountId);
+  }
+  return ok;
 }
 
 function sessionByHash(t: Tendril, hash: string): PageSession | null {

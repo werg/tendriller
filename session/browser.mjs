@@ -1,46 +1,18 @@
 import { connectApplicationOwner, SessionError } from '@chronolog/peer-session/browser';
 import { startTabRtcHost } from './browser-rtc.mjs';
 
-export const TAB_OWNER_PROTOCOL = 'tendriller/tab-owner/v2';
-const tabLockName = profileId => `tendriller:tab:${profileId}`;
-const tabChannelName = profileId => `tendriller:tab-handoff:${profileId}`;
+export const TAB_OWNER_PROTOCOL = 'tendriller/tab-owner/v3';
+const netLockName = profileId => `tendriller:net:${profileId}`;
+const netChannelName = profileId => `tendriller:net:${profileId}`;
 
 function validate(options) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(options.profileId)) throw new SessionError('INVALID_PROFILE');
-  if (!globalThis.navigator?.locks) {
-    throw new SessionError('OWNER_CAPABILITY_UNAVAILABLE', 'This browser needs Web Locks to retain one active tab session.');
-  }
   if (typeof globalThis.Worker !== 'function') {
     throw new SessionError('OWNER_CAPABILITY_UNAVAILABLE', 'This browser needs dedicated Workers for local session storage.');
   }
   const url = new URL(options.workerUrl, globalThis.location?.href);
   if (url.origin !== globalThis.location?.origin) throw new SessionError('OWNER_ORIGIN_MISMATCH');
   return url;
-}
-
-/** Demultiplexes the app-RPC messages on the 1:1 dedicated Worker port. */
-function createAppEndpoint(worker, signal) {
-  const endpoint = new EventTarget();
-  let closed = false;
-  const onMessage = ({ data }) => {
-    if (closed || data?.protocol !== TAB_OWNER_PROTOCOL || data.type !== 'app') return;
-    endpoint.dispatchEvent(new MessageEvent('message', { data: data.payload }));
-  };
-  endpoint.postMessage = (payload, transfer) => {
-    if (closed) return;
-    if (transfer?.length) worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'app', payload }, transfer);
-    else worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'app', payload });
-  };
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    worker.removeEventListener('message', onMessage);
-    signal?.removeEventListener('abort', close);
-  };
-  endpoint.close = close;
-  worker.addEventListener('message', onMessage);
-  signal?.addEventListener('abort', close, { once: true });
-  return endpoint;
 }
 
 function waitForWorker(worker, predicate, { signal, timeoutMs = 30_000 } = {}) {
@@ -58,9 +30,9 @@ function waitForWorker(worker, predicate, { signal, timeoutMs = 30_000 } = {}) {
       if (data.type === 'failure') finish(new SessionError(data.code ?? 'OWNER_UNREACHABLE', data.message));
       else if (predicate(data)) finish(null, data);
     };
-    const onError = event => finish(new SessionError('OWNER_UNREACHABLE', event.message ?? 'Session worker failed to load'));
+    const onError = event => finish(new SessionError('WORKER_LOAD_FAILED', event.message ?? 'Session worker failed to load'));
     const onAbort = () => finish(signal.reason);
-    const timer = setTimeout(() => finish(new SessionError('OWNER_UNREACHABLE', 'The local session worker did not answer in time.')), timeoutMs);
+    const timer = setTimeout(() => finish(new SessionError('BOOT_TIMEOUT', 'The local session worker did not answer in time.')), timeoutMs);
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -78,7 +50,7 @@ async function connectFacade(endpoint, { applicationId, context }, { signal, tim
       new Promise((_, reject) => {
         onAbort = () => { cancelled = true; reject(signal.reason); };
         signal?.addEventListener('abort', onAbort, { once: true });
-        timer = setTimeout(() => { cancelled = true; reject(new SessionError('OWNER_UNREACHABLE')); }, timeoutMs);
+        timer = setTimeout(() => { cancelled = true; reject(new SessionError('CONNECT_TIMEOUT', 'Timed out attaching to the local session worker.')); }, timeoutMs);
         if (signal?.aborted) onAbort();
       }),
     ]);
@@ -88,95 +60,155 @@ async function connectFacade(endpoint, { applicationId, context }, { signal, tim
   }
 }
 
-function shouldTakeover(mode) {
-  if (mode === true) return true;
-  if (mode === false) return false;
-  // Default 'auto': a foreground tab or standalone PWA seamlessly takes over from an
-  // existing tab, while a hidden background tab never steals an active session.
-  return globalThis.document?.visibilityState !== 'hidden';
-}
+/**
+ * Non-blocking, stealable networking leader election across concurrent tabs/PWAs
+ * of the same profile. Never blocks local IndexedDB reads or writes — follower tabs
+ * stay 100% interactive via shared IndexedDB + BroadcastChannel `syncFromStore()`,
+ * while at most one live tab maintains host discovery/invitation sockets so the server
+ * never bounces sockets with `4000 Discovery listener replaced`.
+ */
+function coordinateNetworkLeader(profileId, { tabId, signal, onRole }) {
+  const locks = globalThis.navigator?.locks;
+  const doc = globalThis.document;
+  if (typeof locks?.request !== 'function') {
+    onRole(true);
+    return () => {};
+  }
+  const lockName = netLockName(profileId);
+  const channel = typeof globalThis.BroadcastChannel === 'function' ? new BroadcastChannel(netChannelName(profileId)) : null;
+  let stopped = false;
+  let holding = false;
+  let releaseHeld = null;
+  let hiddenTimer;
+  let trying = false;
 
-function tryAcquireImmediateLock(lockName, signal) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const done = (error, value) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener('abort', onAbort);
-      if (error) reject(error); else resolve(value);
+  const isVisible = () => !doc || doc.visibilityState !== 'hidden';
+  const setHolding = next => {
+    if (holding === next) return;
+    holding = next;
+    try { onRole(next); } catch {}
+  };
+  const dropLeadership = () => {
+    clearTimeout(hiddenTimer);
+    hiddenTimer = undefined;
+    if (!releaseHeld) return;
+    const rel = releaseHeld;
+    releaseHeld = null;
+    setHolding(false);
+    rel();
+    try { channel?.postMessage({ type: 'net-released', from: tabId }); } catch {}
+  };
+
+  const pingHolder = () => new Promise(resolve => {
+    if (!channel) { resolve(null); return; }
+    const id = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      channel.removeEventListener('message', onPong);
+      resolve(null);
+    }, 500);
+    timer.unref?.();
+    const onPong = ({ data }) => {
+      if (data?.type !== 'net-pong' || data.id !== id) return;
+      clearTimeout(timer);
+      channel.removeEventListener('message', onPong);
+      resolve({ visible: Boolean(data.visible) });
     };
-    const onAbort = () => done(signal.reason);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    void navigator.locks.request(lockName, { ifAvailable: true }, lock => {
-      if (!lock) {
-        done(null, null);
+    channel.addEventListener('message', onPong);
+    try { channel.postMessage({ type: 'net-ping', id, from: tabId }); } catch {
+      clearTimeout(timer);
+      channel.removeEventListener('message', onPong);
+      resolve(null);
+    }
+  });
+
+  const holdLock = (options) => new Promise(resolve => {
+    let resolved = false;
+    const finish = acquired => {
+      if (!resolved) { resolved = true; resolve(acquired); }
+    };
+    void locks.request(lockName, options, lock => {
+      if (!lock || stopped || signal?.aborted) {
+        finish(false);
         return Promise.resolve();
       }
-      if (settled || signal?.aborted) return Promise.resolve();
-      let releaseLock;
-      const held = new Promise(r => { releaseLock = r; });
-      done(null, { release: () => releaseLock() });
-      return held;
-    }).catch(error => done(error));
-  });
-}
-
-/**
- * Acquire the single-active-tab lock for `profileId`.
- * Always tries an immediate non-blocking acquire first. When another tab holds the lock:
- * - `takeover: false` (or `'auto'` while hidden) returns `null` immediately.
- * - `takeover: true` (or `'auto'` while visible) requests the existing tab to release
- *   over BroadcastChannel and waits for a clean handoff.
- */
-async function acquireTabLock(profileId, { takeover = 'auto', signal, timeoutMs = 15_000 } = {}) {
-  signal?.throwIfAborted();
-  const lockName = tabLockName(profileId);
-  const immediate = await tryAcquireImmediateLock(lockName, signal);
-  if (immediate) return immediate;
-  if (!shouldTakeover(takeover)) return null;
-
-  let channel, nudgeTimer;
-  if (typeof globalThis.BroadcastChannel === 'function') {
-    channel = new BroadcastChannel(tabChannelName(profileId));
-    const requestId = crypto.randomUUID();
-    const postTakeover = () => {
-      try { channel.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'takeover', profileId, requestId }); } catch { /* Channel closed. */ }
-    };
-    postTakeover();
-    // Re-nudge briefly in case the previous holder was mid-boot or waking from throttle.
-    nudgeTimer = setInterval(postTakeover, 400);
-    nudgeTimer.unref?.();
-  }
-  try {
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      const done = (error, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-        if (error) reject(error); else resolve(value);
-      };
-      const onAbort = () => done(signal.reason);
-      const timer = setTimeout(() => done(new SessionError('OWNER_BUSY', 'Another tab did not release this page in time.')), timeoutMs);
-      signal?.addEventListener('abort', onAbort, { once: true });
-
-      void navigator.locks.request(lockName, {}, lock => {
-        if (!lock) {
-          done(null, null);
-          return Promise.resolve();
-        }
-        if (settled || signal?.aborted) return Promise.resolve();
-        let releaseLock;
-        const held = new Promise(r => { releaseLock = r; });
-        done(null, { release: () => releaseLock() });
-        return held;
-      }).catch(error => done(error));
+      return new Promise(release => {
+        releaseHeld = release;
+        setHolding(true);
+        finish(true);
+      });
+    }).catch(() => {
+      // Steal or abort can reject the previous holder's lock promise cleanly.
+      if (releaseHeld) { releaseHeld = null; setHolding(false); }
+      finish(false);
     });
-  } finally {
-    clearInterval(nudgeTimer);
+  });
+
+  const tryAcquire = async () => {
+    if (stopped || signal?.aborted || holding || trying) return;
+    trying = true;
+    try {
+      if (await holdLock({ ifAvailable: true })) return;
+      if (!isVisible() || stopped || signal?.aborted) return;
+      // Another tab holds the lock. Probe liveness: if it is frozen/zombie on Android
+      // (no pong within 500ms) or hidden while we are visible, steal the lock cleanly.
+      const holder = await pingHolder();
+      if (stopped || signal?.aborted || holding) return;
+      if (holder === null || !holder.visible) {
+        await holdLock({ steal: true });
+      }
+    } finally {
+      trying = false;
+    }
+  };
+
+  const onChannel = ({ data }) => {
+    if (stopped || !data || data.from === tabId) return;
+    if (data.type === 'net-ping' && holding) {
+      try { channel?.postMessage({ type: 'net-pong', id: data.id, from: tabId, visible: isVisible() }); } catch {}
+    } else if (data.type === 'net-released' && !holding && isVisible()) {
+      void tryAcquire();
+    }
+  };
+  channel?.addEventListener('message', onChannel);
+
+  const onVisibility = () => {
+    if (stopped) return;
+    if (isVisible()) {
+      clearTimeout(hiddenTimer);
+      hiddenTimer = undefined;
+      if (!holding) void tryAcquire();
+    } else if (holding) {
+      clearTimeout(hiddenTimer);
+      hiddenTimer = setTimeout(() => { hiddenTimer = undefined; if (!isVisible()) dropLeadership(); }, 10_000);
+      hiddenTimer.unref?.();
+    }
+  };
+  const onFreeze = () => dropLeadership();
+  const onFocus = () => { if (!stopped && !holding && isVisible()) void tryAcquire(); };
+
+  doc?.addEventListener?.('visibilitychange', onVisibility);
+  doc?.addEventListener?.('freeze', onFreeze);
+  doc?.addEventListener?.('resume', onFocus);
+  globalThis.addEventListener?.('focus', onFocus);
+  globalThis.addEventListener?.('pagehide', onFreeze);
+
+  void tryAcquire();
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(hiddenTimer);
+    doc?.removeEventListener?.('visibilitychange', onVisibility);
+    doc?.removeEventListener?.('freeze', onFreeze);
+    doc?.removeEventListener?.('resume', onFocus);
+    globalThis.removeEventListener?.('focus', onFocus);
+    globalThis.removeEventListener?.('pagehide', onFreeze);
+    channel?.removeEventListener('message', onChannel);
+    dropLeadership();
     channel?.close();
-  }
+  };
+  signal?.addEventListener('abort', stop, { once: true });
+  return stop;
 }
 
 /** Ask the browser to keep this origin's storage (device key, journal, unsent work)
@@ -187,77 +219,29 @@ export function requestPersistentStorage() {
   return (async () => { try { return await storage.persisted?.() || await storage.persist(); } catch { return false; } })();
 }
 
-/** Keeps Chromium in-memory OPFS record directories touched while visible and non-persistent. */
-export function keepStorageInUse({ intervalMs = 240_000, storagePersisted = requestPersistentStorage(), now = () => Date.now(), onTick } = {}) {
-  const storage = globalThis.navigator?.storage, doc = globalThis.document;
-  if (!intervalMs || typeof storage?.getDirectory !== 'function' || !doc) return () => {};
-  let stopped = false, timer;
-  const touch = async () => {
-    if (stopped) return;
-    const started = now(); let directories = 0;
-    const root = await storage.getDirectory();
-    for await (const [name, handle] of root.entries()) {
-      if (handle.kind !== 'directory' || !name.startsWith('chronolog-')) continue;
-      await root.getDirectoryHandle(name); directories++;
-    }
-    onTick?.({ ms: now() - started, directories });
-  };
-  const tick = () => { void touch().catch(() => {}); };
-  const schedule = () => { clearInterval(timer); timer = undefined; if (!stopped && doc.visibilityState === 'visible') timer = setInterval(tick, intervalMs); };
-  const visibility = () => { tick(); schedule(); };
-  const pagehide = () => { tick(); clearInterval(timer); timer = undefined; };
-  void Promise.resolve(storagePersisted).then(persisted => {
-    if (persisted === true || stopped) return;
-    doc.addEventListener('visibilitychange', visibility); doc.addEventListener('freeze', pagehide); doc.addEventListener('resume', visibility);
-    globalThis.addEventListener?.('pagehide', pagehide); globalThis.addEventListener?.('pageshow', visibility);
-    if (doc.visibilityState === 'visible') tick();
-    schedule();
-  }).catch(() => {});
-  return () => {
-    stopped = true; clearInterval(timer);
-    doc.removeEventListener('visibilitychange', visibility); doc.removeEventListener('freeze', pagehide); doc.removeEventListener('resume', visibility);
-    globalThis.removeEventListener?.('pagehide', pagehide); globalThis.removeEventListener?.('pageshow', visibility);
-  };
-}
-
 /**
- * Single-active-tab browser session owner:
- * - Acquires one exclusive Web Lock per `profileId` (with optional `takeover` handoff).
- * - Spawns one private 1:1 dedicated Worker for device storage, signing, and SQL/OPFS.
- * - Hosts all WebRTC PeerConnections directly in this active tab so MediaStreamTracks
- *   and custom `app:*` DataChannels work in-tab with zero Worker hop (`attachment.rtc`).
+ * Lock-free multi-tab browser session owner:
+ * - Never blocks or fails when another tab/PWA window is open (zero exclusive storage lock).
+ * - Spawns a 1:1 dedicated Worker backed by multi-tab IndexedDB + BroadcastChannel sync.
+ * - Transfers a direct MessageChannel port to `createApplicationOwner` (no wrapper overhead).
+ * - Coordinates a non-blocking, stealable networking leader lock (`tendriller:net:${profileId}`)
+ *   so background/sibling tabs converge locally without socket-replacement churn.
+ * - Hosts all WebRTC PeerConnections directly in-tab (`attachment.rtc`).
  */
 export async function openBrowserOwner(options) {
   const url = validate(options);
   const timeoutMs = options.timeoutMs ?? 30_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new SessionError('OWNER_CONFIGURATION_INVALID', 'Opening timeout must be finite and positive');
 
-  const lock = await acquireTabLock(options.profileId, {
-    takeover: options.takeover ?? 'auto',
-    signal: options.signal,
-    timeoutMs,
-  });
-  if (!lock) {
-    throw Object.assign(
-      new SessionError('TAB_ACTIVE_ELSEWHERE', 'This page is already open in another tab.'),
-      {
-        nextAction: 'Switch to the existing tab or click Switch here to move the session to this tab.',
-        takeover: () => openBrowserOwner({ ...options, takeover: true }),
-      },
-    );
-  }
-
   const tabId = crypto.randomUUID();
   const lifetime = new AbortController();
-  let worker, rtcHost, appEndpoint, session, handoffChannel, detached = false, releasing;
+  let worker, rtcHost, appPort, session, stopNetLeader, detached = false, releasing;
   const storagePersisted = options.persistStorage === false ? Promise.resolve(null) : requestPersistentStorage();
-  const stopKeepAlive = keepStorageInUse({ intervalMs: options.storageKeepAliveMs ?? 240_000, storagePersisted });
 
   const release = (reason) => {
     if (releasing) return releasing;
     detached = true;
-    stopKeepAlive();
-    handoffChannel?.close();
+    try { stopNetLeader?.(); } catch {}
     globalThis.removeEventListener?.('pagehide', onPageHide);
     options.signal?.removeEventListener('abort', onExternalAbort);
     // Close active RTCPeerConnections synchronously before any await so page
@@ -276,7 +260,7 @@ export async function openBrowserOwner(options) {
     const retireId = unload ? postRetire() : null;
     releasing = (async () => {
       try { await rtcHost?.close(); } catch { /* Best-effort RTC cleanup. */ }
-      try { appEndpoint?.close(); } catch { /* Best-effort port cleanup. */ }
+      try { appPort?.close(); } catch { /* Best-effort port cleanup. */ }
       if (worker) {
         try {
           const id = retireId ?? postRetire();
@@ -287,15 +271,12 @@ export async function openBrowserOwner(options) {
         } catch { /* Terminate unconditionally if worker is busy/closing. */ }
         worker.terminate();
       }
-      lock.release();
     })();
     return releasing;
   };
 
   const onPageHide = event => {
     if (event.persisted) return;
-    // Even if app code called detach() earlier in pagehide, close RTC links
-    // synchronously right now rather than waiting for an async Worker RPC.
     try { rtcHost?.closeNow(); } catch { /* Best-effort synchronous RTC close. */ }
     void release(new Error('PAGE_UNLOAD'));
   };
@@ -305,35 +286,37 @@ export async function openBrowserOwner(options) {
     options.signal?.addEventListener('abort', onExternalAbort, { once: true });
     if (options.signal?.aborted) onExternalAbort();
 
-    // Register the handoff listener immediately after acquiring the lock so a takeover
-    // arriving while this tab is still booting its Worker is honored cleanly.
-    if (typeof globalThis.BroadcastChannel === 'function') {
-      handoffChannel = new BroadcastChannel(tabChannelName(options.profileId));
-      handoffChannel.addEventListener('message', ({ data }) => {
-        if (detached || data?.protocol !== TAB_OWNER_PROTOCOL || data.type !== 'takeover' || data.profileId !== options.profileId) return;
-        const hadSession = Boolean(session);
-        void Promise.resolve(session?.detach()).catch(() => {}).finally(() => release(new Error('TAB_TAKEN_OVER'))).finally(() => {
-          if (hadSession) {
-            try { options.onOwnerReplaced?.({ previous: tabId, reason: 'tab_takeover' }); } catch { /* Isolate callback errors. */ }
-          }
-        });
-      });
-    }
-
     worker = new Worker(url, { type: 'module', name: `tendriller-tab-${tabId}` });
     rtcHost = startTabRtcHost(worker, {
       signal: lifetime.signal,
       createPeerConnection: options.createPeerConnection,
     });
-    appEndpoint = createAppEndpoint(worker, lifetime.signal);
+
+    const appChannel = new MessageChannel();
+    appPort = appChannel.port1;
+    appPort.start();
 
     const bootId = crypto.randomUUID();
     const ready = waitForWorker(worker, data => data.type === 'ready' && data.id === bootId, { signal: lifetime.signal, timeoutMs });
-    worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'boot', id: bootId, profileId: options.profileId });
+    worker.postMessage({
+      protocol: TAB_OWNER_PROTOCOL,
+      type: 'boot',
+      id: bootId,
+      profileId: options.profileId,
+      ...(options.configuration !== undefined ? { configuration: options.configuration } : {}),
+    }, [appChannel.port2]);
     await ready;
 
-    session = await connectFacade(appEndpoint, { applicationId: options.applicationId, context: options.context ?? {} }, { signal: lifetime.signal, timeoutMs });
+    session = await connectFacade(appPort, { applicationId: options.applicationId, context: options.context ?? {} }, { signal: lifetime.signal, timeoutMs });
     lifetime.signal.throwIfAborted();
+
+    stopNetLeader = coordinateNetworkLeader(options.profileId, {
+      tabId,
+      signal: lifetime.signal,
+      onRole: active => {
+        try { worker?.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'network-role', active }); } catch {}
+      },
+    });
 
     globalThis.addEventListener?.('pagehide', onPageHide);
 
@@ -364,7 +347,13 @@ export async function createBrowserIdentity(options) {
   const id = crypto.randomUUID();
   try {
     const ready = waitForWorker(worker, data => data.type === 'identity' && data.id === id, options);
-    worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'identity', profileId: options.profileId, id });
+    worker.postMessage({
+      protocol: TAB_OWNER_PROTOCOL,
+      type: 'identity',
+      profileId: options.profileId,
+      id,
+      ...(options.configuration !== undefined ? { configuration: options.configuration } : {}),
+    });
     const publicKey = (await ready).publicKey;
     if (options.persistStorage !== false) void requestPersistentStorage();
     return publicKey;

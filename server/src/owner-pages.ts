@@ -48,6 +48,8 @@ export async function createOwnerPage(
   accountId: string,
   options: {
     name?: string;
+    icon?: string | null;
+    theme_color?: string | null;
     entry?: string;
     files?: readonly SeedFile[];
     rewriteConfigJson?: boolean;
@@ -114,6 +116,8 @@ export async function createOwnerPage(
         },
         body: JSON.stringify({
           name: options.name ?? 'New Page',
+          ...(options.icon ? { icon: options.icon } : {}),
+          ...(options.theme_color ? { theme_color: options.theme_color } : {}),
           entry: options.entry ?? 'index.html',
           files: options.files ?? [],
           rewriteConfigJson: options.rewriteConfigJson === true,
@@ -166,6 +170,8 @@ export async function remixExistingPage(
   const source = await srcRes.json() as {
     id: string;
     name: string;
+    icon?: string | null;
+    theme_color?: string | null;
     entry: string;
     files: Array<{ path: string; hash: string; type: string; size: number }>;
   };
@@ -190,6 +196,8 @@ export async function remixExistingPage(
   const nextName = (options.name?.trim() || `${source.name} (Remix)`).slice(0, 80);
   return createOwnerPage(env, accountId, {
     name: nextName,
+    icon: source.icon ?? null,
+    theme_color: source.theme_color ?? null,
     entry: source.entry,
     files: seedFiles,
     rewriteConfigJson: true,

@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApplicationSession, openApplicationDevice } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
-import { createPageGenesis, deviceWrapKey } from '../../session/admission.mjs';
+import { createPageGenesis } from '../../session/admission.mjs';
 import { definition, imports, topics } from '../../docs/tutorial/templates/knowledge/domain.mjs';
 import { embedTextLocal, buildSafeFtsQuery } from '../../docs/tutorial/shared/helpers/hybrid-memory.mjs';
 
 test('knowledge starter supports encrypted FTS5 + sqlite-vec hybrid search, write RLS, and bit-exact multi-peer convergence', async () => {
   const devA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const devB = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const wrapA = await deviceWrapKey(devA.store);
-  const wrapB = await deviceWrapKey(devB.store);
+  const wrapA = devA.wrapKey;
+  const wrapB = devB.wrapKey;
 
   const created = await createPageGenesis({
     identity: devA.identity,

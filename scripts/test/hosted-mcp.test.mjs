@@ -12,7 +12,7 @@ import {
 } from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { composeOwnerExtensions, createAdmission, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
+import { composeOwnerExtensions, createAdmission, openPageGenesis } from '../../session/admission.mjs';
 import { createAdmissionHost } from './helpers/admission-host.mjs';
 import {
   connectHostedMcpGrant,
@@ -71,7 +71,7 @@ async function openFixture(t) {
   const host = await createAdmissionHost();
   const peers = host.client({ account: { accountId: 'acct_owner', email: 'owner@example.test' } });
   const device = await openApplicationDevice({ store: new MemoryStore(), create: true });
-  const wrapKey = await deviceWrapKey(device.store);
+  const wrapKey = device.wrapKey;
   const opened = await openPageGenesis({
     store: device.store,
     identity: device.identity,

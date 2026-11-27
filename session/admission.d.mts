@@ -6,7 +6,6 @@ import type { AuthorityClient } from '../contract/authority.mjs';
 
 export type BytesStore = ApplicationDevice['store'];
 export interface DeviceWrapKey { readonly publicKey: string; readonly privateKey: CryptoKey }
-export declare function deviceWrapKey(store: BytesStore): Promise<DeviceWrapKey>;
 export interface OwnerGrant { readonly reader: boolean; readonly writer: boolean; readonly administrator: boolean }
 export declare const DEFAULT_OWNER_GRANT: OwnerGrant;
 
@@ -120,7 +119,7 @@ export interface PageAdmission {
 }
 export declare function createAdmission(session: ApplicationSession, options: {
   readonly peers: AuthorityClient;
-  readonly wrapKey: DeviceWrapKey;
+  readonly wrapKey?: DeviceWrapKey;
   readonly store?: BytesStore;
   readonly subject?: 'device' | 'agent';
   readonly now?: () => number;

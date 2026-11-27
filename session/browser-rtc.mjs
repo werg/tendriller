@@ -83,11 +83,19 @@ export function startTabRtcHost(port, { signal, createPeerConnection, onNetworkC
     try { port.postMessage({ protocol: BROWSER_RTC_PROTOCOL, type: 'network-change' }); } catch { /* Worker closed. */ }
     try { onNetworkChange?.(); } catch { /* Observer error isolated. */ }
   };
+  const onVisibility = () => {
+    if (globalThis.document?.visibilityState === 'visible') notifyNetwork();
+  };
   const network = globalThis.navigator?.connection;
-  for (const name of ['online', 'pageshow']) globalThis.addEventListener?.(name, notifyNetwork);
+  const doc = globalThis.document;
+  for (const name of ['online', 'pageshow', 'focus']) globalThis.addEventListener?.(name, notifyNetwork);
+  doc?.addEventListener?.('visibilitychange', onVisibility);
+  doc?.addEventListener?.('resume', notifyNetwork);
   network?.addEventListener?.('change', notifyNetwork);
   const cleanupListeners = () => {
-    for (const name of ['online', 'pageshow']) globalThis.removeEventListener?.(name, notifyNetwork);
+    for (const name of ['online', 'pageshow', 'focus']) globalThis.removeEventListener?.(name, notifyNetwork);
+    doc?.removeEventListener?.('visibilitychange', onVisibility);
+    doc?.removeEventListener?.('resume', notifyNetwork);
     network?.removeEventListener?.('change', notifyNetwork);
   };
   const closeNow = () => {

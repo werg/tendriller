@@ -73,9 +73,16 @@ export async function sealHostedKeys(wrapPublicKeyHex, material, aadContext) {
  * signed membership and seals that identity plus every epoch key to the OAuth
  * grant's wrap key. Plaintext keys never reach the page or the host.
  */
-export function hostedMcpExtensions({ session, admission }) {
+export function hostedMcpExtensions({ session, admission, base = null, fetchImpl = globalThis.fetch }) {
+  const uploadedIds = new Set();
   return Object.freeze({
     async call(name, args) {
+      if (name === 'hosted.sync') {
+        const [{ base: callBase } = {}] = args ?? [];
+        const targetBase = callBase ?? base;
+        if (!targetBase) return { supported: false, uploaded: 0, merged: 0 };
+        return syncHostedMcpEnvelopes({ base: targetBase, session, uploadedIds, fetchImpl });
+      }
       if (name !== 'hosted.seal') throw Object.assign(Error('EXTENSION_UNKNOWN'), { code: 'EXTENSION_UNKNOWN' });
       const [{ wrapPublicKey, aad, writer = true }] = args;
       if (!/^[0-9a-f]{64}$/u.test(wrapPublicKey ?? '') || typeof aad !== 'string' || !aad) throw Error('HOSTED_MCP_INPUT_INVALID');
@@ -235,7 +242,15 @@ export function enableHostedMcp({
   const syncNow = () => {
     if (lifetime.aborted) return Promise.resolve({ supported: false, uploaded: 0, merged: 0 });
     if (inFlight) { queued = true; return inFlight; }
-    inFlight = syncHostedMcpEnvelopes({ base: runtime.identity.base, session, uploadedIds, signal: lifetime, fetchImpl })
+    // Run envelope export/fetch/merge inside the Worker when available so large batches
+    // never copy over main-thread Worker IPC; fall back to direct session calls in tests.
+    const run = typeof session?.extensions?.call === 'function'
+      ? session.extensions.call('hosted.sync', [{ base: runtime.identity.base }])
+        .catch(err => err?.code === 'EXTENSION_UNKNOWN'
+          ? syncHostedMcpEnvelopes({ base: runtime.identity.base, session, uploadedIds, signal: lifetime, fetchImpl })
+          : Promise.reject(err))
+      : syncHostedMcpEnvelopes({ base: runtime.identity.base, session, uploadedIds, signal: lifetime, fetchImpl });
+    inFlight = run
       .catch(() => ({ supported: true, uploaded: 0, merged: 0 }))
       .finally(() => {
         inFlight = null;

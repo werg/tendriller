@@ -4,7 +4,7 @@ import {
   createApplicationSession, openApplicationDevice,
 } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
-import { createAdmission, createPageGenesis, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
+import { createAdmission, createPageGenesis, openPageGenesis } from '../../session/admission.mjs';
 import { authorityRecord } from '../../contract/authority.mjs';
 import {
   approveMultisig, approveMultisigAndSeal, blockAuthor, describeGovernance,
@@ -24,8 +24,8 @@ function noopPeers() {
 test('openMembers read-only and open-write pages admit anonymous browsers immediately with accurate security posture', async () => {
   const adminDevice = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const visitorDevice = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const adminWrap = await deviceWrapKey(adminDevice.store);
-  const visitorWrap = await deviceWrapKey(visitorDevice.store);
+  const adminWrap = adminDevice.wrapKey;
+  const visitorWrap = visitorDevice.wrapKey;
 
   const created = await createPageGenesis({
     identity: adminDevice.identity,
@@ -103,9 +103,9 @@ test('multisigMembers 2-of-2 governance requires second signer approval via help
   const signerA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const signerB = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const newcomer = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const wrapA = await deviceWrapKey(signerA.store);
-  const wrapB = await deviceWrapKey(signerB.store);
-  const wrapNew = await deviceWrapKey(newcomer.store);
+  const wrapA = signerA.wrapKey;
+  const wrapB = signerB.wrapKey;
+  const wrapNew = newcomer.wrapKey;
 
   const created = await createPageGenesis({
     identity: signerA.identity,
@@ -173,7 +173,7 @@ test('multisigMembers 2-of-2 governance requires second signer approval via help
 test('openPageGenesis reopens cached initialized genesis offline without touching host, and governance surfaces Hosted MCP + blockedAuthors', async () => {
   const dev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
   const spammer = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-  const wrap = await deviceWrapKey(dev.store);
+  const wrap = dev.wrapKey;
   const appId = 'ab'.repeat(32);
 
   // 1. First open initializes genesis against mock host
@@ -233,7 +233,7 @@ test('openPageGenesis reopens cached initialized genesis offline without touchin
 
     // Private E2EE page with Hosted MCP active surfaces explicit security notice
     const privDev = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-    const privWrap = await deviceWrapKey(privDev.store);
+    const privWrap = privDev.wrapKey;
     const privCreated = await createPageGenesis({
       identity: privDev.identity,
       wrapKey: privWrap.publicKey,
