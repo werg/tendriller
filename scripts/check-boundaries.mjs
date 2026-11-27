@@ -5,7 +5,7 @@ import { join, relative, resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
   entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
-const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog-db|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)|@chronolog\//;
+const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog(?:-db)?|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)|@chronolog\//;
 const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
 // The host admits portable v2 public-control replay (`@chronolog/authority` +
 // `@chronolog/peer-session/kernel` in `blindHostMode: true`).

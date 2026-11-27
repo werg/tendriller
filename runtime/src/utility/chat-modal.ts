@@ -59,7 +59,7 @@ export interface TalkDockState {
   wakeActive: boolean;
   speaking: boolean;
   audioLevel: number;
-  presenceStatus: "online" | "busy" | "offline" | "unknown";
+  presenceStatus: "online" | "busy" | "offline" | "stopped" | "unknown";
   statusChip: string;
 }
 
@@ -240,7 +240,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
 
   const unreadCount = () => (chatSnap()?.unreadCount ?? 0) + sessionUnread;
 
-  const presenceSummary = (): { status: "online" | "busy" | "offline" | "unknown"; label: string } => {
+  const presenceSummary = (): { status: "online" | "busy" | "offline" | "stopped" | "unknown"; label: string } => {
     const custom = chatSnap()?.presence;
     const roster = rosterSnap();
     if (roster.agents.length === 0) {
@@ -250,15 +250,29 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     const primary = roster.agents.find(a => a.id === roster.primary_agent_id || a.is_primary) ?? roster.agents[0]!;
     const target = currentTarget();
     const focused = (target && target !== "*") ? (roster.agents.find(a => a.id === target || a.public_key === target) ?? primary) : primary;
-    const stateOf = (a: typeof primary): "online" | "busy" | "offline" | "unknown" => {
-      if (a.kind === "hosted-mcp") return "online";
+    const liveOf = (a: typeof primary) => {
       const hexKey = normalizeKeyHex(a.public_key);
-      const live = (hexKey ? roster.live?.[hexKey] : undefined) ?? roster.live?.[a.public_key] ?? roster.live?.[a.id];
-      return live?.state === "online" || live?.state === "busy" || live?.state === "offline" ? live.state : "offline";
+      return (hexKey ? roster.live?.[hexKey] : undefined) ?? roster.live?.[a.public_key] ?? roster.live?.[a.id];
+    };
+    const stateOf = (a: typeof primary): "online" | "busy" | "offline" | "stopped" | "unknown" => {
+      if (a.kind === "hosted-mcp") return "online";
+      const live = liveOf(a);
+      if (live?.state === "online" || live?.state === "busy" || live?.state === "offline" || live?.state === "stopped" || live?.state === "unknown") {
+        return live.state;
+      }
+      // Absent worker presence is distinct from confirmed offline status.
+      return "unknown";
     };
     const st = stateOf(focused);
+    const focusedLive = liveOf(focused);
     const othersOnline = roster.agents.filter(a => a.id !== focused.id && ["online", "busy"].includes(stateOf(a))).length;
-    const word = st === "online" ? "Online" : st === "busy" ? "Thinking…" : "Offline";
+    const word = focusedLive?.detail
+      ? focusedLive.detail
+      : st === "online" ? "Online"
+        : st === "busy" ? "Thinking…"
+          : st === "stopped" ? "Stopped"
+            : st === "offline" ? "Offline"
+              : "Status unknown";
     return {
       status: st,
       label: `@${focused.handle}${focused.id === roster.primary_agent_id ? " · Primary" : ""} · ${word}${othersOnline > 0 ? ` · +${othersOnline} online` : ""}`,
@@ -595,10 +609,97 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     return raw ? `${raw} Your message is preserved in the box below.` : "Could not confirm message delivery. Your message is preserved in the box below.";
   };
 
+  const describeDeclared = async (backend: typeof api.application.backend): Promise<{
+    hasCommandList: boolean;
+    hasAgentMessage: boolean;
+    hasQueryList: boolean;
+    hasAgentFeed: boolean;
+  }> => {
+    try {
+      const desc = typeof backend.describe === "function" ? await Promise.resolve(backend.describe()) : null;
+      if (desc && typeof desc === "object") {
+        const toNames = (val: unknown): string[] | null => {
+          if (Array.isArray(val)) return val.map(item => typeof item === "string" ? item : String((item as { name?: unknown })?.name ?? "")).filter(Boolean);
+          if (val && typeof val === "object") return Object.keys(val);
+          return null;
+        };
+        const commands = toNames((desc as { commands?: unknown }).commands);
+        const queries = toNames((desc as { queries?: unknown }).queries);
+        return {
+          hasCommandList: commands !== null,
+          hasAgentMessage: commands !== null && commands.includes("agentMessage"),
+          hasQueryList: queries !== null,
+          hasAgentFeed: queries !== null && queries.includes("agentFeed"),
+        };
+      }
+    } catch { /* ignore describe errors and fall back cleanly */ }
+    return { hasCommandList: false, hasAgentMessage: false, hasQueryList: false, hasAgentFeed: false };
+  };
+
+  const readDeclaredFeed = async (backend: typeof api.application.backend): Promise<{
+    messages: Array<{
+      author: string;
+      operationId: string;
+      eventId?: string;
+      atMs?: number | null;
+      channel?: string;
+      to?: string[];
+      text?: string;
+      inReplyTo?: { author?: string; operationId?: string };
+      replyToUser?: boolean;
+      senderHandle?: string;
+    }>;
+    activity: Array<{
+      author: string;
+      operationId: string;
+      eventId?: string;
+      atMs?: number | null;
+      to?: string[];
+      text?: string;
+      inReplyTo?: { author?: string; operationId?: string };
+    }>;
+    receipts: Record<string, Array<{ author?: string; state?: string }>>;
+  } | null> => {
+    if (typeof backend.query !== "function") return null;
+    const declared = await describeDeclared(backend);
+    if (declared.hasQueryList && !declared.hasAgentFeed) return null;
+    try {
+      const res = await backend.query("agentFeed", null);
+      const val = res && typeof res === "object" && "value" in (res as Record<string, unknown>)
+        ? (res as { value: unknown }).value
+        : res;
+      if (val && typeof val === "object" && Array.isArray((val as Record<string, unknown>).messages) && Array.isArray((val as Record<string, unknown>).activity)) {
+        const obj = val as Record<string, unknown>;
+        return {
+          messages: obj.messages as Array<any>,
+          activity: obj.activity as Array<any>,
+          receipts: (obj.receipts && typeof obj.receipts === "object" ? obj.receipts : {}) as Record<string, Array<{ author?: string; state?: string }>>,
+        };
+      }
+    } catch { /* query not declared or transiently unavailable; fall back to readEvents */ }
+    return null;
+  };
+
   const isOperationStoredLocally = async (operationId: string): Promise<boolean> => {
     if (!api.application?.available || !operationId) return false;
     try {
-      const view = await api.application.backend.readView();
+      const backend = api.application.backend;
+      if (typeof backend.operations?.get === "function") {
+        const stored = await Promise.resolve(backend.operations.get(operationId)).catch(() => null);
+        if (stored) {
+          const inspected = typeof stored.inspect === "function"
+            ? await Promise.resolve(stored.inspect()).catch(() => null)
+            : null;
+          if (!inspected || inspected.stored !== false) return true;
+        }
+      }
+      const declaredFeed = await readDeclaredFeed(backend);
+      if (declaredFeed) {
+        if (declaredFeed.messages.some(m => m.operationId === operationId) || declaredFeed.activity.some(a => a.operationId === operationId)) {
+          return true;
+        }
+      }
+      const view = await backend.readView();
       try {
         let cursor: string | undefined;
         for (let i = 0; i < 32; i++) {
@@ -796,57 +897,61 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     if (disposed || !api.application?.available || api.chat?.hasProvider) return;
     try {
       const backend = api.application.backend;
-      const view = await backend.readView();
-      try {
-        const allEvents: Array<{ id: string; operationId: string; author: string; authorTimestampMs: string; topic: string; payload: any }> = [];
-        let cursor: string | undefined;
-        for (let i = 0; i < 32; i++) {
-          const batch = await view.readEvents({ topics: ["agent/message", "agent/receipt"], limit: 128, ...(cursor ? { cursor } : {}) });
-          allEvents.push(...(batch.events as ReadonlyArray<typeof allEvents[number]>));
-          if (!batch.hasMore || !batch.cursor || batch.cursor === cursor) break;
-          cursor = batch.cursor;
-        }
-        const roster = rosterSnap();
-        const byKey = new Map<string, (typeof roster.agents)[number]>();
-        for (const a of roster.agents) {
-          byKey.set(a.public_key, a);
-          const hexKey = normalizeKeyHex(a.public_key);
-          if (hexKey) byKey.set(hexKey, a);
-        }
-        const msgs: RuntimeChatMessage[] = [];
-        const acts: RuntimeChatActivity[] = [];
-        const receipts = new Map<string, string[]>();
-        for (const ev of allEvents) {
-          if (ev.topic === "agent/receipt" && ev.payload) {
-            const k = `${ev.payload.messageAuthor}:${ev.payload.messageOperationId}`;
-            const arr = receipts.get(k) ?? [];
-            arr.push(String(ev.payload.state ?? "seen"));
-            receipts.set(k, arr);
+      const roster = rosterSnap();
+      const byKey = new Map<string, (typeof roster.agents)[number]>();
+      for (const a of roster.agents) {
+        byKey.set(a.public_key, a);
+        const hexKey = normalizeKeyHex(a.public_key);
+        if (hexKey) byKey.set(hexKey, a);
+      }
+      const selfPublicKey = normalizeKeyHex(backend.identity?.publicKey);
+      const msgs: RuntimeChatMessage[] = [];
+      const acts: RuntimeChatActivity[] = [];
+      let newlyArrived = 0;
+
+      const formatToHandles = (toList: readonly string[]) => toList.map(t => {
+        if (t === "*") return "*";
+        const hexT = normalizeKeyHex(t) ?? t;
+        return byKey.get(hexT)?.handle ?? byKey.get(t)?.handle ?? t.slice(0, 8);
+      });
+
+      const declaredFeed = await readDeclaredFeed(backend);
+      if (declaredFeed) {
+        const allItems = [...declaredFeed.messages, ...declaredFeed.activity];
+        const answeredKeys = new Set<string>();
+        for (const item of allItems) {
+          if (item.inReplyTo?.author && item.inReplyTo?.operationId && item.author !== item.inReplyTo.author) {
+            answeredKeys.add(`${item.inReplyTo.author}:${item.inReplyTo.operationId}`);
           }
         }
-        let newlyArrived = 0;
-        for (const ev of allEvents) {
-          if (ev.topic !== "agent/message") continue;
-          const p = ev.payload ?? {};
-          const atMs = /^\d+$/.test(String(ev.authorTimestampMs ?? "")) ? Number(ev.authorTimestampMs) : undefined;
-          const authorHex = normalizeKeyHex(ev.author) ?? ev.author;
-          const agent = byKey.get(authorHex) ?? byKey.get(ev.author);
-          const toList: string[] = Array.isArray(p.to) ? p.to : [];
-          const toHandles = toList.map(t => {
-            if (t === "*") return "*";
-            const hexT = normalizeKeyHex(t) ?? t;
-            return byKey.get(hexT)?.handle ?? byKey.get(t)?.handle ?? t.slice(0, 8);
+        for (const item of declaredFeed.activity) {
+          const authorHex = normalizeKeyHex(item.author) ?? item.author;
+          const agent = byKey.get(authorHex) ?? byKey.get(item.author);
+          const id = item.operationId || `${item.author}:${item.eventId ?? ""}`;
+          acts.push({
+            id,
+            senderHandle: agent?.handle ?? item.author.slice(0, 8),
+            toHandles: formatToHandles(Array.isArray(item.to) ? item.to : []),
+            text: String(item.text ?? ""),
+            at: typeof item.atMs === "number" ? item.atMs : undefined,
           });
-          const id = ev.operationId || `${ev.author}:${ev.id}`;
-          if (p.channel === "agents") {
-            acts.push({ id, senderHandle: agent?.handle ?? ev.author.slice(0, 8), toHandles, text: String(p.text ?? ""), at: atMs });
-            continue;
-          }
-          const isOwn = optimistic.has(id) || ownOperationIds.has(id);
-          const isAgent = Boolean(agent) || p.replyToUser === true || (Boolean(p.inReplyTo) && !isOwn);
+        }
+        for (const item of declaredFeed.messages) {
+          const authorHex = normalizeKeyHex(item.author) ?? item.author;
+          const agent = byKey.get(authorHex) ?? byKey.get(item.author);
+          const toHandles = formatToHandles(Array.isArray(item.to) ? item.to : []);
+          const id = item.operationId || `${item.author}:${item.eventId ?? ""}`;
+          const isOwn = optimistic.has(id) || ownOperationIds.has(id) || (selfPublicKey !== null && authorHex === selfPublicKey && !agent);
+          const isAgent = Boolean(agent) || item.replyToUser === true || (Boolean(item.inReplyTo) && !isOwn);
           const isSelf = !isAgent && isOwn;
-          const rStates = receipts.get(`${ev.author}:${ev.operationId}`) ?? [];
-          const status = rStates.includes("done") ? "answered" : rStates.includes("thinking") ? "thinking" : rStates.includes("seen") ? "seen" : "delivered";
+          const refKey = `${item.author}:${item.operationId}`;
+          const rStates = (declaredFeed.receipts[refKey] ?? [])
+            .filter(r => !r.author || r.author !== item.author)
+            .map(r => String(r.state ?? "seen"));
+          const status = (answeredKeys.has(refKey) || rStates.includes("done")) ? "answered"
+            : rStates.includes("thinking") ? "thinking"
+              : rStates.includes("seen") ? "seen"
+                : "delivered";
           const wasSeen = seenSessionIds.has(id);
           if (!wasSeen) {
             seenSessionIds.add(id);
@@ -854,46 +959,121 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           }
           if (isAgent && !spokenIds.has(id)) {
             spokenIds.add(id);
-            if (!wasSeen && autoSpeak && sessionSeeded && String(p.text ?? "").trim()) {
-              speechQueue.push(String(p.text).trim());
+            if (!wasSeen && autoSpeak && sessionSeeded && String(item.text ?? "").trim()) {
+              speechQueue.push(String(item.text).trim());
               pumpSpeech();
             }
           }
           msgs.push({
             id,
             role: isAgent ? "agent" : "user",
-            text: String(p.text ?? ""),
-            at: atMs,
+            text: String(item.text ?? ""),
+            at: typeof item.atMs === "number" ? item.atMs : undefined,
             status: isAgent ? undefined : status,
-            senderHandle: isAgent ? (agent?.handle ?? (ev.author ? ev.author.slice(0, 8) : "agent")) : (typeof p.senderHandle === "string" && p.senderHandle ? p.senderHandle : currentUserHandle()),
+            senderHandle: isAgent ? (agent?.handle ?? (item.author ? item.author.slice(0, 8) : "agent")) : (typeof item.senderHandle === "string" && item.senderHandle ? item.senderHandle : currentUserHandle()),
             senderRole: isAgent ? "agent" : (roster.viewer?.role === "guest" ? "guest" : "owner"),
-            isSelf: !isAgent && (isSelf || !p.senderHandle || p.senderHandle === currentUserHandle()),
+            isSelf: !isAgent && (isSelf || !item.senderHandle || item.senderHandle === currentUserHandle()),
             isPrimary: isAgent && agent ? (agent.id === roster.primary_agent_id || agent.is_primary) : undefined,
             toHandles: toHandles.length ? toHandles : undefined,
           });
           optimistic.delete(id);
         }
-        const wasSeeded = sessionSeeded;
-        sessionSeeded = true;
-        sessionMessages = msgs;
-        sessionActivity = acts;
-        // Reconcile any pending send retained from before a reload or closed endpoint
-        if (retainedPending && !sending) {
-          if (msgs.some(m => m.id === retainedPending!.operationId)) {
-            persistPending(null);
-          } else if (!wasSeeded) {
-            restoreDraftWithoutOverwrite(retainedPending.text);
-            if (!voiceError) voiceError = "Previous message was not confirmed before reload — kept in the box to review or retry.";
-            renderControls();
+      } else {
+        const view = await backend.readView();
+        try {
+          const allEvents: Array<{ id: string; operationId: string; author: string; authorTimestampMs: string; topic: string; payload: any }> = [];
+          let cursor: string | undefined;
+          for (let i = 0; i < 32; i++) {
+            const batch = await view.readEvents({ topics: ["agent/message", "agent/receipt"], limit: 128, ...(cursor ? { cursor } : {}) });
+            allEvents.push(...(batch.events as ReadonlyArray<typeof allEvents[number]>));
+            if (!batch.hasMore || !batch.cursor || batch.cursor === cursor) break;
+            cursor = batch.cursor;
           }
+          const receipts = new Map<string, string[]>();
+          const answeredKeys = new Set<string>();
+          for (const ev of allEvents) {
+            if (ev.topic === "agent/receipt" && ev.payload) {
+              if (ev.author && ev.author === ev.payload.messageAuthor) continue;
+              const k = `${ev.payload.messageAuthor}:${ev.payload.messageOperationId}`;
+              const arr = receipts.get(k) ?? [];
+              arr.push(String(ev.payload.state ?? "seen"));
+              receipts.set(k, arr);
+            } else if (ev.topic === "agent/message" && ev.payload?.inReplyTo?.author && ev.payload?.inReplyTo?.operationId) {
+              if (ev.author !== ev.payload.inReplyTo.author) {
+                answeredKeys.add(`${ev.payload.inReplyTo.author}:${ev.payload.inReplyTo.operationId}`);
+              }
+            }
+          }
+          for (const ev of allEvents) {
+            if (ev.topic !== "agent/message") continue;
+            const p = ev.payload ?? {};
+            const atMs = /^\d+$/.test(String(ev.authorTimestampMs ?? "")) ? Number(ev.authorTimestampMs) : undefined;
+            const authorHex = normalizeKeyHex(ev.author) ?? ev.author;
+            const agent = byKey.get(authorHex) ?? byKey.get(ev.author);
+            const toHandles = formatToHandles(Array.isArray(p.to) ? p.to : []);
+            const id = ev.operationId || `${ev.author}:${ev.id}`;
+            if (p.channel === "agents") {
+              acts.push({ id, senderHandle: agent?.handle ?? ev.author.slice(0, 8), toHandles, text: String(p.text ?? ""), at: atMs });
+              continue;
+            }
+            const isOwn = optimistic.has(id) || ownOperationIds.has(id) || (selfPublicKey !== null && authorHex === selfPublicKey && !agent);
+            const isAgent = Boolean(agent) || p.replyToUser === true || (Boolean(p.inReplyTo) && !isOwn);
+            const isSelf = !isAgent && isOwn;
+            const refKey = `${ev.author}:${ev.operationId}`;
+            const rStates = receipts.get(refKey) ?? [];
+            const status = (answeredKeys.has(refKey) || rStates.includes("done")) ? "answered"
+              : rStates.includes("thinking") ? "thinking"
+                : rStates.includes("seen") ? "seen"
+                  : "delivered";
+            const wasSeen = seenSessionIds.has(id);
+            if (!wasSeen) {
+              seenSessionIds.add(id);
+              if (sessionSeeded && !isOpen && isAgent) newlyArrived++;
+            }
+            if (isAgent && !spokenIds.has(id)) {
+              spokenIds.add(id);
+              if (!wasSeen && autoSpeak && sessionSeeded && String(p.text ?? "").trim()) {
+                speechQueue.push(String(p.text).trim());
+                pumpSpeech();
+              }
+            }
+            msgs.push({
+              id,
+              role: isAgent ? "agent" : "user",
+              text: String(p.text ?? ""),
+              at: atMs,
+              status: isAgent ? undefined : status,
+              senderHandle: isAgent ? (agent?.handle ?? (ev.author ? ev.author.slice(0, 8) : "agent")) : (typeof p.senderHandle === "string" && p.senderHandle ? p.senderHandle : currentUserHandle()),
+              senderRole: isAgent ? "agent" : (roster.viewer?.role === "guest" ? "guest" : "owner"),
+              isSelf: !isAgent && (isSelf || !p.senderHandle || p.senderHandle === currentUserHandle()),
+              isPrimary: isAgent && agent ? (agent.id === roster.primary_agent_id || agent.is_primary) : undefined,
+              toHandles: toHandles.length ? toHandles : undefined,
+            });
+            optimistic.delete(id);
+          }
+        } finally {
+          await view.release();
         }
-        if (newlyArrived > 0) sessionUnread += newlyArrived;
-        renderMessages();
-        renderActivity();
-        emitDockState();
-      } finally {
-        await view.release();
       }
+
+      const wasSeeded = sessionSeeded;
+      sessionSeeded = true;
+      sessionMessages = msgs;
+      sessionActivity = acts;
+      // Reconcile any pending send retained from before a reload or closed endpoint
+      if (retainedPending && !sending) {
+        if (msgs.some(m => m.id === retainedPending!.operationId) || await isOperationStoredLocally(retainedPending.operationId)) {
+          persistPending(null);
+        } else if (!wasSeeded) {
+          restoreDraftWithoutOverwrite(retainedPending.text);
+          if (!voiceError) voiceError = "Previous message was not confirmed before reload — kept in the box to review or retry.";
+          renderControls();
+        }
+      }
+      if (newlyArrived > 0) sessionUnread += newlyArrived;
+      renderMessages();
+      renderActivity();
+      emitDockState();
     } catch { /* ignore transient read failures */ }
   };
 
@@ -995,13 +1175,18 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         });
         renderMessages();
         const backend = api.application.backend;
-        await backend.submit({
-          operationId,
-          program: {
-            version: 3,
-            steps: [{ op: "emit", topic: "agent/message", payload: { channel: "chat", to, text: trimmed.slice(0, 8000) } }],
-          },
-        });
+        const payload = { channel: "chat" as const, to, text: trimmed.slice(0, 8000) };
+        const declared = await describeDeclared(backend);
+        if (typeof backend.command === "function" && (declared.hasAgentMessage || !declared.hasCommandList)) {
+          await backend.command("agentMessage", payload, { operationId });
+        } else if (typeof backend.events?.publish === "function") {
+          await backend.events.publish("agent/message", payload, { operationId });
+        } else {
+          await backend.submit({
+            operationId,
+            updates: [{ topic: "agent/message", input: payload }],
+          });
+        }
         persistPending(null);
         const pending = optimistic.get(operationId);
         if (pending) {
@@ -1171,11 +1356,22 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         const dot = el("span", undefined, "pdot");
         const liveKey = normalizeKeyHex(agent.public_key);
         const live = (liveKey ? roster.live?.[liveKey] : undefined) ?? roster.live?.[agent.public_key] ?? roster.live?.[agent.id];
-        setData(dot, "status", agent.kind === "hosted-mcp" ? "online" : (live?.state ?? "offline"));
+        const agentState = agent.kind === "hosted-mcp" ? "online" : (live?.state ?? "unknown");
+        setData(dot, "status", agentState);
         const name = el("strong", `@${agent.handle}`);
         left.append(dot, name);
         if (agent.id === primary?.id) left.append(el("span", "Primary", "pill accent"));
         if (agent.kind === "hosted-mcp") left.append(el("span", "MCP", "pill"));
+        else {
+          const stateText = live?.detail
+            ? live.detail
+            : agentState === "online" ? "Online"
+              : agentState === "busy" ? "Thinking…"
+                : agentState === "stopped" ? "Stopped"
+                  : agentState === "offline" ? "Offline"
+                    : "Status unknown";
+          left.append(el("span", stateText, "pill"));
+        }
         const right = el("div", undefined, "row");
         const msgBtn = btn(target === agent.id ? "Targeted" : "Message", "btn sm");
         msgBtn.disabled = target === agent.id;

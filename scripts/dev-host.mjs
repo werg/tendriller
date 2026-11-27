@@ -139,7 +139,11 @@ export async function startDevHost({ release, state, port = 8790, artifacts, sig
           compatibilityDate, serviceBindings: { PACKED_HOST: 'dev-host-packed' } },
         { name: 'dev-host-packed', ...engineModules,
           compatibilityDate, compatibilityFlags: ['nodejs_compat'],
-          durableObjects: { TENDRIL: { className: 'Tendril', useSQLite: true }, ADMISSION: { className: 'Admission', useSQLite: true } },
+          durableObjects: {
+            TENDRIL: { className: 'Tendril', useSQLite: true },
+            ADMISSION: { className: 'Admission', useSQLite: true },
+            AGENT_HUB: { className: 'AgentHub', useSQLite: true },
+          },
           d1Databases: { ACCOUNTS: 'dev-host-accounts' }, r2Buckets: { FILES: 'dev-host-files' },
           ratelimits: Object.fromEntries(ratelimits.map(({ name, ...value }) => [name, value])),
           assets: { directory: join(selected.directory, 'server/public'), binding: 'ASSETS', run_worker_first: true,

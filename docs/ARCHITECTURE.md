@@ -1,6 +1,6 @@
 # Architecture
 
-Tendriller is built around **Chronolog v2 (`chronolog-db`) as the central pipe**. Every application runs over one owned Chronolog v2 session (`@chronolog/peer-session`) that combines:
+Tendriller is built around **Chronolog v2 (`chronolog`) as the central pipe**. Every application runs over one owned Chronolog v2 session (`@chronolog/peer-session`) that combines:
 - a flat, timestamp-ordered CRDT operation set (`(authorTimestampMs, author, opId)`),
 - a Merkle-DAG Content-Addressed Store (`ContentAddressedStore` over `node:sqlite` or IndexedDB — zero native C/C++ builds),
 - a deterministic QuickJS-NG WASM sandbox (`TopicKernel`) running hash-pinned ES Module reducers from `$reducers`,
@@ -31,7 +31,7 @@ Tendriller is built around **Chronolog v2 (`chronolog-db`) as the central pipe**
 
 ## Strict two-way public / encrypted control partition
 
-On private chains (`privateLog: true`), operations are partitioned strictly by visibility:
+On private logs (`privateLog: true`), operations are partitioned strictly by visibility:
 - **Public control operations (`visibility: 'public'`)** may update *only* `$*` control topics (`$reducers`, `$permissions`, `$keys`, `$finality`, `$publications`, `$signal_policy`), and their reducers may read *only* public `$*` topics and public CAS nodes.
 - **Encrypted application operations (`visibility: 'encrypted'`)** are AES-256-GCM encrypted under the active epoch key and may update *only* non-`$` application topics.
 - Idempotency (`seenOpsRoot`) is scoped to `(visibility, author, operationId)`, so an encrypted operation can never collide with or influence a public control operation.

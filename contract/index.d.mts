@@ -250,6 +250,9 @@ export interface AgentLiveStatus {
   readonly state: "online" | "busy" | "offline" | "stopped" | "unknown";
   readonly capabilities?: readonly string[];
   readonly lastSeenAt?: number;
+  readonly route?: "worker" | "same-conversation" | (string & {});
+  readonly idleWakeReachable?: boolean;
+  readonly detail?: string;
 }
 export interface PagePersonEntry {
   readonly id: string;

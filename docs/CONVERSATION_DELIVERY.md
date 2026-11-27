@@ -83,7 +83,16 @@ node consumers/codex-queue.mjs --workspace /absolute/workspace \
 
 Select the exact UUID of the **intended existing Codex thread**, and verify that
 its UI uses the same daemon and retained thread store. The bridge also checks
-that the thread's recorded working directory matches the configured workspace.
+that the thread's recorded working directory matches the configured workspace
+(or an explicit parent `--thread-cwd` when the Tendriller workspace lives in a
+subdirectory of the conversation's root directory, e.g. `/home/user/agent/v2`
+under `--thread-cwd /home/user/agent`). Unrelated `--thread-cwd` paths are
+rejected; `--workspace` still governs page attachments and the workspace path
+included in message notices. At startup, the bridge preflights the actual
+conversation route (`thread/read` + `thread/turns/list`) and emits
+`conversation_route_ready` — or fails immediately with `conversation_route_failed`
+and `CODEX_QUEUE_THREAD_UNAVAILABLE` — rather than reporting only
+`request_protocol_ready` and failing on the first incoming message.
 Do not choose `--last`, an ambiguous name or a newly created thread. A cloud
 ChatGPT conversation ID is not a Codex thread UUID or proof of access to this
 local daemon.
@@ -179,10 +188,52 @@ references prevent concurrent outbox owners and silent reuse of a checkpoint aft
 the effective events changed. An event cursor binds to one materialized
 revision, so any later revision makes it stale; the bridge then derives the page's
 events again and skips requests that are already answered or already delivered
-(a bounded set of delivered, unanswered request keys in its checkpoint). After an
-abrupt kill, review the stale lock and ensure its old owner is gone before
-removing it. Queue draining still depends on the selected daemon and receiver
-lifetime.
+(a bounded set of delivered, unanswered request keys in its checkpoint).
+
+### Safe reboot/crash recovery and startup supervision
+
+Checkpoint locks record host, Linux boot identity (`/proc/sys/kernel/random/boot_id`),
+PID, and process start time (`/proc/<pid>/stat` field 22). After a normal reboot,
+abrupt kill (`SIGKILL`), or OS PID reuse, `openConsumerCheckpoint` proves the
+previous owner is dead, atomically renames the stale `.lock` directory out of the
+way (so racing contenders cannot steal a live lock), and preserves the checkpoint
+`.json` file untouched. Any retained `invoking` or `uncertain` admission still stops
+with `CODEX_QUEUE_REVIEW_REQUIRED` for explicit reconciliation — stale-lock recovery
+never blindly resends uncertain deliveries. If a live owner or unverifiable lock
+(e.g., different host or damaged `owner.json`) is present, startup fails closed with
+`AGENT_CONSUMER_LOCKED`.
+
+At boot, `consumers/codex-queue.mjs` also waits with bounded retries when
+`tendril agent run` is still opening pages (`OWNER_UNREACHABLE` /
+`SUPERVISOR_PAGE_UNAVAILABLE`) before failing. Under systemd, order the bridge
+`After=tendriller-agent.service` with `Restart=on-failure` and `RestartSec=5`.
+
+### Platform broadcast wake (same conversation)
+
+By default (`--no-broadcasts` opts out), `consumers/codex-queue.mjs` also watches
+`.tendriller/agent/broadcasts.json` and syncs `/api/broadcasts` for verified,
+applicable `agents` broadcasts (including `info`, `recommended`, `urgent`, and
+`critical` notices). Every notice is independently signature-verified, matched
+against installed workspace versions and expiry, and deduplicated in one agent-wide
+checkpoint (`broadcasts.json`) so an agent with multiple pages receives one notice.
+Broadcasts use the same active-turn steering and idle queue/resume route, preserve
+`interrupted` conversation stops, report `resume-unconfirmed` / unavailable wake
+explicitly, and never auto-acknowledge (`broadcastAcknowledged: false`).
+
+### Conversation-owned liveness
+
+By default (`--no-liveness` opts out), `consumers/codex-queue.mjs` runs one shared
+`createCodexConversationLiveness` probe loop against the actual Codex receiver
+(`thread/read` + `thread/turns/list`) and announces ephemeral presence cards
+(`listening` / `busy` / `stopped`, `route: "same-conversation"`, `idleWakeReachable`)
+across all attached pages without spawning separate model instances. If the Codex
+receiver fails or refuses direct input while the native page owner and bridge stay
+running, liveness immediately transitions to `stopped` and expires. When no worker
+or conversation presence signal is established, the built-in Assistant chat shows an
+honest distinct **Status unknown** indicator rather than conflating silence with
+confirmed **Offline**. Neither liveness nor queue admission implies a durable
+`agentReceipt` or reply. Queue draining still depends on the selected daemon and
+receiver lifetime.
 
 ### Alternative mechanisms and their limits
 

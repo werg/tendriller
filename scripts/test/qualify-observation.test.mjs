@@ -20,7 +20,7 @@ test('Root qualifier and maintained fixture entries parse without executing or b
 
 test('Root observation composition uses installed public sessions and the selected built runtime, never private or Contrib implementation', () => {
   for (const source of [qualifier, page, worker]) {
-    assert.doesNotMatch(source, /runtime\/src|chronolog-db\/packages|tendriller-contrib|openPeerApplication|openBrowserApplication|openNativeApplication|MemoryBytesStore|createGenerationRegistry|signApplicationDescriptor|signControlRevision|\.applied\(|\.shared\(/);
+    assert.doesNotMatch(source, /runtime\/src|chronolog(?:-db)?\/packages|tendriller-contrib|openPeerApplication|openBrowserApplication|openNativeApplication|MemoryBytesStore|createGenerationRegistry|signApplicationDescriptor|signControlRevision|\.applied\(|\.shared\(/);
   }
   assert.match(qualifier, /dist\/runtime/);
   assert.match(qualifier, /runtimePackage\.exports\['\.\/kernel'\]\.import/);

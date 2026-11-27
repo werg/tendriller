@@ -124,6 +124,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
       const match = evaluateBroadcastMatch(payload, { audience: 'agents', versions });
       const entry = {
         ...payload,
+        signed: { payload, signature: signed.signature },
         signature: signed.signature,
         verified: true,
         matched: match.matched,
@@ -201,7 +202,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
       if (status.reconnected) scheduleRescan(true);
       void syncPendingAgentConnections();
     }
-    if (status.state === 'revoked') report({ state: 'agent_revoked', next: 'The owner revoked this agent or its token. Re-register the workspace agent; local page data is kept.' });
+    if (status.state === 'revoked') report({ state: 'agent_revoked', next: 'The owner revoked this agent or its token (or the host cut over to a new storage namespace). Export any local page data first, then run tendril workspace reenroll to keep your existing signing/wrap keys; local page stores are never deleted.' });
   });
   hub.connect();
 

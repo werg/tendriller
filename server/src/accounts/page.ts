@@ -67,13 +67,39 @@ async function verifiedIdentities(env: Env, accountId: string): Promise<{ provid
   return [...grouped.values()];
 }
 
+function missingPageTransition(req: Request, id: string): Response | null {
+  if (!req.headers.get("Accept")?.includes("text/html")) return null;
+  return html(
+    `<section class="card stack-sm">`
+    + `<span class="eyebrow">Page unavailable</span>`
+    + `<h1>This page is no longer hosted here</h1>`
+    + `<p class="lead">Page <code>${escape(id)}</code> was not found on this host. It may have expired, been removed, or belonged to a retired pre-v2 deployment.</p>`
+    + `<p><strong>Your local data is untouched:</strong> any admitted browser profile or local agent workspace (<code>.tendriller/</code>) still holds its retained device history. Export and reconcile local data before creating a replacement page.</p>`
+    + `<div class="actions">`
+    + `<a class="button" href="/dashboard">Open dashboard</a>`
+    + `<a class="button secondary" href="/docs/V2_MIGRATION.md">Migration &amp; export guide</a>`
+    + `<a class="button ghost" href="/changelog.md">Platform changelog</a>`
+    + `</div></section>`,
+    404,
+  );
+}
+
 export async function routePageAuth(req: Request, env: Env, url: URL): Promise<Response> {
   if (!env.ACCOUNTS) return errorResponse(503, "unavailable", "Accounts database is not configured");
   const id = url.searchParams.get("tendril") ?? "";
   const key = url.searchParams.get("key") ?? "";
   if (!TENDRIL_ID_RE.test(id) || !PAGE_KEY_RE.test(key)) return errorResponse(400, "bad_request", "Invalid page link");
   const infoRes = await stub(env, id).fetch(claimRequest(id, key, "info"));
-  if (!infoRes.ok) return infoRes;
+  if (!infoRes.ok) {
+    if (infoRes.status === 404) {
+      const transition = missingPageTransition(req, id);
+      if (transition) {
+        await infoRes.body?.cancel();
+        return transition;
+      }
+    }
+    return infoRes;
+  }
   const info = await infoRes.json() as { claimed: boolean; expected: string | null; role: string };
   if (info.role !== "owner" && info.role !== "guest") return errorResponse(403, "forbidden", "This link cannot be opened");
   const session = await serviceSession(req, env);
@@ -91,7 +117,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     .first<{ deleting_at: number | null }>();
   if (deleting?.deleting_at) return errorResponse(403, "account_deleting", "Account deletion is in progress");
   const owner = await env.ACCOUNTS.prepare("SELECT owner_account FROM tendrils WHERE id = ?").bind(id).first<{ owner_account: string | null }>();
-  if (!owner) return errorResponse(404, "not_found", "No such tendril");
+  if (!owner) return missingPageTransition(req, id) ?? errorResponse(404, "not_found", "No such tendril");
   if (info.role === "owner" && owner.owner_account === session.accountId) return issuePageCode(env, id, key, session.accountId, "owner", customHost);
   if (info.role === "owner" && owner.owner_account) {
     const orgClaim = await stub(env, id).fetch(claimRequest(id, key, "org", {

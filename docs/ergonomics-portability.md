@@ -16,11 +16,11 @@
 
 **Repositories:** `werg/tendriller`, `werg/chronolog`, `werg/tendriller-contrib`  
 **Specification Date:** 21 November 2026  
-**Architecture Alignment:** Built as one piece around **`chronolog-db` (`@chronolog/peer-session`) as the central pipe**, keeping Tendriller's Worker host application-neutral (zero `node:*` imports) and basic `@tendriller/runtime` / `@tendriller/tools` decoupled from `@chronolog/*`.
+**Architecture Alignment:** Built as one piece around **`chronolog` (`@chronolog/peer-session`) as the central pipe**, keeping Tendriller's Worker host application-neutral (zero `node:*` imports) and basic `@tendriller/runtime` / `@tendriller/tools` decoupled from `@chronolog/*`.
 
 ### Review Corrections & Architectural Refinements (Applied Before Implementation)
 
-1. **Central-pipe placement (`chronolog-db` owns core primitives):** Canonical lifecycle mapping (`describeOperationLifecycle`), batched idempotent command submission (`submitBatch`), unified app client facade (`createAppClient`), AES-256-GCM atomic encrypted device checkpoints with anti-split-brain retirement tombstones (`exportDeviceCheckpoint` / `restoreDeviceCheckpoint`), explicit disposable native storage (`openDisposableNativeDevice`), Node WASM SQL adapter (`@chronolog/peer-session/sql-wasm-node`), and relay-only `--no-native-rtc` packaging live directly in `chronolog-db` rather than being duplicated in `tendriller`.
+1. **Central-pipe placement (`chronolog` owns core primitives):** Canonical lifecycle mapping (`describeOperationLifecycle`), batched idempotent command submission (`submitBatch`), unified app client facade (`createAppClient`), AES-256-GCM atomic encrypted device checkpoints with anti-split-brain retirement tombstones (`exportDeviceCheckpoint` / `restoreDeviceCheckpoint`), explicit disposable native storage (`openDisposableNativeDevice`), Node WASM SQL adapter (`@chronolog/peer-session/sql-wasm-node`), and relay-only `--no-native-rtc` packaging live directly in `chronolog` rather than being duplicated in `tendriller`.
 2. **Existing Port-443 Remote HTTPS MCP Server (W5 correction):** Tendriller's Cloudflare Worker **already ships** an OAuth 2.1 + PKCE + CIMD port-443 Remote HTTPS MCP server at `POST /mcp` (`server/src/assistant-gateway.ts` + `server/src/assistant.ts`). W5 therefore extends `/mcp` with batched idempotent command submission (`call_application_commands_batch`), adds the RESTful **Outbound HTTPS Command/Status Polling Gateway** (`/api/assistant/v1/apps/:appId/*`) on the exact same `assistantRequest` Durable Object path, adds independent transport probing & proxy awareness, and adds the **Local Stdio MCP Server** (`tendril mcp-stdio`) in `@tendriller/tools`.
 3. **Operation ID safety (W1 refinement):** Automatic trusted local access (`0600` Unix socket, Windows named pipe, or per-workspace loopback TCP bearer token) preserves caller-supplied `operationId` **verbatim** (`preserveOperationId: true`), eliminating divergence between in-process and shared local calls. Explicit third-party/restricted delegated bindings retain namespace scoping so independent agents on one shared profile cannot collide or hijack each other's operations.
 4. **Honest local vs. external qualification scope (W12 / CI):** All 12 Workstreams (W1–W12) are implemented in code, tests, CI workflows, and qualification harnesses across all three repositories. Quantitative telemetry is recorded from actual local runs; external commercial cloud-agent surfaces (Meta Muse, Grok Bot, OpenAI Dots, Claude Duet, Instinct) and non-Linux OS builds remain explicitly `"unknown"` / `"pending_live_access"` until executed on those live surfaces—never fabricated.
@@ -122,9 +122,9 @@ All five routes implement the exact same application command semantics and resul
 
 All twelve workstreams are mandatory and execute concurrently against shared versioned contracts.
 
-### Workstream W1: Unified Application Interface & Operation ID Contract (`tendriller`, `chronolog-db`)
+### Workstream W1: Unified Application Interface & Operation ID Contract (`tendriller`, `chronolog`)
 
-* **Current Baseline:** `tendriller/session/native.mjs` transforms operation IDs using app/client binding, whereas `tendriller/tools/cli/lib/session.mjs` passes them through verbatim. Command recording/submission is separate from coordinator application (`chronolog-db/packages/peer-session/src/application-data.ts`).
+* **Current Baseline:** `tendriller/session/native.mjs` transforms operation IDs using app/client binding, whereas `tendriller/tools/cli/lib/session.mjs` passes them through verbatim. Command recording/submission is separate from coordinator application (`chronolog/packages/peer-session/src/application-data.ts`).
 * **Mandatory Deliverables:**
   1. **Unified Application API:** Define one canonical TypeScript/ESM interface (`openApp`, `submitCommand`, `submitBatch`, `inspectOperation`, `query`, `flush`, `checkpoint`, `publish`, `enroll`, `close`) implemented uniformly across all five execution routes.
   2. **Unified Operation ID Contract (Hard Prerequisite):** Eliminate the operation ID divergence between `session/native.mjs` and `tools/cli/lib/session.mjs`. Every operation carries a canonical, caller-stable `{ appId, deviceId, operationId }` tuple (caller-supplied idempotency key or generated UUIDv7) preserved verbatim across bounded in-process, shared IPC, HTTP/MCP gateway, browser, and checkpoint recovery.
@@ -156,16 +156,16 @@ All twelve workstreams are mandatory and execute concurrently against shared ver
   4. **Reference-Counted Caller Disconnect:** Disconnecting one caller decrements active caller count without killing an instance still serving other callers.
   5. **Pure-JS Archive & Filesystem Utilities:** Remove all dependencies on GNU `tar`, `unzip`, `chmod`, `chown`, or `bash` in favor of pure Node/JS atomic file and archive operations.
 
-### Workstream W3: Portable SQL Engine — Node WASM Adapter AND Prebuilt Node-API Native Binaries (`chronolog-db`, `tendriller`)
+### Workstream W3: Portable SQL Engine — Node WASM Adapter AND Prebuilt Node-API Native Binaries (`chronolog`, `tendriller`)
 
-* **Current Baseline:** `chronolog-db` already embeds SQLite for the native record store (`packages/records/src/native.ts`), has a WASM build script (`tools/build-wasm-engine.mjs`) and Node conformance test (`packages/materializer-doltlite/src/wasm-conformance.test.ts`), and builds native SQL for Linux and macOS Intel in `.github/workflows/release.yml`. Native SQL rejects `:memory:` (`packages/materializer-doltlite/src/driver.ts`).
+* **Current Baseline:** `chronolog` already embeds SQLite for the native record store (`packages/records/src/native.ts`), has a WASM build script (`tools/build-wasm-engine.mjs`) and Node conformance test (`packages/materializer-doltlite/src/wasm-conformance.test.ts`), and builds native SQL for Linux and macOS Intel in `.github/workflows/release.yml`. Native SQL rejects `:memory:` (`packages/materializer-doltlite/src/driver.ts`).
 * **Mandatory Deliverables:**
-  1. **Production Node WASM SQL Engine Adapter (`chronolog-db`):**
+  1. **Production Node WASM SQL Engine Adapter (`chronolog`):**
      - Build a production Node loader for Chronolog's prebuilt WASM SQL engine.
      - **Synchronous VFS Bridge for Node:** Explicitly bridge the architectural split between the async journal `BytesStore` (`packages/records/src/bytes-store.ts`) and the SQL engine's synchronous filesystem interface (`packages/materializer-doltlite/src/types.ts`). Implement a crash-safe, `fsyncSync`-backed synchronous Node filesystem VFS for WASM SQL with atomic journal/WAL semantics matching native SQLite durability.
      - **Memory Ceiling Discipline:** Configure WASM initial/maximum linear memory and page cache bounds so peak RSS stays under **512 MB** for SQL workloads (and under **256 MB** for events workloads) on constrained ~1.9 GB RAM hosts like Instinct.
      - Pass full `wasm-conformance.test.ts` in CI across Linux, macOS, and Windows—verifying bit-for-bit query parity, persistent close-and-reopen durability, and simulated mid-write crash recovery against native execution.
-  2. **Prebuilt Node-API Native SQL Binaries (`chronolog-db`):**
+  2. **Prebuilt Node-API Native SQL Binaries (`chronolog`):**
      - Extend `.github/workflows/release.yml` to build, hash, and durably publish prebuilt Node-API (N-API) native SQL binaries for:
        - `linux-x64-gnu` (glibc baseline documented, e.g., Ubuntu 22.04+) & `linux-arm64-gnu`
        - `linux-x64-musl` (Alpine/container compatibility)
@@ -180,11 +180,11 @@ All twelve workstreams are mandatory and execute concurrently against shared ver
      - **Disposable Events (`--storage disposable`):** Uses in-memory `BytesStore`.
      - **Disposable SQL (`--storage disposable`):** Allocates a managed temporary directory under `os.tmpdir()/tendriller-disposable-<uuid>` with clean-exit (`exit`/`SIGINT`/`SIGTERM`) recursive removal and explicit session metadata `ephemeral: true, resumable: false`.
 
-### Workstream W4: Complete Browser Participant & Browser-Led Coordination (`chronolog-db`, `tendriller`)
+### Workstream W4: Complete Browser Participant & Browser-Led Coordination (`chronolog`, `tendriller`)
 
 * **Current Baseline:** Native and browser entry points share the peer runtime (`packages/peer-session/src/session.ts`), and `coordinator: false` / `recovery: false` in `docs/tutorial/pairing-native.mjs` is a starter policy rather than a runtime ban. Browser packaging does not yet expose the complete SQL browser entry point.
 * **Mandatory Deliverables:**
-  1. **Complete Browser SQL Bundle:** Update `chronolog-db/tools/package-peer-session.mjs` (using its SQL capability switches) to emit a self-contained browser SQL bundle exposing the verified SQL browser/worker entry point alongside the four WASM assets.
+  1. **Complete Browser SQL Bundle:** Update `chronolog/tools/package-peer-session.mjs` (using its SQL capability switches) to emit a self-contained browser SQL bundle exposing the verified SQL browser/worker entry point alongside the four WASM assets.
   2. **Browser Coordinator Mode & Multi-Tab Safety:**
      - Implement a first-class **Browser-Led Coordinator Mode** with complete setup, pairing, command ordering, and continuity flows.
      - Use the **Web Locks API** (`navigator.locks`) to guarantee single-writer coordination and automatic multi-tab leader election across tabs of the same origin.
@@ -197,7 +197,7 @@ All twelve workstreams are mandatory and execute concurrently against shared ver
   4. **DevTools-Free In-Page Diagnostics Surface:**
      - Embed a lightweight, toggleable diagnostics panel and machine-readable DOM JSON block (`<script type="application/json" id="tendriller-diagnostics">`) in every starter web app reporting live pass/fail status for: Web Workers, WebAssembly, OPFS vs. IndexedDB persistence grant, Web Locks leader status, WebCrypto, relay WebSocket/HTTPS reachability, coordinator status, and last applied operation ID. This allows browser agents without JS injection or DevTools (such as Meta Muse) to diagnose browser health directly from page content.
 
-### Workstream W5: Outbound-First Networking, HTTPS Polling Gateway & Local/Remote MCP (`tendriller`, `chronolog-db`)
+### Workstream W5: Outbound-First Networking, HTTPS Polling Gateway & Local/Remote MCP (`tendriller`, `chronolog`)
 
 * **Current Baseline:** Tendriller's Cloudflare Worker already serves an OAuth 2.1 + PKCE + CIMD Remote HTTPS MCP server at `/mcp` (`server/src/assistant-gateway.ts` + `server/src/assistant.ts`). Missing pieces are batched command submission, an HTTPS-only REST command/status polling gateway for non-MCP HTTPS sandboxes, independent transport probing with proxy awareness, and a Local Stdio MCP server backed by automatic connect-or-start.
 * **Mandatory Deliverables:**
@@ -233,18 +233,18 @@ All twelve workstreams are mandatory and execute concurrently against shared ver
      - **Four Explicit Readiness States:** `project_prepared`, `app_initialized`, `participant_reachable`, `command_applied`.
      - **Strict Pinning:** Explicit `--origin` and `--release` pinning, exact UI build tool version pinning, and zero silent fallbacks (never swap origins, jump releases, trigger source builds, or downgrade SQL to events).
 
-### Workstream W7: Versioned Cross-Repository Composition Contracts & Minimal SQL Starter UI (`chronolog-db`, `tendriller`)
+### Workstream W7: Versioned Cross-Repository Composition Contracts & Minimal SQL Starter UI (`chronolog`, `tendriller`)
 
 * **Current Baseline:** `tendriller/scripts/release-composition.mjs` enforces a single SQL-free graph with mandatory native RTC support. `docs/STATE_MODELS.md` provides partial SQL runtime pieces rather than a finished starter UI.
 * **Mandatory Deliverables:**
-  1. **Versioned Composition Manifest (`v2`) & Relay-Only Profiles:** Update `chronolog-db/tools/package-peer-session.mjs`, `tendriller/scripts/release-composition.mjs`, producer CI, discovery, verifiers, and consumers atomically as a versioned `v2` contract supporting four explicit profiles:
+  1. **Versioned Composition Manifest (`v2`) & Relay-Only Profiles:** Update `chronolog/tools/package-peer-session.mjs`, `tendriller/scripts/release-composition.mjs`, producer CI, discovery, verifiers, and consumers atomically as a versioned `v2` contract supporting four explicit profiles:
      - `events-relay-only` (zero SQL, zero native WebRTC — smallest possible footprint)
      - `events-full` (events + WebRTC)
      - `sql-portable-relay-only` (prebuilt WASM SQL + optional native SQL, zero native WebRTC)
      - `sql-full` (prebuilt WASM + native SQL + WebRTC)
   2. **Minimal Working End-to-End SQL Starter UI:** Build and ship a complete, runnable SQL starter web page (schema initialization, command submission, SQL query view, operation status inspector, checkpoint export button, and embedded diagnostics panel) so `tendriller create --model sql` works end-to-end with zero manual UI wiring.
 
-### Workstream W8: Multi-Runtime Qualification — Node 22.15+, Node 24+, Bun & Deno (`tendriller`, `chronolog-db`)
+### Workstream W8: Multi-Runtime Qualification — Node 22.15+, Node 24+, Bun & Deno (`tendriller`, `chronolog`)
 
 * **Current Baseline:** Tutorial packages declare Node 24 (`docs/tutorial/package.json`, `docs/tutorial/sql/package.json`), while `scripts/test-collaboration.mjs` uses a Node 22.15 test-shim workaround.
 * **Mandatory Deliverables:**
@@ -274,11 +274,11 @@ All twelve workstreams are mandatory and execute concurrently against shared ver
   6. **OS Service recipes** (`systemd`, `launchd`, Windows Service).
   7. **Request-Driven / Serverless Host Adapter (`ServerlessHostAdapter`):** Explicitly build the storage, state-locking, and stateless HTTPS request-handling adapter required for request-driven serverless/Worker runtimes (backing `BytesStore` + checkpointed SQL snapshots with durable object / external transactional storage), rather than claiming the filesystem/socket native process runs unmodified on a Worker.
 
-### Workstream W11: Contributor Fast Lane & Independent Distribution CI (`chronolog-db`, `tendriller-contrib`)
+### Workstream W11: Contributor Fast Lane & Independent Distribution CI (`chronolog`, `tendriller-contrib`)
 
 * **Current Baseline:** SQL tests inside `packages/peer-session/src/sql.test.ts` and `packages/peer-generation/src/sql.test.ts` transitively import native SQL materialization. `tendriller-contrib/.github/workflows/peer-generation.yml` qualifies source builds.
 * **Mandatory Deliverables:**
-  1. **`chronolog-db/AGENTS.md`:** Author a concise, machine-friendly root guide specifying exact install, fast-test, full-test, and package commands, package boundaries, and verification rules.
+  1. **`chronolog/AGENTS.md`:** Author a concise, machine-friendly root guide specifying exact install, fast-test, full-test, and package commands, package boundaries, and verification rules.
   2. **Import-Closure Fast Test Tier (`npm run test:fast`):** Define the fast tier strictly by **actual import closure**—excluding all tests that transitively import native SQL materialization (explicitly including `peer-session/src/sql.test.ts` and `peer-generation/src/sql.test.ts`, not just `materializer-doltlite`). Document an `--ignore-scripts` install path for JS-only contributor work, and measure fast-test duration, minimal install size, and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` independently.
   3. **`tendriller-contrib` Released-Artifact Qualification CI:** Extend `.github/workflows/peer-generation.yml` (and add a cross-OS matrix) to install and test **actual published release artifacts** on Linux (`x64`/`arm64`), macOS (`arm64`/`x64`), and native Windows (`x64`) with `npm ci --ignore-scripts`, **no** C/C++ compiler, **no** Python build toolchain, **no** Emscripten, and **no** Docker. Retain source-build qualification as a separate CI job.
 
@@ -324,7 +324,7 @@ Every gate below must pass automatically in CI or in a recorded qualification ru
 
 ### 7.1 The 14 Mandatory Acceptance Gates
 
-1. **Minimal Zero-Toolchain Start:** Create, initialize, and apply a command to an `events` app using the verified bootstrapper without cloning `chronolog-db`, compiling native code, installing Docker, installing `nvm`, or configuring `systemd`.
+1. **Minimal Zero-Toolchain Start:** Create, initialize, and apply a command to an `events` app using the verified bootstrapper without cloning `chronolog`, compiling native code, installing Docker, installing `nvm`, or configuring `systemd`.
 2. **Concurrent Local Callers:** Launch two local callers simultaneously against one unstarted workspace; verify both converge on a single shared instance via automatic connect-or-start with zero manual ownership prompts and zero data corruption.
 3. **Interrupted Response & Destroyed Sandbox:** Persist `operationId` and retry context before submission, submit a command, destroy the originating sandbox before receiving the response, restore the private checkpoint in a fresh sandbox, and reconcile the exact `operationId` with zero duplicate side effects and unchanged device identity.
 4. **Clean Process Resume:** Stop the local participant cleanly and reopen the exact same application and device identity from durable storage/checkpoint.
@@ -337,7 +337,7 @@ Every gate below must pass automatically in CI or in a recorded qualification ru
 11. **HTTPS-Only & Remote MCP Fallback:** Block WebSockets and WebRTC at the network layer; execute discover, batched command, inspect, and query flows cleanly through the outbound HTTPS polling gateway and port-443 Remote MCP server.
 12. **Node 22.15+ & Node 24+ Matrix:** Pass the full packed `events` and `sql` starter qualification suites on both Node 22.15+ and Node 24+ across Linux, macOS, and Windows (plus recorded Bun/Deno compatibility results).
 13. **Restricted Network / Capability Degradation:** When npm, Node, WebSockets, browser storage, or connectors are individually disabled, return exit code `2` with a clear JSON capability report and a viable next route—never silently downgrading SQL to events or swapping origins.
-14. **Contributor Fast Lane & Independent Release CI:** Run `chronolog-db`'s import-closure `npm run test:fast` in `< 15` seconds with zero native builds, and pass `tendriller-contrib`'s released-artifact CI matrix with `--ignore-scripts` and no compiler/Emscripten/Docker.
+14. **Contributor Fast Lane & Independent Release CI:** Run `chronolog`'s import-closure `npm run test:fast` in `< 15` seconds with zero native builds, and pass `tendriller-contrib`'s released-artifact CI matrix with `--ignore-scripts` and no compiler/Emscripten/Docker.
 
 ### 7.2 Mandatory Quantitative Telemetry Scorecard
 

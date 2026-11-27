@@ -41,7 +41,7 @@ for (const [name, file, source] of [
 
 for (const [name, path] of [
   ['host cannot bundle native engine', 'node_modules/@chronolog/peer-session/native.mjs'],
-  ['host cannot bundle a source checkout', '../chronolog-db/packages/peer-session/src/session.ts'],
+  ['host cannot bundle a source checkout', '../chronolog/packages/peer-session/src/session.ts'],
   ['host cannot bundle retired controls', 'node_modules/@chronolog/peer-generation/control.mjs'],
 ]) test(name, t => {
   const f = fixture(t); f.write('dist/engine/inputs.json', ['node_modules/@chronolog/authority/index.mjs', path]);
@@ -53,7 +53,7 @@ test('native imports cannot hide in the compiled host Worker', t => {
   const result = f.run(); assert.notEqual(result.status, 0); assert.match(result.stderr, /Unexpected native Worker dependency/);
 });
 
-for (const path of ['contract/application.mjs', 'server/src/authority.ts', '../chronolog-db/packages/peer-session/src/session.ts', 'node_modules/@chronolog/materializer/index.mjs'])
+for (const path of ['contract/application.mjs', 'server/src/authority.ts', '../chronolog/packages/peer-session/src/session.ts', 'node_modules/@chronolog/materializer/index.mjs'])
   test(`tools reject private application implementation: ${path}`, t => {
     const f = fixture(t); f.write('dist/tools-inputs.json', [path]);
     const result = f.run(); assert.notEqual(result.status, 0); assert.match(result.stderr, /Tools must consume public artifacts/);

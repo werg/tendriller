@@ -539,6 +539,7 @@ export const UTILITY_CSS = `
   .pdot[data-status=online]{background:var(--t-ok)}
   .pdot[data-status=busy]{background:var(--t-warn)}
   .pdot[data-status=offline],.pdot[data-status=stopped]{background:var(--t-danger)}
+  .pdot[data-status=unknown]{background:transparent;border:1.5px solid var(--t-muted);box-sizing:border-box}
 
   .chat-subpanel{
     border-bottom:1px solid var(--t-border);background:var(--t-surface);

@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, watch as watchFiles } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { consumeNativeEvents, openConsumerCheckpoint } from '../shared/helpers/agent-consumer.mjs';
-import { shouldAgentRespond } from '../shared/helpers/agent-requests.mjs';
+import { announceAgentPresence, shouldAgentRespond } from '../shared/helpers/agent-requests.mjs';
 import { openCodexRpc } from '../shared/helpers/codex-rpc.mjs';
 import { createCliLifetime } from '../shared/cli-lifetime.mjs';
 
@@ -21,14 +23,20 @@ const MAX_DELIVERED = 1024;
 const ID = /^[A-Za-z0-9_.:-]{1,200}$/u;
 const CHANNELS = new Set(['chat', 'agents']);
 
-function optionsFor({ threadId, cwd, requestTopics, remote = 'unix://', remoteAuthTokenEnv,
+function optionsFor({ threadId, cwd, threadCwd = cwd, requestTopics, remote = 'unix://', remoteAuthTokenEnv,
   timeoutMs = 30_000, unsupportedPages = 'skip', execute = executeFile, connect = openCodexRpc }) {
-  if (!UUID.test(threadId ?? '') || !isAbsolute(cwd ?? '') || !Array.isArray(requestTopics)
+  if (!UUID.test(threadId ?? '') || !isAbsolute(cwd ?? '') || !isAbsolute(threadCwd ?? '') || !Array.isArray(requestTopics)
     || !requestTopics.length || requestTopics.length > 2
     || requestTopics.some(topic => !CHANNELS.has(topic)) || typeof execute !== 'function' || typeof connect !== 'function'
     || !['skip', 'fail'].includes(unsupportedPages)
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
-    throw fail('CODEX_QUEUE_OPTIONS_INVALID', 'Supply an exact thread UUID, absolute workspace and handled message channels (chat, agents).');
+    throw fail('CODEX_QUEUE_OPTIONS_INVALID', 'Supply an exact thread UUID, absolute workspace (and optional parent --thread-cwd) and handled message channels (chat, agents).');
+  }
+  const resolvedCwd = resolve(cwd);
+  const resolvedThreadCwd = resolve(threadCwd);
+  const rel = relative(resolvedThreadCwd, resolvedCwd);
+  if (rel !== '' && (rel.startsWith('..') || isAbsolute(rel))) {
+    throw fail('CODEX_QUEUE_OPTIONS_INVALID', 'The app workspace must equal --thread-cwd or be a subdirectory inside --thread-cwd.');
   }
   if (typeof remote !== 'string' || /[\r\n\0]/u.test(remote)) throw fail('CODEX_QUEUE_REMOTE_INVALID', 'Select an explicit Codex server.');
   if (!/^unix:\/\/(?:\/.*)?$/u.test(remote)) {
@@ -49,7 +57,7 @@ function optionsFor({ threadId, cwd, requestTopics, remote = 'unix://', remoteAu
   if (remoteAuthTokenEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(remoteAuthTokenEnv)) {
     throw fail('CODEX_QUEUE_AUTH_ENV_INVALID', 'Name the environment variable; never pass its token value.');
   }
-  return { threadId, cwd: resolve(cwd), requestTopics: [...new Set(requestTopics)].sort(),
+  return { threadId, cwd: resolvedCwd, threadCwd: resolvedThreadCwd, requestTopics: [...new Set(requestTopics)].sort(),
     remote, remoteAuthTokenEnv, timeoutMs, unsupportedPages, execute, connect };
 }
 
@@ -184,12 +192,18 @@ function readState(checkpoint) {
 }
 
 // Metadata plus one live turn header; never hydrate or retain conversation items.
-async function readAdmissionRoute(rpc, selected) {
+async function readThreadObservation(rpc, selected) {
   const { thread } = await rpc.request('thread/read', { threadId: selected.threadId, includeTurns: false });
-  if (thread?.id !== selected.threadId || thread.cwd !== selected.cwd
+  const actualThreadCwd = typeof thread?.cwd === 'string' && isAbsolute(thread.cwd) ? resolve(thread.cwd) : null;
+  if (thread?.id !== selected.threadId || actualThreadCwd !== selected.threadCwd
     || !['active', 'idle', 'notLoaded'].includes(thread.status?.type)
     || thread.canAcceptDirectInput === false) {
-    throw fail('CODEX_QUEUE_THREAD_UNAVAILABLE', 'The selected thread must match this workspace and permit direct input on the selected server.');
+    throw fail(
+      'CODEX_QUEUE_THREAD_UNAVAILABLE',
+      actualThreadCwd && actualThreadCwd !== selected.threadCwd
+        ? `The selected thread cwd (${actualThreadCwd}) does not match expected thread cwd (${selected.threadCwd}). Pass --thread-cwd with the conversation root directory if the app workspace is a subdirectory.`
+        : 'The selected thread must match this workspace (or configured --thread-cwd) and permit direct input on the selected server.',
+    );
   }
   const turns = await rpc.request('thread/turns/list', { threadId: selected.threadId,
     limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
@@ -198,14 +212,26 @@ async function readAdmissionRoute(rpc, selected) {
       || turn.itemsView !== 'notLoaded' || !Array.isArray(turn.items) || turn.items.length)) {
     throw fail('CODEX_QUEUE_THREAD_STATE_UNCONFIRMED', 'Codex did not return the requested bounded turn metadata.');
   }
-  const latest = turns.data[0];
+  const latest = turns.data[0] ?? null;
   if (thread.status.type !== 'notLoaded' && latest?.status === 'inProgress') {
-    return { kind: 'steer', turnId: latest.id };
+    return { kind: 'steer', turnId: latest.id, threadStatus: thread.status.type, latestTurnStatus: latest.status };
   }
   if (thread.status.type === 'active' && !latest) {
     throw fail('CODEX_QUEUE_THREAD_STATE_UNCONFIRMED', 'The active thread has no confirmed current turn identity.');
   }
-  return { kind: 'queue', resume: latest?.status !== 'interrupted' };
+  return {
+    kind: 'queue',
+    resume: latest?.status !== 'interrupted',
+    threadStatus: thread.status.type,
+    latestTurnStatus: latest?.status ?? null,
+  };
+}
+
+async function readAdmissionRoute(rpc, selected) {
+  const obs = await readThreadObservation(rpc, selected);
+  return obs.kind === 'steer'
+    ? { kind: 'steer', turnId: obs.turnId }
+    : { kind: 'queue', resume: obs.resume };
 }
 
 // Release 0.172.0 maps ONLY these exact NotSubmitted races to these messages.
@@ -258,7 +284,7 @@ async function admitRequest(row, selected, rpc, save, signal) {
   if (selected.remoteAuthTokenEnv) argv.push('--remote-auth-token-env', selected.remoteAuthTokenEnv);
   let result;
   try {
-    result = await selected.execute('codex', argv, { cwd: selected.cwd, shell: false,
+    result = await selected.execute('codex', argv, { cwd: selected.threadCwd, shell: false,
       timeout: selected.timeoutMs, maxBuffer: 64 * 1024, signal });
   } catch {
     row.status = 'uncertain'; await save();
@@ -386,15 +412,431 @@ export async function consumeCodexRequests({ page, session, checkpoint, roster, 
   });
 }
 
+const BROADCAST_ID = /^bc_[a-z2-7]{26}$/u;
+const MAX_DELIVERED_BROADCASTS = 512;
+
+function broadcastMessageFor(payload, selected) {
+  const sev = String(payload.severity ?? 'info').toUpperCase();
+  const ref = {
+    id: payload.id,
+    seq: payload.seq,
+    kind: payload.kind,
+    severity: payload.severity,
+    title: payload.title,
+    summary: payload.summary,
+    ...(payload.docs_url ? { docs_url: payload.docs_url } : {}),
+    ...(payload.action ? { action: payload.action } : {}),
+  };
+  return [
+    `[${sev}] A verified Tendriller platform broadcast applies to this agent workspace.`,
+    `Workspace: ${JSON.stringify(selected.cwd)}`,
+    `Broadcast reference: ${JSON.stringify(ref)}`,
+    'Inspect the full signed notice with `tendril broadcasts` (or `tendril status`), decide what action is required, and handle it.',
+    'Do NOT treat delivery of this notice as completion: acknowledge with `tendril broadcasts ack ' + payload.id + '` only after you have actually reviewed/handled it.',
+    'The conversation bridge has not acknowledged or acted on this broadcast.',
+  ].join('\n');
+}
+
+function validPendingBroadcast(row) {
+  if (!row || typeof row !== 'object' || !BROADCAST_ID.test(row.id ?? '')
+    || !Number.isSafeInteger(row.seq) || row.seq < 1
+    || !['prepared', 'invoking', 'uncertain', 'steer-rejected', 'resume-unconfirmed', 'queued', 'steered'].includes(row.status)) {
+    return false;
+  }
+  if (row.clientUserMessageId !== undefined && !UUID.test(row.clientUserMessageId)) return false;
+  if (row.input !== undefined && (!Array.isArray(row.input) || row.input.length !== 1
+    || row.input[0]?.type !== 'text' || !text(row.input[0].text, 16_384))) return false;
+  if (row.source !== undefined && !['turn/steer', 'thread/queue/add'].includes(row.source)) return false;
+  if (row.expectedTurnId !== undefined && !ID.test(row.expectedTurnId)) return false;
+  if (row.rejectedTurnIds !== undefined && (!Array.isArray(row.rejectedTurnIds) || row.rejectedTurnIds.length > 2
+    || !row.rejectedTurnIds.every(id => ID.test(id)))) return false;
+  if (row.status === 'steered' && (!ID.test(row.steeredTurnId ?? '') || row.steeredTurnId !== row.expectedTurnId
+    || !row.clientUserMessageId || !row.input || row.source !== 'turn/steer')) return false;
+  const queued = row.status === 'queued' || row.status === 'resume-unconfirmed';
+  return (!queued && row.queuedSubmissionId === undefined) || ID.test(row.queuedSubmissionId ?? '');
+}
+
+function readBroadcastCheckpoint(checkpoint) {
+  const state = checkpoint.read() ?? { version: 1, delivered: [], pending: null };
+  if (state.version !== 1
+    || !Array.isArray(state.delivered) || state.delivered.length > MAX_DELIVERED_BROADCASTS
+    || !state.delivered.every(id => BROADCAST_ID.test(id)) || new Set(state.delivered).size !== state.delivered.length
+    || !(state.pending === null || validPendingBroadcast(state.pending))) {
+    throw fail('CODEX_QUEUE_CHECKPOINT_INVALID', 'Preserve and inspect the existing broadcast checkpoint; it cannot be reset automatically.');
+  }
+  return state;
+}
+
+/**
+ * Deliver verified, applicable Tendriller broadcasts to the SAME connected conversation.
+ * Persists delivery state by broadcast identity across restarts, rejects invalid signatures,
+ * respects audience/version/expiry, delivers informational broadcasts too, and NEVER auto-acknowledges.
+ */
+export async function consumeCodexBroadcasts({
+  broadcastSource,
+  checkpoint,
+  signal,
+  onState = () => {},
+  admissionGate = async operation => operation(),
+  verifySignature,
+  evaluateMatch,
+  now = () => Date.now(),
+  ...options
+}) {
+  const selected = optionsFor(options);
+  if (!broadcastSource || typeof broadcastSource.read !== 'function') {
+    throw fail('CODEX_QUEUE_OPTIONS_INVALID', 'Supply a broadcastSource with read() for broadcast wake.');
+  }
+  let verifyFn = verifySignature;
+  let matchFn = evaluateMatch;
+  if (!verifyFn || !matchFn) {
+    const mod = await import('@tendriller/core/broadcasts');
+    verifyFn ??= mod.verifyBroadcastSignature;
+    matchFn ??= mod.evaluateBroadcastMatch;
+  }
+
+  let state = readBroadcastCheckpoint(checkpoint);
+  const save = async () => { await checkpoint.save(state); };
+
+  async function processBatch(lifetime) {
+    lifetime.throwIfAborted();
+    if (state.pending) {
+      if (completed(state.pending.status)) {
+        state = {
+          version: 1,
+          delivered: [...new Set([...state.delivered, state.pending.id])].slice(-MAX_DELIVERED_BROADCASTS),
+          pending: null,
+        };
+        await save();
+      } else if (state.pending.status !== 'prepared') {
+        onState({ scope: 'broadcast', broadcastId: state.pending.id, state: state.pending.status, threadId: selected.threadId });
+        throw fail('CODEX_QUEUE_REVIEW_REQUIRED', `Broadcast ${state.pending.id} has retained ${state.pending.status} delivery. Inspect the conversation queue before any resend.`);
+      }
+    }
+
+    const batch = await broadcastSource.read({ signal: lifetime });
+    lifetime.throwIfAborted();
+    const issuer = batch?.issuer;
+    const trustedKeys = Array.isArray(batch?.keys) ? batch.keys : [];
+    const versions = batch?.versions ?? {};
+    const acknowledged = new Set(Array.isArray(batch?.acknowledged) ? batch.acknowledged : []);
+    const rawItems = Array.isArray(batch?.broadcasts) ? batch.broadcasts : [];
+
+    // Re-verify every item (cached or live) before admitting anything to the conversation.
+    const applicable = [];
+    for (const item of rawItems) {
+      const signed = item?.signed && item.signed.payload && item.signed.signature
+        ? item.signed
+        : (item?.payload && item?.signature ? item : null);
+      if (!signed) {
+        onState({ scope: 'broadcast', state: 'broadcast_rejected', broadcastId: item?.id ?? null, reason: 'missing_signed_envelope' });
+        continue;
+      }
+      const check = await verifyFn(signed, trustedKeys, issuer ? { issuer } : {});
+      if (!check.valid) {
+        onState({ scope: 'broadcast', state: 'broadcast_rejected', broadcastId: signed.payload?.id ?? null, reason: check.reason ?? 'invalid_signature' });
+        continue;
+      }
+      const payload = signed.payload;
+      const match = matchFn(payload, { audience: 'agents', versions, now: now() });
+      if (!match.matched) continue;
+      if (acknowledged.has(payload.id) || state.delivered.includes(payload.id)) continue;
+      applicable.push(payload);
+    }
+    applicable.sort((a, b) => a.seq - b.seq);
+
+    // If a prepared pending broadcast already exists from before a restart, finish it first.
+    if (state.pending && state.pending.status === 'prepared') {
+      const existing = state.pending;
+      if (acknowledged.has(existing.id) || state.delivered.includes(existing.id)) {
+        state = { version: 1, delivered: [...new Set([...state.delivered, existing.id])].slice(-MAX_DELIVERED_BROADCASTS), pending: null };
+        await save();
+      } else {
+        await deliverRow(existing, lifetime);
+      }
+    }
+
+    for (const payload of applicable) {
+      lifetime.throwIfAborted();
+      if (state.delivered.includes(payload.id)) continue;
+      const row = {
+        id: payload.id,
+        seq: payload.seq,
+        kind: payload.kind,
+        severity: payload.severity,
+        status: 'prepared',
+        clientUserMessageId: randomUUID(),
+        input: [{ type: 'text', text: broadcastMessageFor(payload, selected), text_elements: [] }],
+      };
+      state = { ...state, pending: row };
+      await save();
+      await deliverRow(row, lifetime);
+    }
+  }
+
+  async function deliverRow(row, lifetime) {
+    lifetime.throwIfAborted();
+    row.clientUserMessageId ??= randomUUID();
+    await save();
+    await admissionGate(async () => {
+      lifetime.throwIfAborted();
+      const rpc = await selected.connect({ ...selected, signal: lifetime });
+      try { await admitRequest(row, selected, rpc, save, lifetime); }
+      finally { await rpc.close(); }
+    });
+    onState({
+      scope: 'broadcast',
+      broadcastId: row.id,
+      seq: row.seq,
+      kind: row.kind,
+      severity: row.severity,
+      state: row.status,
+      source: row.source,
+      threadId: selected.threadId,
+      queuedSubmissionId: row.queuedSubmissionId,
+      turnId: row.steeredTurnId,
+      clientUserMessageId: row.source === 'turn/steer' ? row.clientUserMessageId : undefined,
+      workerReceipt: false,
+      wakeVerified: false,
+      broadcastAcknowledged: false,
+    });
+    if (row.status === 'resume-unconfirmed') {
+      throw fail('CODEX_QUEUE_RESUME_UNCONFIRMED', 'Codex retained the broadcast notice but could not resume its thread. Repair the selected server/thread; do not enqueue it again.');
+    }
+    state = {
+      version: 1,
+      delivered: [...new Set([...state.delivered, row.id])].slice(-MAX_DELIVERED_BROADCASTS),
+      pending: null,
+    };
+    await save();
+  }
+
+  const stop = new AbortController();
+  const lifetime = AbortSignal.any([stop.signal, signal].filter(Boolean));
+  const queue = [];
+  let wake = null;
+  const trigger = () => {
+    if (wake) { const fn = wake; wake = null; fn(); }
+    else queue.push(true);
+  };
+  const unsubscribe = typeof broadcastSource.subscribe === 'function'
+    ? broadcastSource.subscribe(() => trigger())
+    : null;
+  try {
+    await processBatch(lifetime);
+    if (!unsubscribe) return;
+    while (!lifetime.aborted) {
+      if (queue.length === 0) {
+        await new Promise((resolve, reject) => {
+          if (lifetime.aborted) { reject(lifetime.reason); return; }
+          const onAbort = () => { wake = null; reject(lifetime.reason); };
+          wake = () => { lifetime.removeEventListener('abort', onAbort); resolve(); };
+          lifetime.addEventListener('abort', onAbort, { once: true });
+        });
+      }
+      queue.length = 0;
+      await processBatch(lifetime);
+    }
+  } finally {
+    stop.abort();
+    try { await unsubscribe?.(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Conversation-owned liveness integration for one shared Codex thread serving multiple pages.
+ * Probes the ACTUAL Codex conversation receiver (thread/read + thread/turns/list) on one timer
+ * and announces listening/busy/stopped + idleWakeReachable across all attached sessions.
+ * If the receiver fails or refuses direct input while the native owner and bridge stay up,
+ * liveness immediately transitions to stopped and expires instead of staying falsely green.
+ */
+export function createCodexConversationLiveness({
+  sessions,
+  signal,
+  onState = () => {},
+  probeIntervalMs = 10_000,
+  ttlMs = 25_000,
+  handle = '',
+  bio = '',
+  capabilities = ['chat'],
+  isPrimary = false,
+  ...options
+}) {
+  const selected = optionsFor(options);
+  const stop = new AbortController();
+  const lifetime = AbortSignal.any([stop.signal, signal].filter(Boolean));
+  const activeAnnouncers = new Map(); // pageId -> announcer
+  let lastObservation = { state: 'unknown', idleWakeReachable: false, detail: 'Checking conversation…' };
+  let probing = false;
+  let timer = null;
+
+  const stopAllAnnouncers = async () => {
+    const entries = [...activeAnnouncers.entries()];
+    activeAnnouncers.clear();
+    await Promise.allSettled(entries.map(([, ann]) => ann.close()));
+  };
+
+  const applyObservation = async (next) => {
+    const changed = next.state !== lastObservation.state
+      || next.idleWakeReachable !== lastObservation.idleWakeReachable
+      || next.detail !== lastObservation.detail;
+    lastObservation = next;
+
+    if (next.state === 'unavailable') {
+      await stopAllAnnouncers();
+      if (changed) {
+        onState({ scope: 'liveness', state: 'conversation_liveness_lost', threadId: selected.threadId, reason: next.reason ?? 'receiver_unavailable' });
+      }
+      return;
+    }
+
+    const cardPatch = {
+      handle,
+      bio,
+      capabilities,
+      isPrimary,
+      route: 'same-conversation',
+      idleWakeReachable: next.idleWakeReachable,
+      detail: next.detail,
+    };
+
+    for (const entry of sessions) {
+      if (!entry.session?.signals) continue;
+      let ann = activeAnnouncers.get(entry.page.id);
+      if (!ann) {
+        ann = announceAgentPresence(entry.session, {
+          consumerId: `codex-thread:${selected.threadId}`,
+          role: 'conversation',
+          topics: selected.requestTopics,
+          state: next.state,
+          ...cardPatch,
+          intervalMs: Math.max(2_000, Math.min(15_000, probeIntervalMs)),
+          ttlMs,
+          signal: lifetime,
+        });
+        activeAnnouncers.set(entry.page.id, ann);
+      } else {
+        ann.updateCard(cardPatch);
+        ann.setState(next.state);
+      }
+    }
+    if (changed) {
+      onState({
+        scope: 'liveness',
+        state: next.state,
+        route: 'same-conversation',
+        idleWakeReachable: next.idleWakeReachable,
+        threadId: selected.threadId,
+        pages: sessions.map(s => s.page.slug),
+      });
+    }
+  };
+
+  const probeOnce = async () => {
+    if (probing || lifetime.aborted) return lastObservation;
+    probing = true;
+    try {
+      const rpc = await selected.connect({ ...selected, signal: lifetime });
+      let obs;
+      try { obs = await readThreadObservation(rpc, selected); }
+      finally { await rpc.close().catch(() => {}); }
+      if (obs.kind === 'steer') {
+        await applyObservation({ state: 'busy', idleWakeReachable: true, detail: 'Active turn' });
+      } else if (obs.latestTurnStatus === 'interrupted') {
+        await applyObservation({ state: 'stopped', idleWakeReachable: false, detail: 'Paused' });
+      } else {
+        await applyObservation({ state: 'listening', idleWakeReachable: true, detail: '' });
+      }
+    } catch (error) {
+      if (!lifetime.aborted) {
+        await applyObservation({ state: 'unavailable', idleWakeReachable: false, detail: 'Unavailable', reason: error?.code ?? error?.message ?? 'probe_failed' });
+      }
+    } finally {
+      probing = false;
+    }
+    return lastObservation;
+  };
+
+  if (!lifetime.aborted) {
+    timer = setInterval(() => { void probeOnce(); }, probeIntervalMs);
+    timer.unref?.();
+    lifetime.addEventListener('abort', () => {
+      clearInterval(timer);
+      void stopAllAnnouncers();
+    }, { once: true });
+    void probeOnce();
+  }
+
+  return Object.freeze({
+    probe: probeOnce,
+    snapshot: () => ({ ...lastObservation }),
+    async close() {
+      clearInterval(timer);
+      stop.abort();
+      await stopAllAnnouncers();
+    },
+  });
+}
+
+async function attachWithRetry(page, { signal, attachWaitMs = 30_000, attachRetryMs = 500, onState }) {
+  const deadline = Date.now() + Math.max(0, attachWaitMs);
+  for (;;) {
+    signal?.throwIfAborted();
+    try {
+      return await page.attach({ signal });
+    } catch (error) {
+      const retryable = error?.code === 'OWNER_UNREACHABLE' || error?.code === 'SUPERVISOR_PAGE_UNAVAILABLE';
+      if (!retryable || Date.now() >= deadline) throw error;
+      onState({ page: page.slug, pageId: page.id, state: 'waiting_for_owner', code: error.code });
+      const waitMs = Math.min(attachRetryMs, Math.max(10, deadline - Date.now()));
+      await new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(signal.reason); return; }
+        const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, waitMs);
+        const onAbort = () => { clearTimeout(t); reject(signal.reason); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+  }
+}
+
 /** Attach all selected pages to one known conversation; no additional signer. */
 export async function runCodexQueueBridge({ pages, stateDirectory, signal, onState = value => console.log(JSON.stringify(value)),
-  onOpened = () => {}, onClosed = () => {}, ...options }) {
+  onOpened = () => {}, onClosed = () => {}, broadcastSource = null, announceLiveness = false, livenessOptions = {},
+  attachWaitMs = 30_000, attachRetryMs = 500, _lockEnv, ...options }) {
   const selected = optionsFor(options);
   if (!Array.isArray(pages) || !pages.length || pages.length > 32
     || pages.some(page => !text(page.id, 256) || !SLUG.test(page.slug) || typeof page.attach !== 'function' || typeof page.roster !== 'function')
     || new Set(pages.map(page => page.id)).size !== pages.length
     || !isAbsolute(stateDirectory ?? '')) throw fail('CODEX_QUEUE_PAGES_INVALID', 'Select explicit unique pages and an absolute private state directory.');
   await checkCodexQueueSupport({ ...selected, signal });
+  // Preflight actual conversation reachability & exact thread cwd match BEFORE reporting ready,
+  // so misconfigured thread cwd or daemon mismatches fail immediately instead of waiting for the first message.
+  try {
+    const rpc = await selected.connect({ ...selected, signal });
+    let obs;
+    try { obs = await readThreadObservation(rpc, selected); }
+    finally { await rpc.close().catch(() => {}); }
+    onState({
+      scope: 'conversation',
+      state: 'conversation_route_ready',
+      threadId: selected.threadId,
+      threadCwd: selected.threadCwd,
+      workspace: selected.cwd,
+      threadStatus: obs.threadStatus,
+      latestTurnStatus: obs.latestTurnStatus,
+    });
+  } catch (error) {
+    onState({
+      scope: 'conversation',
+      state: 'conversation_route_failed',
+      code: error?.code ?? 'CODEX_QUEUE_THREAD_UNAVAILABLE',
+      message: String(error?.message ?? error).slice(0, 300),
+      threadId: selected.threadId,
+      threadCwd: selected.threadCwd,
+      workspace: selected.cwd,
+    });
+    throw error;
+  }
   const stop = new AbortController(), lifetime = AbortSignal.any([stop.signal, signal].filter(Boolean));
   const opened = new Set();
   let previousAdmission = Promise.resolve();
@@ -410,7 +852,7 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
   try {
     for (const page of pages) {
       lifetime.throwIfAborted();
-      const attached = await page.attach({ signal: lifetime });
+      const attached = await attachWithRetry(page, { signal: lifetime, attachWaitMs, attachRetryMs, onState });
       attachments.push({ page, attached });
       opened.add(page.id);
       if (!DEVICE.test(attached.session.identity.publicKey ?? '')) {
@@ -445,6 +887,17 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
     throw error;
   }
 
+  let liveness = null;
+  if (announceLiveness) {
+    liveness = createCodexConversationLiveness({
+      ...selected,
+      ...livenessOptions,
+      sessions: supported.map(({ page, attached }) => ({ page, session: attached.session })),
+      signal: lifetime,
+      onState,
+    });
+  }
+
   const jobs = supported.map(async ({ page, attached }) => {
     let checkpoint;
     try {
@@ -452,6 +905,8 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
         scope: { kind: 'codex-queue-v2', pageId: page.id, recipient: attached.session.identity.publicKey,
           threadId: selected.threadId, cwd: selected.cwd, remote: selected.remote,
           remoteAuthTokenEnv: selected.remoteAuthTokenEnv ?? null, requestTopics: selected.requestTopics },
+        onRecoveredStaleLock: info => onState({ page: page.slug, pageId: page.id, state: 'recovered_stale_lock', reason: info.reason, previousPid: info.previousOwner?.pid ?? null }),
+        ...(_lockEnv ? { _lockEnv } : {}),
       });
       await consumeCodexRequests({ ...selected, page, session: attached.session, checkpoint, roster: page.roster, signal: lifetime, onState, admissionGate });
     } catch (error) { stop.abort(error); throw error; }
@@ -460,30 +915,102 @@ export async function runCodexQueueBridge({ pages, stateDirectory, signal, onSta
       finally { if (opened.has(page.id)) { await attached.detach(); opened.delete(page.id); } }
     }
   });
+
+  if (broadcastSource) {
+    jobs.push((async () => {
+      let checkpoint;
+      try {
+        checkpoint = await openConsumerCheckpoint(join(stateDirectory, 'broadcasts.json'), {
+          scope: { kind: 'codex-broadcasts-v1', threadId: selected.threadId, cwd: selected.cwd,
+            remote: selected.remote, remoteAuthTokenEnv: selected.remoteAuthTokenEnv ?? null },
+          onRecoveredStaleLock: info => onState({ scope: 'broadcast', state: 'recovered_stale_lock', reason: info.reason, previousPid: info.previousOwner?.pid ?? null }),
+          ...(_lockEnv ? { _lockEnv } : {}),
+        });
+        await consumeCodexBroadcasts({ ...selected, broadcastSource, checkpoint, signal: lifetime, onState, admissionGate });
+      } catch (error) { stop.abort(error); throw error; }
+      finally { await checkpoint?.close(); }
+    })());
+  }
+
   const results = await Promise.allSettled(jobs);
+  await liveness?.close();
   if (!opened.size) onClosed();
   const failed = results.find(result => result.status === 'rejected');
   if (failed) throw failed.reason;
 }
 
-const usage = 'node consumers/codex-queue.mjs --workspace /absolute/workspace --pages notes,other --thread UUID --topics chat[,agents] [--remote unix://] [--state-dir /private/path] [--remote-auth-token-env NAME] [--on-unsupported skip|fail]';
+function createWorkspaceBroadcastSource(workspace, client, { detectWorkspaceVersions, readBroadcastState, pollIntervalMs = 5 * 60_000 }) {
+  const serviceOrigin = new URL(workspace.config.service).origin;
+  const read = async ({ signal } = {}) => {
+    const [versions, cached] = await Promise.all([
+      detectWorkspaceVersions(workspace.root, workspace.config.kit),
+      readBroadcastState(workspace),
+    ]);
+    let keys = Array.isArray(cached.trustedKeys) ? cached.trustedKeys : [];
+    const byId = new Map();
+    for (const item of cached.items ?? []) {
+      if (item?.id) byId.set(item.id, item);
+    }
+    try {
+      const fetchedKeys = await client.broadcastKeys?.({ signal });
+      if (fetchedKeys?.keys?.length) keys = fetchedKeys.keys;
+    } catch { /* retain cached keys offline */ }
+    try {
+      const live = await client.broadcasts?.({ audience: 'agents', since: 0, signal });
+      for (const signed of live?.broadcasts ?? []) {
+        if (signed?.payload?.id) byId.set(signed.payload.id, { ...signed.payload, signed });
+      }
+    } catch { /* fall back to locally cached broadcasts from tendril agent run */ }
+    return {
+      issuer: serviceOrigin,
+      keys,
+      versions,
+      acknowledged: cached.acknowledged ?? [],
+      broadcasts: [...byId.values()],
+    };
+  };
+  const subscribe = listener => {
+    let watcher = null;
+    const broadcastsDir = dirname(workspace.paths.broadcasts);
+    try {
+      if (existsSync(broadcastsDir)) {
+        watcher = watchFiles(broadcastsDir, (_type, name) => {
+          if (!name || String(name).includes('broadcasts.json')) listener();
+        });
+        watcher.on('error', () => {});
+      }
+    } catch { /* polling still catches updates */ }
+    const timer = setInterval(listener, pollIntervalMs);
+    timer.unref?.();
+    return () => { clearInterval(timer); watcher?.close(); };
+  };
+  return { read, subscribe };
+}
+
+const usage = 'node consumers/codex-queue.mjs --workspace /absolute/workspace [--thread-cwd /absolute/parent] --pages notes,other --thread UUID --topics chat[,agents] [--remote unix://] [--state-dir /private/path] [--remote-auth-token-env NAME] [--on-unsupported skip|fail] [--no-broadcasts] [--no-liveness]';
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.includes('--help')) console.log(usage);
   else {
     const cli = createCliLifetime();
     try {
-      const args = process.argv.slice(2), values = new Map();
-      for (let index = 0; index < args.length; index += 2) {
-        if (!['--workspace', '--pages', '--thread', '--topics', '--remote', '--state-dir', '--remote-auth-token-env', '--on-unsupported'].includes(args[index])
+      const args = process.argv.slice(2), values = new Map(), boolFlags = new Set();
+      for (let index = 0; index < args.length; ) {
+        if (args[index] === '--no-broadcasts' || args[index] === '--no-liveness' || args[index] === '--announce-liveness') {
+          boolFlags.add(args[index]);
+          index += 1;
+          continue;
+        }
+        if (!['--workspace', '--thread-cwd', '--pages', '--thread', '--topics', '--remote', '--state-dir', '--remote-auth-token-env', '--on-unsupported'].includes(args[index])
           || !args[index + 1] || values.has(args[index])) throw Error(usage);
         values.set(args[index], args[index + 1]);
+        index += 2;
       }
       for (const required of ['--workspace', '--pages', '--thread', '--topics']) if (!values.has(required)) throw Error(usage);
       const cwd = values.get('--workspace'), threadId = values.get('--thread');
-      const selectedOptions = optionsFor({ cwd, threadId, requestTopics: values.get('--topics').split(','),
+      const selectedOptions = optionsFor({ cwd, threadCwd: values.get('--thread-cwd') ?? cwd, requestTopics: values.get('--topics').split(','),
         remote: values.get('--remote') ?? 'unix://', remoteAuthTokenEnv: values.get('--remote-auth-token-env'),
         unsupportedPages: values.get('--on-unsupported') ?? 'skip' });
-      const { openWorkspace, attachPage } = await import('@tendriller/tools/workspace');
+      const { openWorkspace, attachPage, detectWorkspaceVersions, readBroadcastState } = await import('@tendriller/tools/workspace');
       const workspace = await openWorkspace({ root: selectedOptions.cwd }), client = await workspace.client();
       const pages = await Promise.all(values.get('--pages').split(',').map(async slug => {
         if (!SLUG.test(slug)) throw Error(usage);
@@ -495,7 +1022,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         };
         return { id: page.id, slug: page.slug, attach: options => attachPage(workspace, page.id, options), roster };
       }));
+      const broadcastSource = boolFlags.has('--no-broadcasts') ? null : createWorkspaceBroadcastSource(workspace, client, { detectWorkspaceVersions, readBroadcastState });
       await runCodexQueueBridge({ ...selectedOptions, pages,
+        broadcastSource,
+        announceLiveness: !boolFlags.has('--no-liveness'),
+        livenessOptions: { handle: workspace.config.agent?.handle ?? '', bio: workspace.config.agent?.bio ?? '' },
         stateDirectory: values.get('--state-dir') ?? join(selectedOptions.cwd, '.tendriller', 'consumers', 'codex-queue', threadId),
         signal: cli.signal, onOpened: cli.opened, onClosed: cli.closed });
     } catch (error) { cli.fail(error); }

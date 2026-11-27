@@ -52,7 +52,7 @@ export async function mountConnectedAgentChat({
       const live = liveMap[agent.public_key] ?? liveMap[agent.id];
       const state = agent.kind === 'hosted-mcp'
         ? 'online'
-        : (live?.state ?? 'offline');
+        : (live?.state ?? 'unknown');
       return {
         id: agent.id,
         handle: agent.handle,

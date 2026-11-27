@@ -284,9 +284,15 @@ const validCard = value => (value.handle === undefined || value.handle === '' ||
   && (value.bio === undefined || (typeof value.bio === 'string' && value.bio.length <= 160))
   && (value.capabilities === undefined || (Array.isArray(value.capabilities) && value.capabilities.length <= 16
     && value.capabilities.every(item => presenceText(item, 64))))
-  && (value.isPrimary === undefined || typeof value.isPrimary === 'boolean');
+  && (value.isPrimary === undefined || typeof value.isPrimary === 'boolean')
+  && (value.route === undefined || presenceText(value.route, 64))
+  && (value.idleWakeReachable === undefined || typeof value.idleWakeReachable === 'boolean')
+  && (value.detail === undefined || (typeof value.detail === 'string' && value.detail.length <= 128));
 const cardOf = value => ({ handle: value.handle ?? '', bio: value.bio ?? '',
-  capabilities: [...(value.capabilities ?? [])], isPrimary: value.isPrimary === true });
+  capabilities: [...(value.capabilities ?? [])], isPrimary: value.isPrimary === true,
+  ...(value.route !== undefined ? { route: value.route } : {}),
+  ...(value.idleWakeReachable !== undefined ? { idleWakeReachable: value.idleWakeReachable } : {}),
+  ...(value.detail !== undefined && value.detail !== '' ? { detail: value.detail } : {}) });
 const validPresence = value => value && typeof value === 'object' && !Array.isArray(value)
   && presenceText(value.consumerId) && presenceText(value.runId) && presenceText(value.role)
   && presenceStates.has(value.state) && Array.isArray(value.topics)
@@ -313,6 +319,9 @@ export function announceAgentPresence(session, {
   bio = '',
   capabilities = ['chat'],
   isPrimary = false,
+  route = undefined,
+  idleWakeReachable = undefined,
+  detail = undefined,
   intervalMs = 15_000,
   ttlMs = 30_000,
   topic = PRESENCE_TOPIC,
@@ -320,7 +329,15 @@ export function announceAgentPresence(session, {
   signal,
 } = {}) {
   if (!session?.signals) throw Error('AGENT_PRESENCE_SESSION_REQUIRED');
-  let card = { handle, bio, capabilities: Array.isArray(capabilities) ? [...capabilities] : capabilities, isPrimary };
+  let card = {
+    handle,
+    bio,
+    capabilities: Array.isArray(capabilities) ? [...capabilities] : capabilities,
+    isPrimary,
+    ...(route !== undefined ? { route } : {}),
+    ...(idleWakeReachable !== undefined ? { idleWakeReachable } : {}),
+    ...(detail !== undefined ? { detail } : {}),
+  };
   if (!presenceText(consumerId) || !presenceText(runId) || !presenceText(role)
     || !Array.isArray(topics) || !topics.length || topics.length > 32
     || !topics.every(item => presenceText(item)) || !presenceStates.has(state)
@@ -399,7 +416,15 @@ export function announceAgentPresence(session, {
     updateCard(patch) {
       const next = { ...card, ...patch };
       if (!validCard(next)) throw Error('AGENT_PRESENCE_OPTIONS_INVALID');
-      card = { handle: next.handle, bio: next.bio, capabilities: [...next.capabilities], isPrimary: next.isPrimary };
+      card = {
+        handle: next.handle,
+        bio: next.bio,
+        capabilities: [...next.capabilities],
+        isPrimary: next.isPrimary,
+        ...(next.route !== undefined ? { route: next.route } : {}),
+        ...(next.idleWakeReachable !== undefined ? { idleWakeReachable: next.idleWakeReachable } : {}),
+        ...(next.detail !== undefined ? { detail: next.detail } : {}),
+      };
       void publish();
     },
     ping: publish,
@@ -529,7 +554,7 @@ export function watchAgentsPresence(session, {
   const snapshot = (now = Date.now()) => {
     const connected = !lifetime.aborted && (session.status?.connectedPeers ?? 0) > 0;
     const out = {};
-    for (const key of enrolledKeys) out[key] = { enrolled: true, state: 'offline' };
+    for (const key of enrolledKeys) out[key] = { enrolled: true, state: 'unknown' };
     const byAuthor = new Map();
     for (const worker of workers.values()) {
       const list = byAuthor.get(worker.author) ?? [];
@@ -549,6 +574,9 @@ export function watchAgentsPresence(session, {
         bio: card.bio || undefined,
         capabilities: [...card.capabilities],
         isPrimary: card.isPrimary,
+        ...(card.route !== undefined ? { route: card.route } : {}),
+        ...(card.idleWakeReachable !== undefined ? { idleWakeReachable: card.idleWakeReachable } : {}),
+        ...(card.detail !== undefined ? { detail: card.detail } : {}),
         consumers: list.map(item => ({ consumerId: item.value.consumerId, role: item.value.role,
           topics: [...item.value.topics], state: item.value.state })),
         lastSeenAt: Math.max(...list.map(item => item.receivedAtMs)),

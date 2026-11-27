@@ -6,14 +6,21 @@
 //   .tendriller/pages/<id>/  page.json, device.sqlite, descriptor and setup records
 //   .tendriller/checkpoint-retired.json  present once `tendril checkpoint export` moved this workspace away
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { assertValid } from '@tendriller/core/contract';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createWorkspacePage } from './page-creation.mjs';
-import { randomBytes } from 'node:crypto';
 import { agentCredential, createAgentClient, describeReadiness, describeService, evaluateBroadcastMatch, fetchBroadcastKeys, fetchBroadcasts, fetchChangelog, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin, validateClientVersions, verifyBroadcastSignature } from '@tendriller/core';
 import { compareSemver } from '@tendriller/core/broadcasts';
+
+const execFileAsync = promisify(execFile);
+const sha256Hex = bytes => createHash('sha256').update(bytes).digest('hex');
+const sha512Sri = bytes => 'sha512-' + createHash('sha512').update(bytes).digest('base64');
 
 export const WORKSPACE_FILE = 'tendriller.json';
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,47}$/u;
@@ -220,6 +227,125 @@ export async function adoptWorkspace(root, { service, credential: file, kit, sig
   // The token is checked against this service before the workspace retains it.
   await createAgentClient({ service: origin, token: value.token }).self({ signal });
   return enroll(root, { service: origin, handle: value.handle, bio: value.bio ?? '', kit, signal }, async () => value);
+}
+
+/**
+ * Re-enroll an existing workspace agent on the host while preserving its Ed25519 signing key
+ * (`identity.sqlite`), X25519 wrap key (`wrap-key.json`), authored `pages/` source, and
+ * retained `.tendriller/pages/<id>/` device stores. Archives the replaced credential and old
+ * page registry instead of deleting data or silently recreating empty pages.
+ */
+export async function reenrollWorkspace(root, { service, owner, code, credential: credFile, handle, bio, signal, fetch: fetcher } = {}) {
+  const dir = resolve(root), paths = workspacePaths(dir);
+  const existingConfig = await readJson(paths.config, true);
+  if (!existingConfig || existingConfig.schemaVersion !== 1 || !existingConfig.agent?.id) {
+    throw failure('workspace_required', `No valid ${WORKSPACE_FILE} found in ${dir}. Use tendril workspace init for a new folder.`, 64);
+  }
+  const origin = requireServiceOrigin(service ?? existingConfig.service);
+  if (existingConfig.service && existingConfig.service !== origin) {
+    throw failure('service_origin_mismatch', `Workspace belongs to ${existingConfig.service}, not ${origin}. Use a separate folder for another origin.`);
+  }
+  if (!existsSync(paths.identity)) {
+    throw failure('agent_signer_missing', `${paths.identity} is missing; cannot re-enroll without the existing agent signing key.`);
+  }
+  if (!existsSync(paths.wrapKey)) {
+    throw failure('agent_wrap_key_missing', `${paths.wrapKey} is missing; cannot re-enroll without the existing agent wrap key.`);
+  }
+  const signer = await openSharedSigner(paths.identity, { create: false });
+  const wrap = await openWrapKey(paths.wrapKey, { create: false });
+  const cleanHandle = agentHandle(handle ?? existingConfig.agent.handle);
+  const cleanBio = agentBio(bio !== undefined ? bio : (existingConfig.agent.bio ?? ''));
+  const modes = [Boolean(owner), Boolean(code), Boolean(credFile)].filter(Boolean).length;
+  if (modes !== 1) {
+    throw failure('reenroll_mode_required', 'Supply exactly one of --owner EMAIL, --code JOIN_CODE, or --credential FILE.', 64);
+  }
+
+  let result;
+  if (credFile) {
+    const raw = await readJson(resolve(dir, credFile));
+    const value = agentCredential(raw?.structuredContent ?? raw);
+    if (!/^ag_[a-z2-7]{26}$/u.test(value?.id ?? '') || !AGENT_TOKEN.test(value?.token ?? '') || typeof value?.handle !== 'string' || !HANDLE_RE.test(value.handle)) {
+      throw failure('invalid_agent_credential', 'The file does not hold a register_agent result {id, handle, token}.', 64);
+    }
+    await createAgentClient({ service: origin, token: value.token }, fetcher ? { fetch: fetcher } : undefined).self({ signal });
+    result = value;
+  } else if (code) {
+    requireService(await describeService(origin, { ...(fetcher ? { fetch: fetcher } : {}), signal }));
+    result = await joinAgent(origin, {
+      code: String(code).trim(),
+      handle: cleanHandle,
+      ...(cleanBio ? { bio: cleanBio } : {}),
+      publicKey: publicKeyBase64url(signer.publicKey),
+      wrapKey: wrap.publicKey,
+    }, { ...(fetcher ? { fetch: fetcher } : {}), signal });
+  } else {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner ?? '') || owner.length > 254) {
+      throw failure('invalid_owner', 'workspace reenroll --owner requires VERIFIED_EMAIL', 64);
+    }
+    requireCreationReady(await describeReadiness(origin, { ...(fetcher ? { fetch: fetcher } : {}), signal }), { service: origin });
+    requireService(await describeService(origin, { ...(fetcher ? { fetch: fetcher } : {}), signal }));
+    result = await registerAgent(origin, {
+      owner,
+      handle: cleanHandle,
+      ...(cleanBio ? { bio: cleanBio } : {}),
+      publicKey: publicKeyBase64url(signer.publicKey),
+      wrapKey: wrap.publicKey,
+    }, { ...(fetcher ? { fetch: fetcher } : {}), signal });
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const previousCred = await readJson(paths.credential, true);
+  let archivedCredential = null;
+  if (previousCred) {
+    archivedCredential = join(paths.agent, `credential.replaced-${stamp}.json`);
+    await savePrivateJson(archivedCredential, { replacedAt: new Date().toISOString(), previous: previousCred });
+  }
+  const previousPages = existingConfig.pages && typeof existingConfig.pages === 'object' ? existingConfig.pages : {};
+  let archivedPagesFile = null;
+  if (Object.keys(previousPages).length > 0) {
+    archivedPagesFile = join(paths.secret, `migration-archive-${stamp}.json`);
+    await savePrivateJson(archivedPagesFile, {
+      archivedAt: new Date().toISOString(),
+      previousAgent: existingConfig.agent,
+      publicKey: signer.publicKey,
+      wrapKey: wrap.publicKey,
+      pages: previousPages,
+      note: 'Retained prior page references and local .tendriller/pages/<id>/ device stores. Export and import your data before creating replacement pages.',
+    });
+  }
+
+  const nextAgent = { id: result.id, handle: result.handle ?? cleanHandle, bio: result.bio ?? cleanBio };
+  await replaceJson(paths.credential, {
+    schemaVersion: 1,
+    service: origin,
+    agent: nextAgent,
+    token: result.token,
+    publicKey: signer.publicKey,
+    wrapKey: wrap.publicKey,
+    accountState: result.account_state ?? null,
+    reenrolledAt: new Date().toISOString(),
+  }, 0o600);
+
+  const nextConfig = {
+    ...existingConfig,
+    service: origin,
+    agent: nextAgent,
+    pages: {},
+  };
+  await replaceJson(paths.config, nextConfig);
+
+  return {
+    reenrolled: true,
+    workspace: dir,
+    service: origin,
+    agent: nextAgent,
+    publicKey: signer.publicKey,
+    wrapKey: wrap.publicKey,
+    archivedCredential,
+    archivedPagesFile,
+    archivedPageSlugs: Object.keys(previousPages),
+    next: 'Existing signing/wrap keys and local .tendriller/pages/ stores were preserved. Export local data, then create replacement v2 pages (npm run page:new / init / deploy) and import your data before acknowledging any migration broadcast.',
+  };
 }
 
 /** Update this workspace agent's @handle and/or bio on the host and in local workspace files. */
@@ -489,6 +615,7 @@ export async function syncWorkspaceBroadcasts(workspace, { signal, all = false }
     const match = evaluateBroadcastMatch(signed.payload, { audience: 'agents', versions });
     return {
       ...signed.payload,
+      signed: { payload: signed.payload, signature: signed.signature },
       signature: signed.signature,
       verified: true,
       matched: match.matched,
@@ -526,21 +653,306 @@ export async function acknowledgeWorkspaceBroadcast(workspace, id) {
 }
 
 const FALLOW_WORKSPACE_MS = 14 * 86_400_000;
+const ROLE_TO_PACKAGE = Object.freeze({
+  sdk: '@tendriller/core',
+  tools: '@tendriller/tools',
+  authority: '@chronolog/authority',
+  session: '@chronolog/peer-session',
+  'session-sql-browser': '@chronolog/peer-session',
+});
+
+/**
+ * Verify that a workspace's composition.json, packages/*.tgz archives, package-lock.json
+ * SRI integrity values, and installed node_modules match the exact selected immutable release.
+ * Detects silent stale-lockfile installs when distinct releases share a semver filename.
+ */
+export async function verifyWorkspaceComposition(root, { requireInstalled = true } = {}) {
+  const dir = resolve(root);
+  const issues = [];
+  const composition = await readJson(join(dir, 'composition.json'), true);
+  if (!composition) {
+    return {
+      present: false,
+      ok: true,
+      compositionId: null,
+      sourceCommit: null,
+      runtimeId: null,
+      version: null,
+      issues: [],
+    };
+  }
+  const { id, ...body } = composition;
+  if (typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id) || sha256Hex(Buffer.from(JSON.stringify(body))) !== id) {
+    issues.push({ kind: 'composition_hash_mismatch', message: 'composition.json self-hash does not match its contents.' });
+  }
+  const profile = await readJson(join(dir, 'first-app-profile.json'), true);
+  const selectedRoles = Array.isArray(profile?.packages) ? profile.packages
+    : ['sdk', 'tools', 'authority', 'session'];
+  const components = Array.isArray(composition.components) ? composition.components : [];
+  const expectedArchives = new Map();
+  for (const role of selectedRoles) {
+    const comp = components.find(item => item.role === role);
+    if (!comp) {
+      issues.push({ kind: 'composition_component_missing', role, message: `composition.json is missing component role "${role}".` });
+      continue;
+    }
+    const archivePath = join(dir, 'packages', comp.file);
+    let bytes;
+    try { bytes = await readFile(archivePath); }
+    catch {
+      issues.push({ kind: 'archive_missing', role, file: comp.file, message: `Missing release archive packages/${comp.file}.` });
+      continue;
+    }
+    const actualSha256 = sha256Hex(bytes);
+    if (actualSha256 !== comp.sha256) {
+      issues.push({
+        kind: 'archive_hash_mismatch',
+        role,
+        file: comp.file,
+        expectedSha256: comp.sha256,
+        actualSha256,
+        message: `packages/${comp.file} SHA-256 does not match composition.json.`,
+      });
+    }
+    const pkgName = ROLE_TO_PACKAGE[role];
+    if (pkgName) {
+      expectedArchives.set(pkgName, { role, file: comp.file, sha256: comp.sha256, sri: sha512Sri(bytes) });
+    }
+  }
+
+  const lockfile = await readJson(join(dir, 'package-lock.json'), true);
+  if (lockfile && typeof lockfile === 'object') {
+    const lockPackages = lockfile.packages && typeof lockfile.packages === 'object' ? lockfile.packages : {};
+    for (const [pkgName, info] of expectedArchives) {
+      const entry = lockPackages[`node_modules/${pkgName}`];
+      const expectedResolved = `packages/${info.file}`;
+      if (!entry) {
+        if (requireInstalled) {
+          issues.push({ kind: 'lockfile_entry_missing', package: pkgName, file: info.file, message: `package-lock.json is missing node_modules/${pkgName}.` });
+        }
+        continue;
+      }
+      const resolvedNorm = String(entry.resolved ?? '').replace(/^file:/u, '').replace(/^\.\//u, '');
+      if (resolvedNorm && resolvedNorm !== expectedResolved && !resolvedNorm.endsWith(`/${expectedResolved}`)) {
+        issues.push({
+          kind: 'lockfile_resolved_mismatch',
+          package: pkgName,
+          expected: expectedResolved,
+          actual: entry.resolved,
+          message: `package-lock.json resolves ${pkgName} to ${entry.resolved} instead of ${expectedResolved}.`,
+        });
+      }
+      if (entry.integrity && entry.integrity !== info.sri) {
+        issues.push({
+          kind: 'lockfile_archive_mismatch',
+          package: pkgName,
+          file: info.file,
+          expectedIntegrity: info.sri,
+          lockIntegrity: entry.integrity,
+          message: `package-lock.json integrity for ${pkgName} (${info.file}) still pins stale archive bytes. Regenerate the lockfile with tendril workspace upgrade.`,
+        });
+      }
+    }
+  } else if (requireInstalled) {
+    issues.push({ kind: 'lockfile_missing', message: 'package-lock.json is missing; run tendril workspace upgrade to generate a verified lockfile.' });
+  }
+
+  if (requireInstalled) {
+    const expectedSource = composition.core?.source ?? null;
+    const expectedRuntime = composition.runtime ?? null;
+    const corePkg = await readJson(join(dir, 'node_modules/@tendriller/core/package.json'), true);
+    if (!corePkg) {
+      issues.push({ kind: 'installed_package_missing', package: '@tendriller/core', message: 'node_modules/@tendriller/core is not installed.' });
+    } else {
+      let installedSource = corePkg.tendriller?.sourceCommit ?? null;
+      if (!installedSource) {
+        const onboardingSrc = await readFile(join(dir, 'node_modules/@tendriller/core/onboarding.mjs'), 'utf8').catch(() => '');
+        const match = /const RELEASE_SOURCE = '([a-f0-9]{40})'/u.exec(onboardingSrc);
+        if (match) installedSource = match[1];
+      }
+      if (expectedSource && installedSource && installedSource !== expectedSource) {
+        issues.push({
+          kind: 'installed_package_mismatch',
+          package: '@tendriller/core',
+          expectedSourceCommit: expectedSource,
+          installedSourceCommit: installedSource,
+          message: `Installed @tendriller/core (${installedSource.slice(0, 8)}) does not match composition source ${expectedSource.slice(0, 8)}.`,
+        });
+      }
+    }
+    const toolsPkg = await readJson(join(dir, 'node_modules/@tendriller/tools/package.json'), true);
+    if (!toolsPkg) {
+      issues.push({ kind: 'installed_package_missing', package: '@tendriller/tools', message: 'node_modules/@tendriller/tools is not installed.' });
+    } else {
+      if (expectedRuntime && toolsPkg.tendriller?.runtime && toolsPkg.tendriller.runtime !== expectedRuntime) {
+        issues.push({
+          kind: 'installed_package_mismatch',
+          package: '@tendriller/tools',
+          expectedRuntime,
+          installedRuntime: toolsPkg.tendriller.runtime,
+          message: `Installed @tendriller/tools runtime (${toolsPkg.tendriller.runtime.slice(0, 8)}) does not match composition runtime ${expectedRuntime.slice(0, 8)}.`,
+        });
+      }
+      if (expectedSource && toolsPkg.tendriller?.sourceCommit && toolsPkg.tendriller.sourceCommit !== expectedSource) {
+        issues.push({
+          kind: 'installed_package_mismatch',
+          package: '@tendriller/tools',
+          expectedSourceCommit: expectedSource,
+          installedSourceCommit: toolsPkg.tendriller.sourceCommit,
+          message: `Installed @tendriller/tools (${toolsPkg.tendriller.sourceCommit.slice(0, 8)}) does not match composition source ${expectedSource.slice(0, 8)}.`,
+        });
+      }
+    }
+  }
+
+  return {
+    present: true,
+    ok: issues.length === 0,
+    compositionId: typeof id === 'string' ? id : null,
+    sourceCommit: composition.core?.source ?? null,
+    runtimeId: composition.runtime ?? null,
+    version: composition.version ?? null,
+    issues,
+  };
+}
+
+/**
+ * Upgrade a workspace to a verified release composition without losing `.tendriller/` or `pages/`.
+ * Cleanly regenerates `package-lock.json` in an isolated staging directory so npm cannot keep
+ * stale integrity hashes for same-version archive filenames, runs `npm ci --ignore-scripts`,
+ * and fails closed if any installed package or lockfile entry disagrees with `composition.json`.
+ */
+export async function upgradeWorkspace(root, { kit, checkOnly = false, npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm', exec = execFileAsync } = {}) {
+  const dir = resolve(root);
+  if (checkOnly) {
+    const check = await verifyWorkspaceComposition(dir, { requireInstalled: true });
+    if (!check.present) {
+      throw failure('composition_missing', `No composition.json found in ${dir}.`, 1);
+    }
+    if (!check.ok) {
+      throw Object.assign(
+        failure('workspace_composition_mismatch', check.issues.map(i => i.message).join(' '), 1),
+        { verification: check },
+      );
+    }
+    return check;
+  }
+
+  let stagedKitDir = null;
+  let cleanupKit = false;
+  try {
+    if (kit) {
+      const kitPath = resolve(dir, kit);
+      const info = await stat(kitPath).catch(() => null);
+      if (!info) throw failure('upgrade_kit_missing', `Upgrade kit not found: ${kitPath}`, 64);
+      if (info.isDirectory()) {
+        stagedKitDir = kitPath;
+      } else {
+        stagedKitDir = await mkdtemp(join(tmpdir(), 'tendril-upgrade-kit-'));
+        cleanupKit = true;
+        await exec('tar', ['-xzf', kitPath, '-C', stagedKitDir], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
+      }
+      const kitCheck = await verifyWorkspaceComposition(stagedKitDir, { requireInstalled: false });
+      if (!kitCheck.present || !kitCheck.ok) {
+        throw Object.assign(
+          failure('upgrade_kit_invalid', kitCheck.issues.map(i => i.message).join(' ') || 'Kit is missing composition.json.', 1),
+          { verification: kitCheck },
+        );
+      }
+      for (const name of ['composition.json', 'first-app-profile.json', 'setup.mjs']) {
+        if (existsSync(join(stagedKitDir, name))) {
+          await cp(join(stagedKitDir, name), join(dir, name), { force: true });
+        }
+      }
+      for (const folder of ['packages', 'shared', 'consumers', 'templates']) {
+        if (existsSync(join(stagedKitDir, folder))) {
+          await rm(join(dir, folder), { recursive: true, force: true });
+          await cp(join(stagedKitDir, folder), join(dir, folder), { recursive: true, force: true });
+        }
+      }
+    }
+
+    const preCheck = await verifyWorkspaceComposition(dir, { requireInstalled: false });
+    if (!preCheck.present) {
+      throw failure('composition_missing', `No composition.json found in ${dir}. Pass --kit <archive-or-dir> or unpack the verified release kit first.`, 64);
+    }
+    const preArchiveIssues = preCheck.issues.filter(i => i.kind !== 'lockfile_archive_mismatch' && i.kind !== 'lockfile_resolved_mismatch' && i.kind !== 'lockfile_entry_missing' && i.kind !== 'lockfile_missing');
+    if (preArchiveIssues.length > 0) {
+      throw Object.assign(
+        failure('upgrade_kit_invalid', preArchiveIssues.map(i => i.message).join(' '), 1),
+        { verification: preCheck },
+      );
+    }
+
+    const composition = await readJson(join(dir, 'composition.json'));
+    const profile = await readJson(join(dir, 'first-app-profile.json'), true);
+    const selectedRoles = Array.isArray(profile?.packages) ? profile.packages : ['sdk', 'tools', 'authority', 'session'];
+    const pkgPath = join(dir, 'package.json');
+    const pkgJson = await readJson(pkgPath, true) ?? { name: 'tendriller-pages', private: true, type: 'module', dependencies: {} };
+    pkgJson.dependencies = { ...(pkgJson.dependencies ?? {}) };
+    for (const role of selectedRoles) {
+      const comp = (composition.components ?? []).find(item => item.role === role);
+      const pkgName = ROLE_TO_PACKAGE[role];
+      if (comp && pkgName) pkgJson.dependencies[pkgName] = `file:packages/${comp.file}`;
+    }
+    await replaceJson(pkgPath, pkgJson);
+
+    const lockStage = await mkdtemp(join(tmpdir(), 'tendril-upgrade-lock-'));
+    try {
+      await cp(pkgPath, join(lockStage, 'package.json'));
+      await cp(join(dir, 'packages'), join(lockStage, 'packages'), { recursive: true });
+      await exec(npmBin, ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], {
+        cwd: lockStage, timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      const generatedLock = await readFile(join(lockStage, 'package-lock.json'), 'utf8');
+      const tmpLock = join(dir, `package-lock.${randomBytes(6).toString('hex')}.tmp`);
+      await writeFile(tmpLock, generatedLock, { flag: 'wx', mode: 0o644, flush: true });
+      await rename(tmpLock, join(dir, 'package-lock.json'));
+    } finally {
+      await rm(lockStage, { recursive: true, force: true });
+    }
+
+    await exec(npmBin, ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+      cwd: dir, timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
+    });
+
+    const postCheck = await verifyWorkspaceComposition(dir, { requireInstalled: true });
+    if (!postCheck.ok) {
+      throw Object.assign(
+        failure('workspace_upgrade_verification_failed', postCheck.issues.map(i => i.message).join(' '), 1),
+        { verification: postCheck },
+      );
+    }
+    return {
+      upgraded: true,
+      workspace: dir,
+      compositionId: postCheck.compositionId,
+      sourceCommit: postCheck.sourceCommit,
+      runtimeId: postCheck.runtimeId,
+      version: postCheck.version,
+      verified: true,
+    };
+  } finally {
+    if (cleanupKit && stagedKitDir) await rm(stagedKitDir, { recursive: true, force: true });
+  }
+}
 
 /** Bounded, non-secret status for terminals and the status command. */
 export async function describeWorkspace(workspace, { signal, remote = true } = {}) {
-  const [pages, versions, priorBroadcastState] = await Promise.all([
+  const [pages, versions, priorBroadcastState, compositionCheck] = await Promise.all([
     workspace.pages(),
     detectWorkspaceVersions(workspace.root, workspace.config.kit),
     readBroadcastState(workspace),
+    verifyWorkspaceComposition(workspace.root, { requireInstalled: true }),
   ]);
   let agent = null, granted = null, broadcasts = null, catchup = null, error;
   if (remote) {
     try {
       const client = await workspace.client();
-      const [selfRes, serviceInfo] = await Promise.all([
+      const [selfRes, serviceInfo, readinessInfo] = await Promise.all([
         client.self({ signal }),
         describeService(workspace.config.service, { signal }).catch(() => null),
+        describeReadiness(workspace.config.service, { signal }).catch(() => null),
       ]);
       agent = selfRes;
       granted = [];
@@ -554,10 +966,19 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
       })).catch(() => null);
 
       const installedCore = versions.core ?? versions.packages?.['@tendriller/core'] ?? null;
-      const hostCore = serviceInfo?.core_release ?? null;
+      const hostCore = serviceInfo?.core_release ?? readinessInfo?.build?.coreRelease ?? null;
       const coreBehind = Boolean(installedCore && hostCore && compareSemver(installedCore, hostCore) === -1);
+      const installedCompositionId = compositionCheck.compositionId;
+      const hostCompositionId = readinessInfo?.build?.compositionId ?? null;
+      const installedSourceCommit = compositionCheck.sourceCommit;
+      const hostSourceCommit = readinessInfo?.build?.sourceCommit ?? null;
+      const compositionBehind = Boolean(
+        (installedCompositionId && hostCompositionId && installedCompositionId !== hostCompositionId) ||
+        (installedSourceCommit && hostSourceCommit && installedSourceCommit !== hostSourceCommit),
+      );
+      const archiveMismatch = compositionCheck.present && !compositionCheck.ok;
       const fallow = Boolean(priorBroadcastState.lastSyncedAt && (Date.now() - priorBroadcastState.lastSyncedAt) > FALLOW_WORKSPACE_MS);
-      if (coreBehind || fallow) {
+      if (coreBehind || compositionBehind || archiveMismatch || fallow) {
         const sinceDate = priorBroadcastState.lastSyncedAt ? new Date(priorBroadcastState.lastSyncedAt).toISOString().slice(0, 10) : undefined;
         const changelog = await fetchChangelog(workspace.config.service, {
           ...(sinceDate ? { since: sinceDate } : {}),
@@ -569,18 +990,32 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
           if (Object.hasOwn(counts, item.category)) counts[item.category]++;
         }
         const origin = new URL(workspace.config.service).origin;
-        const cmdHint = sinceDate
-          ? `tendril changelog --since ${sinceDate}`
-          : installedCore ? `tendril changelog --since-core ${installedCore}` : 'tendril changelog';
+        const cmdHint = (compositionBehind || archiveMismatch)
+          ? 'tendril workspace upgrade --kit <verified-first-app.tgz>'
+          : sinceDate
+            ? `tendril changelog --since ${sinceDate}`
+            : installedCore ? `tendril changelog --since-core ${installedCore}` : 'tendril changelog';
         catchup = {
           stale: true,
-          reasons: [...(coreBehind ? ['core_behind_host'] : []), ...(fallow ? ['fallow_workspace'] : [])],
+          reasons: [
+            ...(coreBehind ? ['core_behind_host'] : []),
+            ...(compositionBehind ? ['composition_behind_host'] : []),
+            ...(archiveMismatch ? ['lockfile_archive_mismatch'] : []),
+            ...(fallow ? ['fallow_workspace'] : []),
+          ],
           installedCore,
           hostCore,
+          ...(installedCompositionId ? { installedCompositionId } : {}),
+          ...(hostCompositionId ? { hostCompositionId } : {}),
+          ...(installedSourceCommit ? { installedSourceCommit } : {}),
+          ...(hostSourceCommit ? { hostSourceCommit } : {}),
+          ...(archiveMismatch ? { verificationIssues: compositionCheck.issues } : {}),
           lastSyncedAt: priorBroadcastState.lastSyncedAt ? new Date(priorBroadcastState.lastSyncedAt).toISOString() : null,
           counts,
           changelogUrl: `${origin}/changelog.md`,
-          nextAction: `Run \`${cmdHint}\` or read ${origin}/changelog.md before modifying or redeploying this workspace.`,
+          nextAction: (compositionBehind || archiveMismatch)
+            ? `Workspace composition or installed archives do not match the host release. Run ${cmdHint} (regenerates package-lock.json cleanly and verifies installed archives) and review ${origin}/changelog.md.`
+            : `Run ${cmdHint} or read ${origin}/changelog.md before modifying or redeploying this workspace.`,
         };
       }
     } catch (cause) { error = { code: cause.code ?? 'agent_unavailable', status: cause.status ?? null, message: cause.message }; }
@@ -588,6 +1023,15 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
   const running = await stat(join(workspace.paths.owner, 'endpoint.json')).then(() => true, () => false);
   return { workspace: workspace.root, service: workspace.config.service, agent: { ...workspace.config.agent, ...(agent ? { remote: agent } : {}) },
     versions,
+    ...(compositionCheck.present ? {
+      composition: {
+        id: compositionCheck.compositionId,
+        sourceCommit: compositionCheck.sourceCommit,
+        runtimeId: compositionCheck.runtimeId,
+        verified: compositionCheck.ok,
+        ...(compositionCheck.ok ? {} : { issues: compositionCheck.issues }),
+      },
+    } : {}),
     ...(broadcasts ? { broadcasts } : {}),
     ...(catchup ? { catchup } : {}),
     pages: pages.map(page => ({ ...page, granted: granted ? granted.some(item => item.id === page.id) : null })),

@@ -81,13 +81,22 @@ export interface ApplicationStatus {
   readonly pendingOperations: number;
   readonly materializationError: string | null;
 }
+export interface ApplicationTopicUpdate {
+  readonly topic: string;
+  readonly input: unknown;
+}
 /** Submission resolves only after the exact signed intent is durable locally, independent of network/finality. */
 export interface ApplicationBackend<Program = unknown, QueryResult = unknown, Parameter = unknown> {
   readonly applicationId: string;
+  readonly identity?: { readonly publicKey: string };
   readonly status: ApplicationStatus;
   readonly signal?: AbortSignal;
   onStatus(listener: (status: ApplicationStatus) => void): () => void;
-  submit(input: ApplicationSubmitOptions & { readonly program: Program }): Promise<ApplicationOperation>;
+  submit(input: ApplicationSubmitOptions & ({ readonly updates: readonly ApplicationTopicUpdate[] } | { readonly program: Program })): Promise<ApplicationOperation>;
+  command?(name: string, input?: unknown, options?: ApplicationSubmitOptions): Promise<ApplicationOperation>;
+  query?(name: string, input?: unknown): Promise<QueryResult> | QueryResult;
+  describe?(): { readonly commands?: unknown; readonly queries?: unknown } | Promise<{ readonly commands?: unknown; readonly queries?: unknown }>;
+  readonly events?: ApplicationEvents;
   changes(options?: ApplicationChangeOptions): AsyncIterable<ApplicationChange>;
   readView(options?: { readonly view?: ApplicationView }): ApplicationReadView<QueryResult, Parameter> | Promise<ApplicationReadView<QueryResult, Parameter>>;
   readonly operations: ApplicationOperations;

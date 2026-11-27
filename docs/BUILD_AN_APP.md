@@ -119,6 +119,14 @@ npm install --save-dev --save-exact esbuild@0.28.2
 
 Retain composition, manifest, archive hashes and lockfile. The SDK/runtime/host/tools/authority/session and served starter must belong to that composition. The [source-only archive](/downloads/tendriller-first-app.tgz) is useful for inspection, not proof of a complete release. A missing release requires operator publication/qualification, not guessed pins. The SQL kit selects `session-sql-browser` and carries the exact qualified browser engine graph. It contains no application native SQL binary; the events kit does not execute SQL. `sql/init` verifies/copies only its four package-public WASM assets, rejects a different retained graph, and needs no separate download or native process.
 
+**Upgrading an existing workspace to a newer release composition:** Never copy newer archives over `packages/` and run `npm install --package-lock-only` in place — when two releases share the same semver filename (`0.3.0-rc.17`), npm retains the old lockfile's integrity hashes and silently installs stale packages. Instead run:
+
+```sh
+npx tendril workspace upgrade --kit artifacts/"$KIT_FILE"
+```
+
+This verifies `composition.json` and every archive SHA-256, updates only kit files (preserving `.tendriller/`, `tendriller.json`, and `pages/`), regenerates `package-lock.json` in a clean directory against the new archives, runs `npm ci --ignore-scripts`, and fails closed if any lockfile integrity or installed package disagrees with the selected immutable composition ID. Run `npx tendril workspace verify` at any time to check an existing workspace; `tendril status` also compares immutable `compositionId` and `sourceCommit` against the host.
+
 ## 3. Register the workspace agent and create the page for the intended owner
 
 The kit is an **agent workspace**: one agent credential, one signing key and one wrap key for any number of pages, one install, and `pages/<slug>/` source per page. Register the agent once per workspace, choosing the route your environment supports. The private workspace (`.tendriller/`) holds the credential, shared signer and wrap key; `tendriller.json` holds no secret.

@@ -8,7 +8,7 @@ import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
 import { exportSourceHandoff } from './handoff.mjs';
 import { exportWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from './checkpoint.mjs';
-import { acknowledgeWorkspaceBroadcast, adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, syncWorkspaceBroadcasts, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
+import { acknowledgeWorkspaceBroadcast, adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, reenrollWorkspace, syncWorkspaceBroadcasts, updateWorkspaceProfile, upgradeWorkspace, verifyWorkspaceComposition, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
 import { connectProvider, listConnections, listProviders, pullAgentConnections, revokeConnection } from './connections.mjs';
 
@@ -28,6 +28,9 @@ Workspace (one agent credential and signing key for many pages):
   workspace join --service URL --code CODE --handle HANDLE [--bio BIO]             Join an account with a dashboard code
   workspace key --service URL --handle HANDLE [--bio BIO]                          Print register_agent arguments (account-linked MCP)
   workspace adopt --service URL --credential FILE                                  Retain the saved register_agent result
+  workspace verify                                                                 Verify packages/, package-lock.json integrity & node_modules match composition.json
+  workspace upgrade [--kit ARCHIVE_OR_DIR] [--check]                               Cleanly regenerate package-lock.json, run npm ci --ignore-scripts, and verify exact release archives
+  workspace reenroll [--service URL] (--owner EMAIL | --code CODE | --credential FILE) [--handle H] [--bio B]  Re-enroll an existing workspace agent preserving signing/wrap keys and local data
   page new <slug> [--name TITLE]        Create a page (granted to this agent) and its pages/<slug>/ folder
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
@@ -96,7 +99,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'], changelog: ['server', 'since', 'since-core', 'category', 'limit'],
-  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role', 'add', 'remove', 'label'], agent: ['handle', 'bio'], connection: ['server', 'tier', 'custody', 'scopes', 'actions', 'page', 'label'], 'mcp-stdio': [],
+  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential', 'check'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role', 'add', 'remove', 'label'], agent: ['handle', 'bio'], connection: ['server', 'tier', 'custody', 'scopes', 'actions', 'page', 'label'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -187,7 +190,29 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       return args[0] === 'key' ? workspaceKey(root, { service, handle: flags.handle, bio: flags.bio })
         : adoptWorkspace(root, { service, credential: flags.credential, kit: flags.kit, signal });
     }
-    throw invalid('Use workspace init, join, key or adopt');
+    if (args[0] === 'verify') {
+      const targetRoot = workspaceDir ?? findWorkspace() ?? process.cwd();
+      const result = await verifyWorkspaceComposition(targetRoot, { requireInstalled: true });
+      if (!result.ok) throw Object.assign(Error(result.issues.map(i => i.message).join(' ')), { code: 'workspace_composition_mismatch', verification: result });
+      return result;
+    }
+    if (args[0] === 'upgrade') {
+      const targetRoot = workspaceDir ?? findWorkspace() ?? process.cwd();
+      return upgradeWorkspace(targetRoot, { kit: flags.kit, checkOnly: Boolean(flags.check) });
+    }
+    if (args[0] === 'reenroll') {
+      const targetRoot = workspaceDir ?? findWorkspace() ?? process.cwd();
+      return reenrollWorkspace(targetRoot, {
+        ...(flags.service ? { service: publicServiceOrigin(flags.service) } : {}),
+        owner: flags.owner ? String(flags.owner).trim() : undefined,
+        code: flags.code ? String(flags.code).trim() : undefined,
+        credential: flags.credential,
+        handle: flags.handle,
+        bio: flags.bio,
+        signal,
+      });
+    }
+    throw invalid('Use workspace init, join, key, adopt, verify, upgrade or reenroll');
   }
   const workspace = await openWorkspace({ root: workspaceDir ?? findWorkspace() });
   if (command === 'status') return describeWorkspace(workspace, { signal });

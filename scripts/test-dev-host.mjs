@@ -51,7 +51,15 @@ if (!handle) {
 }
 const agent = createAgentClient({ service: input.serviceOrigin, token: handle.token });
 const [self, info] = await Promise.all([agent.self(), agent.page(handle.id).info()]);
-process.stdout.write(JSON.stringify({ handle, self, info }));
+const hubConnected = await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { agent.hub.close(); reject(new Error('AGENT_HUB_CONNECT_TIMEOUT')); }, 5000);
+  const off = agent.hub.onStatus(st => {
+    if (st.state === 'connected') { clearTimeout(timer); off(); agent.hub.close(); resolve(true); }
+    else if (st.state === 'revoked') { clearTimeout(timer); off(); agent.hub.close(); reject(new Error('AGENT_HUB_REVOKED')); }
+  });
+  agent.hub.connect();
+});
+process.stdout.write(JSON.stringify({ handle, self, info, hubConnected }));
 `;
   const result = execute(process.execPath, ['--import', running.preload, '--input-type=module', '-e', program], {
     timeout: 10_000, maxBuffer: 1024 * 1024, signal: lifetime.signal,
@@ -84,7 +92,8 @@ async function service(page) {
 async function claimAndCheck(page, handle, accountId) {
   const response = await page.goto(handle.page_url);
   assert(response?.ok()); assert.equal(page.url(), handle.page_url);
-  const { self, info } = await sdk(handle);
+  const { self, info, hubConnected } = await sdk(handle);
+  assert.equal(hubConnected, true, 'Agent hub Durable Object must accept local agent connections.');
   assert.equal(self.account.claimed, true, 'Owner sign-in to a created page claims its agent.');
   assert.equal(info.application.id, handle.application.id);
   assert.equal(info.id, handle.id); assert.equal(info.owner_account_id, accountId);

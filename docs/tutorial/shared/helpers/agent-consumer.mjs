@@ -3,27 +3,184 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { hostname as osHostname } from 'node:os';
 
 const canonical = value => JSON.stringify(value, function (_key, item) {
   return item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item;
 });
 
-/** One private writer, atomic checkpoints, no automatic stale-lock takeover. */
-export async function openConsumerCheckpoint(path, { scope } = {}) {
+async function defaultReadBootId() {
+  try {
+    const raw = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+    return raw || null;
+  } catch { return null; }
+}
+
+/**
+ * Read Linux /proc/<pid>/stat field 22 (starttime in clock ticks since boot).
+ * Uniquely identifies a process instance within a boot even if the OS reuses a PID.
+ */
+async function defaultReadProcessStart(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const raw = await readFile(`/proc/${pid}/stat`, 'utf8');
+    const endComm = raw.lastIndexOf(')');
+    if (endComm < 0) return null;
+    // Fields after ') ' start at field 3 (state); field 22 (starttime) is index 19.
+    const fields = raw.slice(endComm + 2).trim().split(/\s+/u);
+    return fields[19] && /^\d+$/u.test(fields[19]) ? fields[19] : null;
+  } catch { return null; }
+}
+
+function defaultIsPidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    // EPERM means the process exists under another user -> treat as alive!
+    return true;
+  }
+}
+
+async function readOwnerWithGrace(ownerPath, graceMs = 150) {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    try {
+      const parsed = JSON.parse(await readFile(ownerPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && typeof parsed.token === 'string' && Number.isSafeInteger(parsed.pid)) {
+        return parsed;
+      }
+      return null;
+    } catch (error) {
+      if ((error.code === 'ENOENT' || error instanceof SyntaxError) && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 15));
+        continue;
+      }
+      return null;
+    }
+  }
+}
+
+async function classifyStaleOwner(owner, env) {
+  if (!owner || typeof owner.token !== 'string' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
+    return { stale: false, reason: 'owner_unreadable' };
+  }
+  const currentHost = env.hostname();
+  if (typeof owner.hostname === 'string' && owner.hostname && owner.hostname !== currentHost) {
+    return { stale: false, reason: 'different_host' };
+  }
+  const currentBootId = await env.readBootId();
+  if (typeof owner.bootId === 'string' && owner.bootId && currentBootId && owner.bootId !== currentBootId) {
+    return { stale: true, reason: 'reboot' };
+  }
+  const currentPid = env.pid();
+  if (owner.pid === currentPid) {
+    const currentStart = await env.readProcessStart(currentPid);
+    if (typeof owner.processStart === 'string' && owner.processStart && currentStart && owner.processStart !== currentStart) {
+      return { stale: true, reason: 'pid_reused' };
+    }
+    return { stale: false, reason: 'same_process_live' };
+  }
+  if (!env.isPidAlive(owner.pid)) {
+    return { stale: true, reason: 'process_dead' };
+  }
+  if (typeof owner.processStart === 'string' && owner.processStart) {
+    const liveStart = await env.readProcessStart(owner.pid);
+    if (liveStart === null) {
+      if (!env.isPidAlive(owner.pid)) return { stale: true, reason: 'process_dead' };
+      return { stale: false, reason: 'process_start_unverifiable' };
+    }
+    if (liveStart !== owner.processStart) {
+      return { stale: true, reason: 'pid_reused' };
+    }
+  }
+  return { stale: false, reason: 'owner_live' };
+}
+
+/**
+ * One private writer with atomic checkpoints and safe boot/process-identity stale-lock recovery.
+ * Recovers locks left behind by a reboot, crash, or reused PID without touching the checkpoint
+ * file (preserving pending/uncertain admissions for explicit reconciliation), while failing closed
+ * with AGENT_CONSUMER_LOCKED whenever a live owner or unverifiable lock is present.
+ */
+export async function openConsumerCheckpoint(path, { scope, onRecoveredStaleLock, _lockEnv } = {}) {
   if (typeof path !== 'string' || !path || scope === undefined) throw Error('AGENT_CONSUMER_CHECKPOINT_OPTIONS_INVALID');
+  const env = {
+    pid: () => process.pid,
+    hostname: () => osHostname(),
+    readBootId: defaultReadBootId,
+    readProcessStart: defaultReadProcessStart,
+    isPidAlive: defaultIsPidAlive,
+    ...(_lockEnv ?? {}),
+  };
   const file = resolve(path), directory = dirname(file), lock = file + '.lock';
   const token = randomUUID(), expectedScope = canonical(scope), savedScope = JSON.parse(expectedScope);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  try { await mkdir(lock, { mode: 0o700 }); }
-  catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    throw Object.assign(Error('AGENT_CONSUMER_LOCKED: verify the previous worker has stopped before removing its stale .lock directory.'),
-      { code: 'AGENT_CONSUMER_LOCKED', checkpointPath: file });
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await mkdir(lock, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (attempt >= 2) {
+        throw Object.assign(Error('AGENT_CONSUMER_LOCKED: verify the previous worker has stopped before removing its stale .lock directory.'),
+          { code: 'AGENT_CONSUMER_LOCKED', checkpointPath: file });
+      }
+      const existingOwner = await readOwnerWithGrace(resolve(lock, 'owner.json'));
+      const verdict = await classifyStaleOwner(existingOwner, env);
+      if (!verdict.stale) {
+        throw Object.assign(
+          Error(`AGENT_CONSUMER_LOCKED: checkpoint is held by an active or unverifiable owner (${verdict.reason}).`),
+          { code: 'AGENT_CONSUMER_LOCKED', reason: verdict.reason, checkpointPath: file, ownerPid: existingOwner?.pid ?? null },
+        );
+      }
+      // Race-free atomic takeover: only one contender can rename the stale lock directory.
+      const graveyard = `${lock}.stale.${randomUUID()}`;
+      try {
+        await rename(lock, graveyard);
+      } catch (renameErr) {
+        if (renameErr.code === 'ENOENT') continue; // Another contender reclaimed it; retry mkdir once.
+        throw Object.assign(
+          Error('AGENT_CONSUMER_LOCKED: could not atomically reclaim stale lock directory.'),
+          { code: 'AGENT_CONSUMER_LOCKED', checkpointPath: file, cause: renameErr },
+        );
+      }
+      try {
+        const movedOwner = JSON.parse(await readFile(resolve(graveyard, 'owner.json'), 'utf8'));
+        if (movedOwner.token !== existingOwner.token) {
+          // Unexpected swap: fail loudly rather than hiding a concurrent owner.
+          await rename(graveyard, lock).catch(() => {});
+          throw Object.assign(Error('AGENT_CONSUMER_LOCKED: lock owner changed during stale-lock recovery.'),
+            { code: 'AGENT_CONSUMER_LOCKED', checkpointPath: file });
+        }
+      } finally {
+        await rm(graveyard, { recursive: true, force: true }).catch(() => {});
+      }
+      try {
+        onRecoveredStaleLock?.({ reason: verdict.reason, previousOwner: existingOwner, checkpointPath: file });
+      } catch { /* diagnostic callback must not break recovery */ }
+    }
   }
+
   let current = null, closed = false, tail = Promise.resolve();
   try {
-    await writeFile(resolve(lock, 'owner.json'), JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }), { mode: 0o600 });
+    const myPid = env.pid();
+    const [bootId, processStart] = await Promise.all([env.readBootId(), env.readProcessStart(myPid)]);
+    const ownerPayload = JSON.stringify({
+      pid: myPid,
+      token,
+      hostname: env.hostname(),
+      bootId,
+      processStart,
+      startedAt: new Date().toISOString(),
+    });
+    const ownerTmp = resolve(lock, `owner.${randomUUID()}.tmp`);
+    await writeFile(ownerTmp, ownerPayload, { mode: 0o600 });
+    await rename(ownerTmp, resolve(lock, 'owner.json'));
     try {
       const envelope = JSON.parse(await readFile(file, 'utf8'));
       if (envelope.version !== 1 || canonical(envelope.scope) !== expectedScope || !Object.hasOwn(envelope, 'value')) {

@@ -71,21 +71,21 @@ mkdirSync(join(out, 'docs'), { recursive: true });
 for (const name of readdirSync(join(root, 'docs/tools')).filter(name => name.endsWith('.md')))
   copyFileSync(join(root, 'docs/tools', name), join(out, 'docs', name));
 writeFileSync(join(out, 'THIRD_PARTY_NOTICES.txt'), [...notices].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text).join('\n\n') + '\n');
+const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const sourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim();
+const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: root, encoding: 'utf8' }).trim().length !== 0;
 writeJson(join(out, 'package.json'), { name: '@tendriller/tools', version: pkg.version, type: 'module',
   description: 'Application session, signed publication and browser preview tools for Tendriller', engines: pkg.engines,
   bin: Object.fromEntries(Object.keys(entries).map(name => [name, `bin/${name}.mjs`])),
   exports: { './preview': './lib/preview.mjs', './session': './lib/session.mjs', './pack': './lib/pack.mjs', './workspace': './lib/workspace.mjs' },
   peerDependencies: { '@chronolog/peer-session': '*', '@tendriller/core': pkg.version },
   peerDependenciesMeta: { '@chronolog/peer-session': { optional: true }, '@tendriller/core': { optional: true } },
-  tendriller: { contract: runtimeManifest.contract, runtime: runtimeManifest.id },
+  tendriller: { contract: runtimeManifest.contract, runtime: runtimeManifest.id, sourceCommit },
 });
 writeJson(join(dist, 'tools-inputs.json'), [...inputs].sort());
 const archive = `tendriller-tools-${pkg.version}.tgz`;
 execFileSync('tar', [...ARCHIVE_METADATA, '-czf', join(dist, archive), '-C', out, '.']);
 const bytes = readFileSync(join(dist, archive));
-const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-const sourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim();
-const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: root, encoding: 'utf8' }).trim().length !== 0;
 writeJson(join(dist, 'tools-manifest.json'), { format: 'tendriller-tools', version: pkg.version, source_commit: sourceCommit,
   source_tree: sourceTree, dirty,
   contract: runtimeManifest.contract, runtime: runtimeManifest.id,

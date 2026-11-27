@@ -188,6 +188,7 @@ test('a failed database initialization pins partial state to its source and mani
   const worker = Buffer.from(`import { DurableObject } from 'cloudflare:workers';
     export class Tendril extends DurableObject { fetch() { return new Response('fixture'); } }
     export class Admission extends DurableObject { fetch() { return new Response('fixture'); } }
+    export class AgentHub extends DurableObject { fetch() { return new Response('fixture'); } }
     export default { fetch() { return new Response('fixture'); } };`);
   f.files.set('dist/engine/worker.mjs', worker); f.proof.files['worker.mjs'] = hash(worker); f.seal();
   const port = await freePort();
@@ -214,6 +215,9 @@ test('the listening host forwards to the packed Worker, serves assets and resume
   const worker = Buffer.from(`import { DurableObject } from 'cloudflare:workers';
     export class Tendril extends DurableObject {}
     export class Admission extends DurableObject {}
+    export class AgentHub extends DurableObject {
+      fetch() { return Response.json({ hub: 'ok' }); }
+    }
     export default { async fetch(request, env) {
       const path = new URL(request.url).pathname;
       if (path === '/api/readiness') {
@@ -223,6 +227,10 @@ test('the listening host forwards to the packed Worker, serves assets and resume
       }
       if (path === '/fixture/owner') return Response.json(await env.ACCOUNTS.prepare(
         'SELECT a.email, i.provider, count(*) AS total FROM accounts a JOIN identities i ON i.account_id=a.id').first());
+      if (path === '/fixture/hub') {
+        const stub = env.AGENT_HUB.get(env.AGENT_HUB.idFromName('ag_test'));
+        return stub.fetch('https://hub.internal/ping');
+      }
       return env.ASSETS.fetch(request);
     } };`);
   const migration = await readFile(resolve(import.meta.dirname, '../../server/migrations/0001_accounts.sql'));
@@ -242,6 +250,8 @@ test('the listening host forwards to the packed Worker, serves assets and resume
           build: { sourceCommit: ${JSON.stringify(source)}, compositionId: ${JSON.stringify(f.manifest.composition.id)} } });
         const owner = await fetch(base + '/fixture/owner'); assert.equal(owner.status, 200);
         assert.deepEqual(await owner.json(), { email: 'owner@example.test', provider: 'test', total: 1 });
+        const hub = await fetch(base + '/fixture/hub'); assert.equal(hub.status, 200);
+        assert.deepEqual(await hub.json(), { hub: 'ok' });
         const asset = await fetch(base + '/llms.txt'); assert.equal(asset.status, 200);
         assert.equal(await asset.text(), 'Exact public guide.');
       } finally { await getGlobalDispatcher().close(); }
