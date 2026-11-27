@@ -73,9 +73,10 @@ class SharedSpeechWorkerImpl implements SharedSpeechWorker {
       if (error) entry.reject(new Error(String(error)));
       else entry.resolve(result);
     };
-    worker.onerror = () => {
+    worker.onerror = (event: ErrorEvent) => {
       if (this.worker !== worker) return;
-      this.fail(new Error("On-device speech worker crashed. Try again or type instead."));
+      const detail = event?.message ? ` (${event.message})` : "";
+      this.fail(new Error(`On-device speech worker failed${detail}. Try again or type instead.`));
     };
     this.worker = worker;
     return worker;

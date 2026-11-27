@@ -2,6 +2,7 @@ import type {
   PagePersonEntry,
   RuntimeApi,
   RuntimeChatActivity,
+  RuntimeChatAttachment,
   RuntimeChatMessage,
   RuntimeChatStream,
 } from "../../../contract/index.mjs";
@@ -61,6 +62,8 @@ export interface TalkDockState {
   audioLevel: number;
   presenceStatus: "online" | "busy" | "offline" | "stopped" | "unknown";
   statusChip: string;
+  errorMessage: string;
+  talkBackAndWake: boolean;
 }
 
 export interface ChatModalController {
@@ -74,6 +77,8 @@ export interface ChatModalController {
   finishHoldVoice(): void;
   cancelHoldVoice(): void;
   toggleDockVoice(): void;
+  dismissVoiceError(): void;
+  upgradeToTalkBackAndWake(): void;
   focusInput(): void;
   scrollToBottom(): void;
   getDockState(): TalkDockState;
@@ -162,15 +167,45 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   let wakeState = "off";
   let voiceDetail = "";
   let voiceError = "";
+  let outputState: "idle" | "loading" | "ready" | "error" | "speaking" = "idle";
+  let outputDetail = "";
   let speaking = false;
   let audioLevel = 0;
   let holdRecordingActive = false;
   let micHolding = false;
+  let pendingWakeArm = false;
+  let keepWakeAfterSpeech = false;
+  let wakeRearmTimer: ReturnType<typeof setTimeout> | null = null;
   let handsFreeTimer: ReturnType<typeof setTimeout> | null = null;
   const speechQueue: string[] = [];
   const spokenIds = new Set<string>();
   let pumpingSpeech = false;
   let providerSeeded = false;
+
+  // Staged image attachments + lazy P2P ObjectURL cache (all revoked on dispose)
+  interface PendingImage {
+    id: string;
+    file: File;
+    previewUrl: string;
+    name: string;
+    mime: string;
+    size: number;
+  }
+  const MAX_PENDING_IMAGES = 6;
+  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+  let pendingImages: PendingImage[] = [];
+  const imageUrlCache = new Map<string, string>();
+  const ownedObjectUrls = new Set<string>();
+  const imageLoadsInflight = new Map<string, Promise<string | null>>();
+  const createManagedUrl = (blob: Blob): string => {
+    const url = URL.createObjectURL(blob);
+    ownedObjectUrls.add(url);
+    return url;
+  };
+  const revokeManagedUrl = (url: string) => {
+    if (!ownedObjectUrls.delete(url)) return;
+    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+  };
 
   // Auto-wired Chronolog session state (used when api.application is available & no custom chat provider registered)
   let sessionMessages: RuntimeChatMessage[] = [];
@@ -302,6 +337,8 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       audioLevel,
       presenceStatus: pres,
       statusChip,
+      errorMessage: voiceError,
+      talkBackAndWake: Boolean(autoSpeak && (keepWakeAfterSpeech || pendingWakeArm || wakeActive)),
     };
   };
 
@@ -321,11 +358,11 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   const headerExtra = el("div", undefined, "row");
   const stopSpeakBtn = btn("Stop", "btn sm danger");
   stopSpeakBtn.hidden = true;
-  const speakToggleBtn = btn("", "btn icon-only");
+  const speakToggleBtn = btn("", "voice-out-pill");
   speakToggleBtn.setAttribute("aria-label", "Toggle spoken replies");
   speakToggleBtn.setAttribute("aria-pressed", String(autoSpeak));
-  speakToggleBtn.title = "Spoken replies";
-  speakToggleBtn.append(iconEl(autoSpeak ? "speakerOn" : "speakerOff"));
+  speakToggleBtn.title = "Toggle spoken agent replies";
+  speakToggleBtn.append(iconEl(autoSpeak ? "speakerOn" : "speakerOff"), el("span", autoSpeak ? "Voice on" : "Voice"));
   const configBtn = btn("", "btn icon-only");
   configBtn.setAttribute("aria-label", "Voice and chat settings");
   configBtn.setAttribute("aria-pressed", "false");
@@ -335,6 +372,26 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
 
   // ── Modal Body ────────────────────────────────────────────────────────
   const body = el("div", undefined, "modal-body chat-body");
+
+  // Prominent Spoken Replies (Voice Generation) quick bar — visible when voice output is active, loading, or errored
+  const voiceOutBar = el("div", undefined, "voice-out-bar");
+  voiceOutBar.hidden = true;
+  const voiceEngineSeg = el("div", undefined, "voice-engine-seg");
+  voiceEngineSeg.setAttribute("role", "group");
+  voiceEngineSeg.setAttribute("aria-label", "Spoken reply voice engine");
+  const engineBrowserBtn = btn("Browser");
+  engineBrowserBtn.setAttribute("aria-pressed", String(voiceOutputEngine === "browser"));
+  const engineNeuralBtn = btn("Neural (~65 MB)");
+  engineNeuralBtn.setAttribute("aria-pressed", String(voiceOutputEngine === "neural"));
+  voiceEngineSeg.append(engineBrowserBtn, engineNeuralBtn);
+  const voiceOutWakeBtn = btn("Wake word", "voice-wake-pill");
+  voiceOutWakeBtn.setAttribute("aria-pressed", "false");
+  voiceOutWakeBtn.title = "Listen for on-device wake phrase after replies";
+  const voiceOutMsg = el("span", "", "voice-out-bar-msg");
+  voiceOutMsg.setAttribute("role", "status");
+  const voiceOutRetryBtn = btn("Retry", "btn sm");
+  voiceOutRetryBtn.hidden = true;
+  voiceOutBar.append(voiceEngineSeg, voiceOutWakeBtn, voiceOutMsg, voiceOutRetryBtn);
 
   // Roster popover (agents + people)
   const rosterPanel = el("div", undefined, "chat-subpanel");
@@ -450,9 +507,15 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   const statusStrip = el("div", undefined, "chat-status");
   statusStrip.hidden = true;
   const statusText = el("span");
+  const statusActions = el("div", undefined, "chat-status-actions");
+  const statusRetry = btn("Try again", "btn sm primary");
+  statusRetry.hidden = true;
   const statusCancel = btn("Cancel", "btn sm");
   statusCancel.hidden = true;
-  statusStrip.append(statusText, statusCancel);
+  const statusDismiss = btn("Dismiss", "btn sm");
+  statusDismiss.hidden = true;
+  statusActions.append(statusRetry, statusCancel, statusDismiss);
+  statusStrip.append(statusText, statusActions);
 
   // Composer (unified, context-adaptive single-action bar — zero dead buttons)
   const composer = el("div", undefined, "chat-composer");
@@ -461,7 +524,21 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   mentionMenu.setAttribute("aria-label", "Mention an agent or person");
   mentionMenu.hidden = true;
 
+  const pendingAttTray = el("div", undefined, "pending-attachments");
+  pendingAttTray.hidden = true;
+
+  const imageInput = el("input");
+  imageInput.type = "file";
+  imageInput.accept = "image/*";
+  imageInput.multiple = true;
+  imageInput.hidden = true;
+
   const composerRow = el("div", undefined, "composer-row");
+  const attachBtn = btn("", "attach-btn");
+  attachBtn.setAttribute("aria-label", "Attach image");
+  attachBtn.title = "Attach image (or paste/drop)";
+  attachBtn.append(iconEl("image"));
+
   const textarea = el("textarea", undefined, "composer-input");
   textarea.rows = 1; textarea.maxLength = 8000; textarea.value = "";
   textarea.placeholder = "Message or tap mic…";
@@ -481,7 +558,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   sendBtn.title = "Send message";
   sendBtn.append(iconEl("send"));
   sendBtn.hidden = true;
-  composerRow.append(textarea, micBtn, sendBtn);
+  composerRow.append(imageInput, attachBtn, textarea, micBtn, sendBtn);
 
   // Live voice capture bar (replaces composerRow while recording/transcribing)
   const voiceBar = el("div", undefined, "voice-bar");
@@ -499,18 +576,47 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   const voiceBarLabel = el("span", "Listening…", "voice-bar-label");
   voiceWaveWrap.append(voiceDot, voiceMeter, voiceBarLabel);
 
+  const voiceUpgradeBtn = btn("+ Talk back & wake", "voice-upgrade-btn");
+  voiceUpgradeBtn.setAttribute("aria-pressed", "false");
+  voiceUpgradeBtn.title = "Switch to spoken replies and on-device wake word in the same go";
+
   const voiceFinishBtn = btn("", "voice-finish-btn");
   voiceFinishBtn.setAttribute("aria-label", "Stop and send voice message");
   voiceFinishBtn.append(iconEl("send"), el("span", "Send"));
-  voiceBar.append(voiceCancelBtn, voiceWaveWrap, voiceFinishBtn);
+  voiceBar.append(voiceCancelBtn, voiceWaveWrap, voiceUpgradeBtn, voiceFinishBtn);
 
-  composer.append(mentionMenu, composerRow, voiceBar);
+  composer.append(mentionMenu, pendingAttTray, composerRow, voiceBar);
 
-  body.append(rosterPanel, configPanel, feed, activityDetails, statusStrip, composer);
+  body.append(voiceOutBar, rosterPanel, configPanel, feed, activityDetails, statusStrip, composer);
 
   // ── Voice Engine (Strictly Lazy!) ─────────────────────────────────────
   const clearHandsFree = () => {
     if (handsFreeTimer !== null) { clearTimeout(handsFreeTimer); handsFreeTimer = null; }
+  };
+  const clearWakeRearm = () => {
+    if (wakeRearmTimer !== null) { clearTimeout(wakeRearmTimer); wakeRearmTimer = null; }
+  };
+  const armModelWakeSoon = (delayMs: number) => {
+    clearWakeRearm();
+    if (disposed || !keepWakeAfterSpeech) return;
+    wakeRearmTimer = setTimeout(() => {
+      wakeRearmTimer = null;
+      if (disposed || !keepWakeAfterSpeech || speaking || captureState === "recording" || captureState === "working") return;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      const active = !["off", "paused", "error"].includes(wakeState);
+      if (active) return;
+      void ensureVoice().then(v => {
+        if (disposed || !keepWakeAfterSpeech || speaking || captureState === "recording" || captureState === "working") return;
+        v.language(speechLang);
+        return v.startWake({ phrase: wakePhrase, mode: wakeMode });
+      }).catch(err => {
+        if (!disposed) {
+          voiceError = err instanceof Error ? err.message : "Could not start wake word.";
+          renderControls();
+          emitDockState();
+        }
+      });
+    }, delayMs);
   };
 
   const primeBrowserSpeech = () => {
@@ -759,17 +865,36 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
             captureState = (st.state === "recording" || st.state === "working" || st.state === "error") ? st.state : "idle";
             if (captureState !== "recording") holdRecordingActive = false;
             voiceDetail = st.message || (st.state === "recording" ? "Listening…" : "");
-            if (st.state === "error") voiceError = st.message || "Voice input failed. You can type instead.";
+            if (st.state === "error") {
+              voiceError = st.message || "Voice input failed. You can type instead.";
+              pendingWakeArm = false;
+            } else if (captureState === "idle" && pendingWakeArm) {
+              pendingWakeArm = false;
+              armModelWakeSoon(350);
+            }
           } else if (st.kind === "wake") {
             wakeState = st.state;
-            if (st.state === "error") voiceError = st.message || "Wake word could not start.";
+            if (st.state === "error") {
+              voiceError = st.message || "Wake word could not start.";
+              keepWakeAfterSpeech = false;
+              pendingWakeArm = false;
+            } else if (st.state === "off") {
+              keepWakeAfterSpeech = false;
+              pendingWakeArm = false;
+            }
           } else if (st.kind === "output") {
             const wasSpeaking = speaking;
             speaking = Boolean(st.speaking);
-            if (speaking) clearHandsFree();
+            if (st.state === "loading" || st.state === "ready" || st.state === "error" || st.state === "speaking" || st.state === "idle") {
+              outputState = st.state;
+            }
+            if (typeof st.message === "string" && st.message) outputDetail = st.message;
+            if (speaking) { clearHandsFree(); clearWakeRearm(); }
             if (wasSpeaking && !speaking && st.completed === true) {
               if (speechQueue.length > 0 && autoSpeak) pumpSpeech();
-              else if (handsFreeLoop && isOpen && document.visibilityState === "visible") {
+              else if (keepWakeAfterSpeech && document.visibilityState === "visible") {
+                armModelWakeSoon(450);
+              } else if (handsFreeLoop && isOpen && document.visibilityState === "visible") {
                 clearHandsFree();
                 handsFreeTimer = setTimeout(() => {
                   handsFreeTimer = null;
@@ -815,6 +940,11 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   const finishHoldVoice = () => {
     if (!holdRecordingActive && captureState !== "recording") return;
     holdRecordingActive = false;
+    // Never wipe out a visible voice recognition error when the user releases the button.
+    if (captureState === "error") {
+      emitDockState();
+      return;
+    }
     if (captureState === "recording") voice?.finishCapture();
     else voice?.cancelCapture();
     emitDockState();
@@ -822,12 +952,104 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
 
   const cancelHoldVoice = () => {
     holdRecordingActive = false;
+    pendingWakeArm = false;
     clearHandsFree();
+    clearWakeRearm();
+    const wakeActive = !["off", "paused", "error"].includes(wakeState);
+    if (wakeActive) {
+      keepWakeAfterSpeech = false;
+      voice?.stopWake();
+      wakeState = "off";
+    }
     voice?.cancelCapture();
     captureState = "idle";
     voiceDetail = "";
     renderControls();
     emitDockState();
+  };
+
+  const dismissVoiceError = () => {
+    voiceError = "";
+    if (captureState === "error") captureState = "idle";
+    if (outputState === "error") { outputState = "idle"; outputDetail = ""; }
+    renderControls();
+    emitDockState();
+  };
+
+  const upgradeToTalkBackAndWake = () => {
+    if (disposed) return;
+    const wakeActive = !["off", "paused", "error"].includes(wakeState);
+    const alreadyUpgraded = autoSpeak && (keepWakeAfterSpeech || pendingWakeArm || wakeActive);
+    if (alreadyUpgraded) {
+      pendingWakeArm = false;
+      keepWakeAfterSpeech = false;
+      clearWakeRearm();
+      if (wakeActive) {
+        voice?.stopWake();
+        wakeState = "off";
+      }
+      renderControls();
+      emitDockState();
+      return;
+    }
+    // Synchronously unlock browser speech inside the user gesture.
+    primeBrowserSpeech();
+    for (const m of effectiveMessages()) {
+      if (m.role === "agent") spokenIds.add(m.id);
+    }
+    autoSpeak = true;
+    wakeMode = "model";
+    wakeModeSelect.value = "model";
+    keepWakeAfterSpeech = true;
+    voiceError = "";
+    saveVoicePrefs();
+
+    const currentlyCapturing = captureState === "recording" || captureState === "working";
+    if (currentlyCapturing) {
+      // Keep the active single-talk recording uninterrupted; enable spoken replies now and arm model wake word as soon as capture finishes.
+      pendingWakeArm = true;
+      renderControls();
+      emitDockState();
+      void ensureVoice().then(async v => {
+        if (disposed || !autoSpeak) return;
+        const ok = await v.enableOutput(voiceOutputEngine);
+        if (!ok && !disposed) {
+          voiceError = "Spoken replies were not enabled.";
+          renderControls();
+          emitDockState();
+        }
+      }).catch(err => {
+        if (!disposed) {
+          voiceError = err instanceof Error ? err.message : "Could not enable spoken replies.";
+          renderControls();
+          emitDockState();
+        }
+      });
+    } else {
+      pendingWakeArm = false;
+      renderControls();
+      emitDockState();
+      void ensureVoice().then(async v => {
+        if (disposed) return;
+        const ok = await v.enableOutput(voiceOutputEngine);
+        if (!ok && !disposed) {
+          voiceError = "Spoken replies were not enabled.";
+          renderControls();
+          emitDockState();
+          return;
+        }
+        if (disposed || !keepWakeAfterSpeech) return;
+        v.language(speechLang);
+        await v.startWake({ phrase: wakePhrase, mode: "model" });
+      }).catch(err => {
+        if (!disposed) {
+          keepWakeAfterSpeech = false;
+          voiceError = err instanceof Error ? err.message : "Could not switch to talk-back and wake word mode.";
+          renderControls();
+          emitDockState();
+        }
+      });
+    }
   };
 
   const toggleDockVoice = () => {
@@ -915,6 +1137,34 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         return byKey.get(hexT)?.handle ?? byKey.get(t)?.handle ?? t.slice(0, 8);
       });
 
+      const parseAttachments = (rawList: unknown, rawData: unknown): RuntimeChatAttachment[] | undefined => {
+        if (!Array.isArray(rawList) || rawList.length === 0) return undefined;
+        let refsById: Record<string, unknown> = {};
+        if (typeof rawData === "string" && rawData.trim().startsWith("{")) {
+          try {
+            const parsed = JSON.parse(rawData) as { attachmentRefs?: Record<string, unknown> };
+            if (parsed && typeof parsed.attachmentRefs === "object" && parsed.attachmentRefs) {
+              refsById = parsed.attachmentRefs;
+            }
+          } catch { /* ignore non-JSON data */ }
+        }
+        const out: RuntimeChatAttachment[] = [];
+        for (const raw of rawList) {
+          if (!raw || typeof raw !== "object") continue;
+          const a = raw as Record<string, unknown>;
+          if (typeof a.contentId !== "string" || !a.contentId) continue;
+          const ref = refsById[a.contentId];
+          out.push({
+            contentId: a.contentId,
+            name: typeof a.name === "string" && a.name ? a.name : "image",
+            mime: typeof a.mime === "string" && a.mime ? a.mime : "application/octet-stream",
+            ...(typeof a.size === "number" ? { size: a.size } : {}),
+            ...(ref !== undefined ? { ref } : {}),
+          });
+        }
+        return out.length ? out : undefined;
+      };
+
       const declaredFeed = await readDeclaredFeed(backend);
       if (declaredFeed) {
         const allItems = [...declaredFeed.messages, ...declaredFeed.activity];
@@ -964,6 +1214,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
               pumpSpeech();
             }
           }
+          const itemAttachments = parseAttachments((item as any).attachments, (item as any).data);
           msgs.push({
             id,
             role: isAgent ? "agent" : "user",
@@ -975,6 +1226,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
             isSelf: !isAgent && (isSelf || !item.senderHandle || item.senderHandle === currentUserHandle()),
             isPrimary: isAgent && agent ? (agent.id === roster.primary_agent_id || agent.is_primary) : undefined,
             toHandles: toHandles.length ? toHandles : undefined,
+            ...(itemAttachments ? { attachments: itemAttachments } : {}),
           });
           optimistic.delete(id);
         }
@@ -1037,6 +1289,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
                 pumpSpeech();
               }
             }
+            const eventAttachments = parseAttachments(p.attachments, p.data);
             msgs.push({
               id,
               role: isAgent ? "agent" : "user",
@@ -1048,6 +1301,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
               isSelf: !isAgent && (isSelf || !p.senderHandle || p.senderHandle === currentUserHandle()),
               isPrimary: isAgent && agent ? (agent.id === roster.primary_agent_id || agent.is_primary) : undefined,
               toHandles: toHandles.length ? toHandles : undefined,
+              ...(eventAttachments ? { attachments: eventAttachments } : {}),
             });
             optimistic.delete(id);
           }
@@ -1112,9 +1366,111 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     }
   };
 
+  // ── Staged Image Attachments & Lazy P2P Loader ────────────────────────
+  const renderPendingAttachments = () => {
+    if (disposed) return;
+    clearChildren(pendingAttTray);
+    pendingAttTray.hidden = pendingImages.length === 0;
+    for (const item of pendingImages) {
+      const wrap = el("div", undefined, "pending-thumb");
+      const img = el("img");
+      img.src = item.previewUrl;
+      img.alt = item.name;
+      const rm = btn("×", "pending-thumb-rm");
+      rm.setAttribute("aria-label", `Remove ${item.name}`);
+      rm.title = `Remove ${item.name}`;
+      rm.addEventListener("click", () => removePendingImage(item.id));
+      wrap.append(img, rm);
+      pendingAttTray.append(wrap);
+    }
+  };
+
+  const removePendingImage = (id: string) => {
+    const idx = pendingImages.findIndex(item => item.id === id);
+    if (idx < 0) return;
+    const [removed] = pendingImages.splice(idx, 1);
+    if (removed) revokeManagedUrl(removed.previewUrl);
+    renderPendingAttachments();
+    renderControls();
+  };
+
+  const stageImageFiles = (list: Iterable<File> | FileList | null | undefined) => {
+    if (!list || disposed) return;
+    let added = 0;
+    let rejectedReason = "";
+    for (const file of Array.from(list)) {
+      if (!file) continue;
+      if (file.type && !file.type.startsWith("image/")) {
+        rejectedReason = "Only image files can be attached to chat messages.";
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        rejectedReason = `${file.name || "Image"} is larger than 25 MB.`;
+        continue;
+      }
+      if (pendingImages.length >= MAX_PENDING_IMAGES) {
+        rejectedReason = `You can attach up to ${MAX_PENDING_IMAGES} images per message.`;
+        break;
+      }
+      const id = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const previewUrl = createManagedUrl(file);
+      pendingImages.push({
+        id,
+        file,
+        previewUrl,
+        name: file.name || `image-${pendingImages.length + 1}.png`,
+        mime: file.type || "image/png",
+        size: file.size,
+      });
+      added++;
+    }
+    if (rejectedReason) voiceError = rejectedReason;
+    else if (added > 0 && voiceError) voiceError = "";
+    renderPendingAttachments();
+    renderControls();
+  };
+
+  const resolveAttachmentUrl = (att: RuntimeChatAttachment): string | null => {
+    if (att.previewUrl) return att.previewUrl;
+    const cached = imageUrlCache.get(att.contentId);
+    if (cached) return cached;
+    if (!api.application?.available || imageLoadsInflight.has(att.contentId)) return null;
+    const content = api.application.backend.content;
+    if (!content || (typeof content.get !== "function" && typeof content.getBlob !== "function")) return null;
+    const loader = (async (): Promise<string | null> => {
+      try {
+        let bytes: Uint8Array | null = null;
+        if (typeof content.get === "function") {
+          bytes = await content.get(att.ref ?? att.contentId);
+        } else if (typeof content.getBlob === "function") {
+          const got: unknown = await content.getBlob(att.contentId);
+          bytes = got instanceof Uint8Array
+            ? got
+            : (got && typeof got === "object" && "bytes" in got && (got as { bytes?: unknown }).bytes instanceof Uint8Array)
+              ? (got as { bytes: Uint8Array }).bytes
+              : null;
+        }
+        if (!bytes || disposed) return null;
+        const copy = new Uint8Array(bytes.byteLength);
+        copy.set(bytes);
+        const url = createManagedUrl(new Blob([copy], { type: att.mime || "image/png" }));
+        imageUrlCache.set(att.contentId, url);
+        if (!disposed) renderMessages();
+        return url;
+      } catch {
+        return null;
+      } finally {
+        imageLoadsInflight.delete(att.contentId);
+      }
+    })();
+    imageLoadsInflight.set(att.contentId, loader);
+    return null;
+  };
+
   const sendMessage = async (text: string, via: "text" | "voice") => {
     const trimmed = text.trim();
-    if (!trimmed || disposed) return;
+    const staged = via === "text" ? [...pendingImages] : [];
+    if ((!trimmed && staged.length === 0) || disposed) return;
     if (sending) {
       if (via === "voice") {
         restoreDraftWithoutOverwrite(trimmed);
@@ -1127,26 +1483,41 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     closeMentionMenu();
     sending = true;
     voiceError = "";
+    const messageText = trimmed || (staged.length === 1 ? "Sent an image" : `Sent ${staged.length} images`);
     const target = currentTarget();
-    const to = parseAddressing(trimmed);
-    const samePending = retainedPending
-      && retainedPending.text === trimmed
+    const to = parseAddressing(messageText);
+    const samePending = staged.length === 0
+      && retainedPending
+      && retainedPending.text === messageText
       && JSON.stringify(retainedPending.to) === JSON.stringify(to);
     const operationId = samePending
       ? retainedPending!.operationId
       : (typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
     // Persist the exact intent & operationId BEFORE submission so endpoint closure or reload never loses it.
-    persistPending({ operationId, text: trimmed, via, to, createdAt: samePending ? retainedPending!.createdAt : Date.now() });
+    if (staged.length === 0) {
+      persistPending({ operationId, text: messageText, via, to, createdAt: samePending ? retainedPending!.createdAt : Date.now() });
+    }
 
     if (via === "text") {
       textarea.value = "";
       autoResize();
       try { sessionStorage.removeItem(draftKey); } catch { /* ignore */ }
+      if (staged.length > 0) {
+        pendingImages = [];
+        renderPendingAttachments();
+      }
     }
     renderControls();
     try {
       if (api.chat?.hasProvider) {
-        await api.chat.send({ text: trimmed, via, target, to });
+        await api.chat.send({
+          text: messageText,
+          via,
+          target,
+          to,
+          ...(staged.length > 0 ? { files: staged.map(s => s.file) } : {}),
+        });
+        for (const item of staged) revokeManagedUrl(item.previewUrl);
         persistPending(null);
       } else if (api.application?.available) {
         // Before retrying a retained operationId, inspect the local store so we never duplicate an already-stored write.
@@ -1154,6 +1525,40 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           persistPending(null);
           await refreshSessionFeed();
           return;
+        }
+        const backend = api.application.backend;
+        const uploadedAttachments: RuntimeChatAttachment[] = [];
+        const attachmentRefs: Record<string, unknown> = {};
+        if (staged.length > 0) {
+          const content = backend.content;
+          if (!content || (typeof content.put !== "function" && typeof content.putBlob !== "function")) {
+            throw new Error("This page session does not support image attachments yet.");
+          }
+          const visibility = backend.genesis?.privateLog === false ? "public" : "private";
+          for (const item of staged) {
+            const bytes = new Uint8Array(await item.file.arrayBuffer());
+            let contentId: string;
+            let ref: unknown;
+            if (typeof content.put === "function") {
+              const stored = await content.put(bytes, { visibility, mediaType: item.mime, deduplicate: true }) as { id?: string; hash?: string } | null;
+              ref = stored;
+              contentId = stored?.id || stored?.hash || item.id;
+            } else {
+              const stored = await content.putBlob!(bytes) as { contentId?: string } | string | null;
+              contentId = typeof stored === "string" ? stored : (stored?.contentId || item.id);
+              ref = contentId;
+            }
+            imageUrlCache.set(contentId, item.previewUrl);
+            attachmentRefs[contentId] = ref;
+            uploadedAttachments.push({
+              contentId,
+              name: item.name,
+              mime: item.mime,
+              size: item.size,
+              previewUrl: item.previewUrl,
+              ref,
+            });
+          }
         }
         ownOperationIds.add(operationId);
         const roster = rosterSnap();
@@ -1165,17 +1570,31 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         optimistic.set(operationId, {
           id: operationId,
           role: "user",
-          text: trimmed,
+          text: messageText,
           at: Date.now(),
           status: "sending",
           senderHandle: currentUserHandle(),
           senderRole: roster.viewer?.role === "guest" ? "guest" : "owner",
           isSelf: true,
           toHandles: toHandles.length ? toHandles : undefined,
+          ...(uploadedAttachments.length > 0 ? { attachments: uploadedAttachments } : {}),
         });
         renderMessages();
-        const backend = api.application.backend;
-        const payload = { channel: "chat" as const, to, text: trimmed.slice(0, 8000) };
+        const payload: Record<string, unknown> = {
+          channel: "chat" as const,
+          to,
+          text: messageText.slice(0, 8000),
+        };
+        if (uploadedAttachments.length > 0) {
+          payload.attachments = uploadedAttachments.map(({ contentId, name, mime, size }) => ({
+            contentId,
+            name,
+            mime,
+            ...(typeof size === "number" ? { size } : {}),
+          }));
+          const serializedRefs = JSON.stringify({ attachmentRefs });
+          if (serializedRefs.length <= 16384) payload.data = serializedRefs;
+        }
         const declared = await describeDeclared(backend);
         if (typeof backend.command === "function" && (declared.hasAgentMessage || !declared.hasCommandList)) {
           await backend.command("agentMessage", payload, { operationId });
@@ -1206,7 +1625,11 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           await refreshSessionFeed();
         } else {
           voiceError = formatSendError(err);
-          restoreDraftWithoutOverwrite(trimmed);
+          if (trimmed) restoreDraftWithoutOverwrite(trimmed);
+          if (staged.length > 0) {
+            pendingImages = [...staged, ...pendingImages].slice(0, MAX_PENDING_IMAGES);
+            renderPendingAttachments();
+          }
           if (!isOpen) callbacks.onRequestOpen();
           renderMessages();
         }
@@ -1470,6 +1893,30 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       const bubble = el("div", undefined, "chat-bubble");
       if (typeof document.createTextNode === "function") renderMentionText(bubble, msg.text);
       else bubble.textContent = msg.text;
+      if (msg.attachments?.length) {
+        const attWrap = el("div", undefined, "chat-attachments");
+        for (const att of msg.attachments) {
+          const isImg = att.mime?.startsWith("image/");
+          const url = isImg ? resolveAttachmentUrl(att) : null;
+          if (isImg && url) {
+            const link = el("a", undefined, "chat-img-link");
+            link.href = url;
+            link.target = "_blank";
+            link.rel = "noopener";
+            link.title = att.name;
+            const img = el("img");
+            img.src = url;
+            img.alt = att.name;
+            link.append(img);
+            attWrap.append(link);
+          } else {
+            const chip = el("span", undefined, "chat-att-chip");
+            chip.append(iconEl("image"), el("span", att.name || "Image"));
+            attWrap.append(chip);
+          }
+        }
+        bubble.append(attWrap);
+      }
       row.append(bubble);
       const metaParts: string[] = [];
       if (msg.toHandles?.length) metaParts.push(`to ${msg.toHandles.map(h => h === "*" ? "@all" : `@${h}`).join(", ")}`);
@@ -1520,8 +1967,45 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     if (disposed) return;
     stopSpeakBtn.hidden = !speaking;
     speakToggleBtn.setAttribute("aria-pressed", String(autoSpeak));
+    setData(speakToggleBtn, "state", outputState === "error" ? "error" : autoSpeak ? "on" : "off");
     clearChildren(speakToggleBtn);
-    speakToggleBtn.append(iconEl(autoSpeak ? "speakerOn" : "speakerOff"));
+    const speakLabel = !autoSpeak
+      ? "Voice"
+      : outputState === "loading"
+        ? "Loading…"
+        : voiceOutputEngine === "neural"
+          ? "Neural"
+          : "Voice on";
+    speakToggleBtn.append(iconEl(autoSpeak ? "speakerOn" : "speakerOff"), el("span", speakLabel));
+
+    const wakeActive = !["off", "paused", "error"].includes(wakeState);
+    const upgraded = Boolean(autoSpeak && (keepWakeAfterSpeech || pendingWakeArm || wakeActive));
+    const showVoiceOutBar = autoSpeak || outputState === "loading" || outputState === "error" || wakeActive;
+    voiceOutBar.hidden = !showVoiceOutBar;
+    if (showVoiceOutBar) {
+      setData(voiceOutBar, "state", outputState === "error" ? "error" : outputState === "loading" ? "loading" : "ready");
+      engineBrowserBtn.setAttribute("aria-pressed", String(voiceOutputEngine === "browser"));
+      engineNeuralBtn.setAttribute("aria-pressed", String(voiceOutputEngine === "neural"));
+      voiceOutWakeBtn.setAttribute("aria-pressed", String(wakeActive || pendingWakeArm || keepWakeAfterSpeech));
+      voiceOutWakeBtn.textContent = wakeActive
+        ? `Wake: “${wakePhrase}”`
+        : pendingWakeArm
+          ? "Wake queued"
+          : "Wake word";
+      if (outputState === "error") {
+        voiceOutMsg.textContent = outputDetail || "Neural voice failed to load; using browser voice.";
+      } else if (outputState === "loading") {
+        voiceOutMsg.textContent = outputDetail || "Loading neural voice (~65 MB)…";
+      } else if (speaking) {
+        voiceOutMsg.textContent = voiceOutputEngine === "neural" ? "Speaking with neural voice…" : "Speaking reply…";
+      } else if (wakeActive) {
+        voiceOutMsg.textContent = `Listening for “${wakePhrase}” · replies spoken`;
+      } else {
+        voiceOutMsg.textContent = voiceOutputEngine === "neural" ? "Agent replies spoken (neural)" : "Agent replies spoken aloud";
+      }
+      voiceOutRetryBtn.hidden = outputState !== "error";
+    }
+
     configBtn.setAttribute("aria-pressed", String(configOpen));
     configPanel.hidden = !configOpen;
 
@@ -1531,6 +2015,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     modeDraftBtn.setAttribute("aria-selected", String(!autoSendVoice));
 
     const hasText = Boolean((textarea.value ?? "").trim());
+    const hasContent = hasText || pendingImages.length > 0;
     const voiceBusy = captureState === "recording" || captureState === "working";
     const willInstantSend = autoSendVoice && Boolean(api.chat?.hasProvider || api.application?.available);
 
@@ -1538,16 +2023,19 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     voiceBar.hidden = !voiceBusy;
 
     if (!voiceBusy) {
-      micBtn.className = hasText ? "mic-btn" : "mic-btn primary-mic";
+      attachBtn.disabled = sending;
+      micBtn.className = hasContent ? "mic-btn" : "mic-btn primary-mic";
       micBtn.setAttribute("aria-label", hasText ? "Dictate more" : "Tap or hold to speak");
       micBtn.title = hasText ? "Dictate into draft" : (willInstantSend ? "Tap or hold to speak (sends immediately)" : "Tap or hold to dictate into box");
-      sendBtn.hidden = !hasText;
-      sendBtn.disabled = sending || !hasText;
+      sendBtn.hidden = !hasContent;
+      sendBtn.disabled = sending || !hasContent;
     } else {
       setData(voiceBar, "state", captureState);
       voiceMeter.hidden = captureState !== "recording";
       voiceDot.hidden = captureState !== "recording";
       voiceFinishBtn.hidden = captureState !== "recording";
+      voiceUpgradeBtn.setAttribute("aria-pressed", String(upgraded));
+      voiceUpgradeBtn.textContent = upgraded ? "Talk back + wake on" : "+ Talk back & wake";
       if (captureState === "recording") {
         const mode: "send" | "draft" = willInstantSend ? "send" : "draft";
         if (mode !== lastVoiceFinishMode) {
@@ -1573,7 +2061,6 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       }
     }
 
-    const wakeActive = !["off", "paused", "error"].includes(wakeState);
     wakeStatusPill.textContent = wakeActive ? (wakeState === "detected" ? "Detected!" : "Listening") : wakeState === "error" ? "Error" : "Off";
     wakeStatusPill.className = wakeActive ? "pill ok" : wakeState === "error" ? "pill danger" : "pill";
     wakeToggleBtn.textContent = wakeActive ? "Stop wake word" : "Start wake word";
@@ -1581,13 +2068,19 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     if (voiceError) {
       statusStrip.hidden = false;
       statusStrip.className = "chat-status error";
+      statusStrip.setAttribute("role", "alert");
       statusText.textContent = voiceError;
+      statusRetry.hidden = captureState !== "error";
       statusCancel.hidden = true;
+      statusDismiss.hidden = false;
     } else if (handsFreeTimer !== null) {
       statusStrip.hidden = false;
       statusStrip.className = "chat-status";
+      statusStrip.setAttribute("role", "status");
       statusText.textContent = "Listening for follow-up…";
+      statusRetry.hidden = true;
       statusCancel.hidden = false;
+      statusDismiss.hidden = true;
     } else {
       statusStrip.hidden = true;
     }
@@ -1643,20 +2136,96 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     voice?.language(speechLang);
     saveVoicePrefs();
   });
-  ttsSelect.addEventListener("change", () => {
-    voiceOutputEngine = ttsSelect.value === "neural" ? "neural" : "browser";
+  const setOutputEngine = async (engine: "browser" | "neural") => {
+    voiceOutputEngine = engine;
+    ttsSelect.value = engine;
     saveVoicePrefs();
-    if (autoSpeak && voice) void voice.enableOutput(voiceOutputEngine).catch(() => {});
+    if (engine === "browser") primeBrowserSpeech();
+    if (autoSpeak) {
+      outputState = engine === "neural" ? "loading" : "ready";
+      outputDetail = engine === "neural" ? "Loading neural voice (~65 MB)…" : "";
+      renderControls();
+      try {
+        const v = await ensureVoice();
+        const ok = await v.enableOutput(engine);
+        if (!ok && !disposed) voiceError = "Spoken replies were not enabled.";
+      } catch (err) {
+        if (!disposed) {
+          outputState = "error";
+          outputDetail = err instanceof Error ? err.message : "Could not switch voice engine.";
+          voiceError = outputDetail;
+        }
+      }
+    }
+    renderControls();
+    emitDockState();
+  };
+  ttsSelect.addEventListener("change", () => {
+    void setOutputEngine(ttsSelect.value === "neural" ? "neural" : "browser");
+  });
+  engineBrowserBtn.addEventListener("click", () => { void setOutputEngine("browser"); });
+  engineNeuralBtn.addEventListener("click", () => { void setOutputEngine("neural"); });
+  voiceOutWakeBtn.addEventListener("click", () => upgradeToTalkBackAndWake());
+  voiceOutRetryBtn.addEventListener("click", () => { void setOutputEngine(voiceOutputEngine); });
+  voiceUpgradeBtn.addEventListener("click", () => upgradeToTalkBackAndWake());
+
+  // Image attachment picker, paste, and drag-and-drop
+  attachBtn.addEventListener("click", () => { imageInput.click(); });
+  imageInput.addEventListener("change", () => {
+    stageImageFiles(imageInput.files);
+    imageInput.value = "";
+  });
+  textarea.addEventListener("paste", (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      stageImageFiles(files);
+    }
+  });
+  let dragDepth = 0;
+  body.addEventListener("dragenter", (e: DragEvent) => {
+    if (e.dataTransfer?.types && !Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    dragDepth++;
+    body.classList?.add("drag-over");
+  });
+  body.addEventListener("dragover", (e: DragEvent) => {
+    if (e.dataTransfer?.types && !Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+  });
+  body.addEventListener("dragleave", () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) body.classList?.remove("drag-over");
+  });
+  body.addEventListener("drop", (e: DragEvent) => {
+    e.preventDefault();
+    dragDepth = 0;
+    body.classList?.remove("drag-over");
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) stageImageFiles(files);
   });
   speakToggleBtn.addEventListener("click", async () => {
     if (autoSpeak) {
       autoSpeak = false;
       handsFreeLoop = false;
       handsFreeCheck.checked = false;
+      keepWakeAfterSpeech = false;
+      pendingWakeArm = false;
       speechQueue.length = 0;
       clearHandsFree();
+      clearWakeRearm();
       voice?.mute();
       speaking = false;
+      outputState = "idle";
+      outputDetail = "";
     } else {
       // Unlock Web Speech synchronously in the click gesture before async dynamic import
       primeBrowserSpeech();
@@ -1665,12 +2234,17 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         if (m.role === "agent") spokenIds.add(m.id);
       }
       voiceError = "";
+      outputState = voiceOutputEngine === "neural" ? "loading" : "ready";
+      outputDetail = voiceOutputEngine === "neural" ? "Loading neural voice (~65 MB)…" : "";
+      renderControls();
       try {
         const v = await ensureVoice();
         autoSpeak = await v.enableOutput(voiceOutputEngine);
         if (!autoSpeak) voiceError = "Spoken replies were not enabled.";
       } catch (err) {
-        voiceError = err instanceof Error ? err.message : "Could not enable spoken replies.";
+        outputState = "error";
+        outputDetail = err instanceof Error ? err.message : "Could not enable spoken replies.";
+        voiceError = outputDetail;
       }
     }
     saveVoicePrefs();
@@ -1715,7 +2289,9 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     emitDockState();
   });
   fullVoiceBtn.addEventListener("click", () => callbacks.onOpenVoiceModal());
+  statusRetry.addEventListener("click", () => toggleMic());
   statusCancel.addEventListener("click", cancelHoldVoice);
+  statusDismiss.addEventListener("click", dismissVoiceError);
 
   // Composer Mic tap-or-hold + unified live Voice Bar actions
   let micHoldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1749,6 +2325,10 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     if (micHoldTimer !== null) { clearTimeout(micHoldTimer); micHoldTimer = null; }
     if (micHolding) {
       micHolding = false;
+      if (captureState === "error") {
+        renderControls();
+        return;
+      }
       if (e.type === "pointercancel") cancelHoldVoice();
       else if (captureState === "recording") voice?.finishCapture();
       else cancelHoldVoice();
@@ -1874,12 +2454,15 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     finishHoldVoice,
     cancelHoldVoice,
     toggleDockVoice,
+    dismissVoiceError,
+    upgradeToTalkBackAndWake,
     focusInput() { textarea.focus(); },
     scrollToBottom() { feed.scrollTop = feed.scrollHeight; },
     getDockState,
     dispose() {
       disposed = true;
       clearHandsFree();
+      clearWakeRearm();
       detachMicPtr();
       if (micHoldTimer !== null) clearTimeout(micHoldTimer);
       sessionAbort?.abort();
@@ -1887,6 +2470,9 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       offChat();
       offAppReady();
       voice?.dispose();
+      for (const url of [...ownedObjectUrls]) revokeManagedUrl(url);
+      imageUrlCache.clear();
+      pendingImages = [];
     },
   };
 }

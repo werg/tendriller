@@ -180,10 +180,11 @@ export class SpeechCapture {
         if (error) pending.reject(new Error(error));
         else pending.resolve(result);
       };
-      worker.onerror = () => {
+      worker.onerror = (event: ErrorEvent) => {
         if (this.worker !== worker) return;
-        this.failWorker(new Error("Speech worker failed"));
-        if (this.listening) { this.cancel(); this.h.onError("Speech worker failed. The microphone is stopped; try again or type instead."); }
+        const detail = event?.message ? ` (${event.message})` : "";
+        this.failWorker(new Error(`Speech worker failed${detail}`));
+        if (this.listening) { this.cancel(); this.h.onError(`Speech worker failed${detail}. The microphone is stopped; try again or type instead.`); }
       };
       this.h.onInterim("Downloading private speech model…");
       await this.call("init", { engine: this.speech.engine, modelUrl: new URL(this.speech.url, new URL(this.base, location.href)).href,
@@ -547,8 +548,9 @@ export class SpeechCapture {
       if (this.cancelled || session !== this.session) return;
       if (text) this.h.onFinal(text);
       else this.h.onError("I didn't catch that. Try again or type instead.");
-    } catch {
-      if (!this.cancelled && session === this.session) this.h.onError("On-device transcription failed. You can type instead.");
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+      if (!this.cancelled && session === this.session) this.h.onError(`On-device transcription failed${detail}. You can type instead.`);
     } finally {
       if (this.processingSession === session) this.processing = false;
       if (session === this.session) this.h.onInterim("");
@@ -568,8 +570,9 @@ export class SpeechCapture {
       const out = await decodeAudioToPcm16k(blob);
       const bounded = out.length > 16_000 * 30 ? out.subarray(0, 16_000 * 30) : out;
       await this.transcribePcm(bounded, session);
-    } catch {
-      if (!this.cancelled && session === this.session) this.h.onError("On-device audio decoding failed in this browser. Try again or type instead.");
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+      if (!this.cancelled && session === this.session) this.h.onError(`On-device audio decoding failed in this browser${detail}. Try again or type instead.`);
       if (this.processingSession === session) this.processing = false;
       if (session === this.session) this.h.onInterim("");
     }

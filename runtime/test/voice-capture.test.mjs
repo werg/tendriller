@@ -128,3 +128,20 @@ test('stalled workers have deadlines, can be retried, and disposal invalidates p
   const result = pending.capture.prepare(); await tick(); pending.capture.dispose(); consent(true);
   await assert.rejects(result, /disposed/); assert.equal(pending.workers.length, 0); assert.equal(pending.prompts, 0);
 });
+
+test('worker load errors and HTTP failure details are preserved instead of genericized', async () => {
+  const env = environment();
+  const preparing = env.capture.prepare();
+  await tick();
+  env.workers[0].onerror?.({ message: 'Speech speech code download failed (404: The runtime resource is not installed)' });
+  await assert.rejects(preparing, /404: The runtime resource is not installed/);
+  env.capture.dispose();
+
+  const env2 = environment();
+  const starting = env2.capture.start();
+  await tick();
+  env2.workers[0].respond('init', { error: 'Speech speech code download failed (404: The runtime resource is not installed)' });
+  await starting;
+  assert.match(env2.errors.at(-1), /404: The runtime resource is not installed/);
+  env2.capture.dispose();
+});

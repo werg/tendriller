@@ -249,9 +249,13 @@ jobs:
       source: ${{ github.event.pull_request.head.sha || github.sha }}
       manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
 
+  speech-qualification:
+    needs: [check]
+    uses: ./.github/workflows/speech-model.yml
+
   publish:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
-    needs: [check, browser, feedback-qualification, native-owner, sql-starter, network-qualification, artifacts]
+    needs: [check, browser, feedback-qualification, native-owner, sql-starter, network-qualification, speech-qualification, artifacts]
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml

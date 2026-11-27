@@ -13,7 +13,14 @@ async function verified(url: string, expected: string, size: unknown, maximum: n
   const declared = size === undefined ? null : size;
   if (declared !== null && (typeof declared !== "number" || !Number.isSafeInteger(declared) || declared <= 0 || declared > maximum)) throw new Error("Invalid speech asset size");
   const response = await fetch(url, { credentials: "same-origin", redirect: "error" });
-  if (!response.ok) throw new Error(`Speech download failed (${response.status})`);
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const body = await response.clone().json() as { error?: { message?: string } };
+      if (typeof body?.error?.message === "string" && body.error.message.trim()) detail = `: ${body.error.message.trim()}`;
+    } catch { /* non-JSON error body */ }
+    throw new Error(`Speech ${label} download failed (${response.status}${detail})`);
+  }
   const total = Number(response.headers.get("Content-Length")) || 0;
   if (total > maximum) throw new Error("Speech asset exceeds its download limit");
   const chunks: Uint8Array[] = [];

@@ -1053,11 +1053,12 @@ export function createVoiceModal(api: RuntimeApi) {
       msg.hidden = true;
       const toggle = mountedControls.element.shadowRoot?.querySelector<HTMLButtonElement>('button[aria-controls="voice-panel"]');
       toggle?.focus();
-    } catch {
+    } catch (err) {
       if (disposed) return;
       setupBtn.disabled = false;
       msg.className = "status-msg error";
-      msg.textContent = "Voice controls could not load. Check your connection and try again; typed input remains available.";
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+      msg.textContent = `Voice controls could not load${detail}. Check your connection and try again; typed input remains available.`;
     }
   });
 

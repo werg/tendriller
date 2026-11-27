@@ -277,6 +277,16 @@ export interface PageAgentRoster {
   readonly pending_guests?: number;
   readonly live?: Readonly<Record<string, AgentLiveStatus>>;
 }
+export interface RuntimeChatAttachment {
+  readonly contentId: string;
+  readonly name: string;
+  readonly mime: string;
+  readonly size?: number;
+  /** Optional local object/data URL for immediate thumbnail preview; never persisted to the log. */
+  readonly previewUrl?: string;
+  /** Optional Chronolog v2 BlobReference (needed for encrypted private P2P reads). */
+  readonly ref?: unknown;
+}
 export interface RuntimeChatMessage {
   readonly id: string;
   readonly role: "user" | "agent" | "system";
@@ -290,6 +300,7 @@ export interface RuntimeChatMessage {
   readonly isPrimary?: boolean;
   readonly toHandles?: readonly string[];
   readonly contextLabel?: string;
+  readonly attachments?: readonly RuntimeChatAttachment[];
   readonly actions?: ReadonlyArray<{ readonly id: string; readonly label: string; readonly primary?: boolean }>;
 }
 export interface RuntimeChatStream {
@@ -309,6 +320,8 @@ export interface RuntimeChatSendInput {
   readonly via: "text" | "voice";
   readonly target?: string | null | "*";
   readonly to?: readonly string[];
+  readonly files?: readonly File[];
+  readonly attachments?: readonly RuntimeChatAttachment[];
 }
 export interface RuntimeChatProvider {
   readonly title?: string;

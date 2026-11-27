@@ -97,6 +97,13 @@ export interface ApplicationBackend<Program = unknown, QueryResult = unknown, Pa
   query?(name: string, input?: unknown): Promise<QueryResult> | QueryResult;
   describe?(): { readonly commands?: unknown; readonly queries?: unknown } | Promise<{ readonly commands?: unknown; readonly queries?: unknown }>;
   readonly events?: ApplicationEvents;
+  readonly content?: {
+    put?(bytes: Uint8Array, options?: { readonly visibility?: 'public' | 'private'; readonly deduplicate?: boolean; readonly mediaType?: string; readonly signal?: AbortSignal }): Promise<unknown>;
+    putBlob?(bytes: Uint8Array, options?: { readonly signal?: AbortSignal }): Promise<unknown>;
+    get?(target: unknown, options?: { readonly cache?: boolean; readonly expectedBytes?: number; readonly maxBytes?: number; readonly signal?: AbortSignal }): Promise<Uint8Array | null>;
+    getBlob?(hash: string, options?: { readonly cache?: boolean; readonly expectedBytes?: number; readonly maxBytes?: number; readonly signal?: AbortSignal }): Promise<Uint8Array | null>;
+  };
+  readonly genesis?: { readonly privateLog?: boolean } | null;
   changes(options?: ApplicationChangeOptions): AsyncIterable<ApplicationChange>;
   readView(options?: { readonly view?: ApplicationView }): ApplicationReadView<QueryResult, Parameter> | Promise<ApplicationReadView<QueryResult, Parameter>>;
   readonly operations: ApplicationOperations;

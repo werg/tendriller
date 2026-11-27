@@ -756,7 +756,7 @@ test('failed voice send on ENDPOINT_CLOSED preserves transcript without overwrit
             author: '00'.repeat(32),
             authorTimestampMs: String(Date.now()),
             topic: 'agent/message',
-            payload: req.program.steps[0].payload,
+            payload: req.updates?.[0]?.input ?? req.program.steps[0].payload,
           });
         },
       },
@@ -863,4 +863,343 @@ test('Share & invite exposes optional Target view selector when facets are mount
   await expect.poll(() => postedBody).toEqual({ role: 'guest', view: 'kiosk', expires_in: 604800 });
   await page.getByRole('tab', { name: /Links/ }).click();
   await expect(page.getByText('View: kiosk', { exact: true })).toBeVisible();
+});
+
+test('voice recognition errors stay visible on dock tap, dock hold release, and inside chat modal with Retry and Dismiss', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  await page.route('https://layout.test/voice-error-fixture.mjs', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export function createVoice(runtime, handlers) {
+      window.__voiceAttempts = (window.__voiceAttempts || 0);
+      return {
+        get speaking() { return false; },
+        get listening() { return false; },
+        get muted() { return true; },
+        language() {},
+        async startCapture() {
+          window.__voiceAttempts++;
+          if (window.__voiceAttempts <= 2) {
+            handlers.status({ kind: 'capture', state: 'error', message: 'Speech speech code download failed (404: The runtime resource is not installed)' });
+            return;
+          }
+          handlers.status({ kind: 'capture', state: 'recording', message: 'Listening…' });
+        },
+        finishCapture() { handlers.status({ kind: 'capture', state: 'idle' }); },
+        cancelCapture() { handlers.status({ kind: 'capture', state: 'idle' }); },
+        stop() {},
+        mute() {},
+        dispose() {},
+      };
+    }`,
+  }));
+  await page.evaluate(() => {
+    const w = window as any;
+    w.api.assetUrl = () => 'https://layout.test/voice-error-fixture.mjs';
+  });
+
+  // 1) Dock voice tap error stays visible in a persistent alert card instead of disappearing
+  const talkBtn = page.getByRole('button', { name: 'Talk to assistant', exact: true });
+  await talkBtn.hover();
+  const voiceBtn = page.getByRole('button', { name: 'Voice input', exact: true });
+  await expect.poll(async () => (await voiceBtn.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
+  await voiceBtn.click();
+  const errorCard = page.getByRole('alert', { name: 'Voice error' });
+  await expect(errorCard).toBeVisible();
+  await expect(errorCard).toContainText('404: The runtime resource is not installed');
+  await page.waitForTimeout(150);
+  await expect(errorCard).toBeVisible();
+
+  // Dismiss clears the dock error card
+  await errorCard.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(errorCard).toBeHidden();
+
+  // 2) Hold-to-talk error is NOT wiped when the user releases the pointer
+  await talkBtn.hover();
+  await expect.poll(async () => (await voiceBtn.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
+  const box = (await voiceBtn.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(360);
+  await expect(errorCard).toBeVisible();
+  await page.mouse.up();
+  await page.waitForTimeout(100);
+  await expect(errorCard).toBeVisible();
+  await expect(errorCard).toContainText('404: The runtime resource is not installed');
+
+  // Clicking Try again retries voice recognition and succeeds on attempt 3
+  await errorCard.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(errorCard).toBeHidden();
+  await expect(page.getByText(/tap mic to (send|review)/)).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  // 3) Chat modal mic error persists with Try again + Dismiss buttons
+  await page.evaluate(() => { (window as any).__voiceAttempts = 0; });
+  await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  await dialog.getByRole('button', { name: 'Tap or hold to speak', exact: true }).click();
+  const alertStrip = dialog.getByRole('alert');
+  await expect(alertStrip).toBeVisible();
+  await expect(alertStrip).toContainText('404: The runtime resource is not installed');
+  await expect(alertStrip.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+  await alertStrip.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(alertStrip).toBeHidden();
+});
+
+test('voice generation pill and quick engine bar allow 1-tap activation, neural switching, and retry', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  await page.route('https://layout.test/voice-tts-bar-fixture.mjs', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export function createVoice(runtime, handlers) {
+      let enabled = false;
+      window.__ttsEngines = [];
+      window.__neuralAttempts = 0;
+      return {
+        get speaking() { return false; },
+        get listening() { return false; },
+        get muted() { return !enabled; },
+        language() {},
+        async enableOutput(engine) {
+          window.__ttsEngines.push(engine);
+          if (engine === 'neural') {
+            window.__neuralAttempts++;
+            handlers.status({ kind: 'output', state: 'loading', message: 'Loading neural voice (~65 MB)…', speaking: false });
+            if (window.__neuralAttempts === 1) {
+              handlers.status({ kind: 'output', state: 'error', message: 'Neural voice download failed (offline). Using browser voice.', speaking: false });
+              enabled = true;
+              return true;
+            }
+            handlers.status({ kind: 'output', state: 'ready', message: 'Neural voice ready.', speaking: false });
+          } else {
+            handlers.status({ kind: 'output', state: 'ready', message: 'Browser voice ready.', speaking: false });
+          }
+          enabled = true;
+          return true;
+        },
+        mute() { enabled = false; },
+        speak() {},
+        stop() {},
+        dispose() {},
+      };
+    }`,
+  }));
+  await page.evaluate(() => {
+    const w = window as any;
+    w.api.assetUrl = () => 'https://layout.test/voice-tts-bar-fixture.mjs';
+  });
+
+  await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  const voicePill = dialog.getByRole('button', { name: 'Toggle spoken replies', exact: true });
+  await expect(voicePill).toBeVisible();
+  await expect(voicePill).toContainText('Voice');
+
+  // 1-tap activation reveals the quick engine bar without opening any settings submenu
+  await voicePill.click();
+  await expect(voicePill).toHaveAttribute('aria-pressed', 'true');
+  await expect(voicePill).toContainText('Voice on');
+  const engineGroup = dialog.getByRole('group', { name: 'Spoken reply voice engine' });
+  await expect(engineGroup).toBeVisible();
+  await expect(engineGroup.getByRole('button', { name: 'Browser', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  // Switching to Neural shows error + Retry button on first failure, then succeeds on Retry
+  await engineGroup.getByRole('button', { name: 'Neural (~65 MB)', exact: true }).click();
+  await expect(dialog).toContainText('Neural voice download failed (offline)');
+  const retryBtn = dialog.getByRole('button', { name: 'Retry', exact: true });
+  await expect(retryBtn).toBeVisible();
+  await retryBtn.click();
+  await expect(retryBtn).toBeHidden();
+  await expect(voicePill).toContainText('Neural');
+  expect(await page.evaluate(() => (window as any).__ttsEngines)).toEqual(['browser', 'neural', 'neural']);
+});
+
+test('single talk voice input can upgrade in 1 tap to talk-back and model wakeword mode from both chat modal and dock', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  await page.route('https://layout.test/voice-upgrade-fixture.mjs', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export function createVoice(runtime, handlers) {
+      let outputEnabled = false;
+      window.__events = [];
+      return {
+        get speaking() { return false; },
+        get listening() { return false; },
+        get muted() { return !outputEnabled; },
+        language() {},
+        async enableOutput(engine) {
+          outputEnabled = true;
+          window.__events.push({ type: 'enableOutput', engine });
+          handlers.status({ kind: 'output', state: 'ready', speaking: false });
+          return true;
+        },
+        async startCapture() {
+          window.__events.push({ type: 'startCapture' });
+          handlers.status({ kind: 'capture', state: 'recording', message: 'Listening…' });
+        },
+        finishCapture() {
+          window.__events.push({ type: 'finishCapture' });
+          handlers.status({ kind: 'capture', state: 'idle' });
+          handlers.transcript('Check the greenhouse sensors');
+        },
+        cancelCapture() {
+          handlers.status({ kind: 'capture', state: 'idle' });
+        },
+        async startWake(opts) {
+          window.__events.push({ type: 'startWake', ...opts });
+          handlers.status({ kind: 'wake', state: 'listening', message: 'Listening for wake phrase' });
+          return true;
+        },
+        stopWake() {
+          window.__events.push({ type: 'stopWake' });
+          handlers.status({ kind: 'wake', state: 'off' });
+        },
+        speak(text) {
+          window.__events.push({ type: 'speak', text });
+          handlers.status({ kind: 'wake', state: 'paused' });
+          handlers.status({ kind: 'output', state: 'speaking', speaking: true });
+          setTimeout(() => handlers.status({ kind: 'output', state: 'ready', speaking: false, completed: true }), 25);
+        },
+        stop() {},
+        mute() { outputEnabled = false; },
+        dispose() {},
+      };
+    }`,
+  }));
+  await page.evaluate(() => {
+    const w = window as any;
+    w.sent = [];
+    w.api.assetUrl = () => 'https://layout.test/voice-upgrade-fixture.mjs';
+    w.chatStore.api.register({ title: 'Hands-free chat', onSend(input: unknown) { w.sent.push(input); } });
+  });
+
+  // 1) Start a single talk inside the chat modal, then upgrade in the same go while recording
+  await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  await dialog.getByRole('button', { name: 'Tap or hold to speak', exact: true }).click();
+  const upgradeBtn = dialog.getByRole('button', { name: '+ Talk back & wake', exact: true });
+  await expect(upgradeBtn).toBeVisible();
+  await upgradeBtn.click();
+  await expect(dialog.getByRole('button', { name: 'Talk back + wake on', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  // Finish the single utterance -> sends transcript, then automatically arms model wake word
+  await dialog.getByRole('button', { name: 'Stop and send voice message', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).sent.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as any).__events.filter((e: any) => e.type === 'startWake').length)).toBe(1);
+  const firstWake = await page.evaluate(() => (window as any).__events.find((e: any) => e.type === 'startWake'));
+  expect(firstWake).toMatchObject({ type: 'startWake', mode: 'model' });
+
+  // Agent replies -> spoken aloud -> automatically re-arms model wake word after playback completes
+  await page.evaluate(() => {
+    (window as any).chatStore.api.setMessages([
+      { id: 'u1', role: 'user', text: 'Check the greenhouse sensors' },
+      { id: 'a1', role: 'agent', senderHandle: 'atlas', text: 'Humidity is 62 percent.' },
+    ]);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__events.filter((e: any) => e.type === 'speak').length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as any).__events.filter((e: any) => e.type === 'startWake').length)).toBe(2);
+
+  // Stop wake word from the quick bar and close modal
+  await dialog.getByRole('button', { name: /Wake:/ }).click();
+  await dialog.getByRole('button', { name: 'Close assistant chat', exact: true }).click();
+
+  // 2) Upgrade directly from the floating dock while talking
+  await page.getByRole('button', { name: 'Voice input', exact: true }).click();
+  const dockUpgrade = page.getByRole('button', { name: '+ Talk back & wake', exact: true });
+  await expect(dockUpgrade).toBeVisible();
+  await dockUpgrade.click();
+  await expect(page.getByRole('button', { name: 'Talk back + wake on', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Finish voice input', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__events.filter((e: any) => e.type === 'startWake').length)).toBe(3);
+  await expect(page.getByText(/Wake word:/)).toBeVisible();
+  await page.getByRole('button', { name: 'Stop wake', exact: true }).click();
+  await expect(page.getByText(/Wake word:/)).toBeHidden();
+});
+
+test('Standard Page chat attaches, previews, removes, and sends images via Chronolog session content pipe', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  const tinyPng = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2dIAAAAASUVORK5CYII=',
+    'base64',
+  );
+
+  await page.evaluate(() => {
+    const w = window as any;
+    w.storedBlobs = new Map();
+    w.submittedOps = [];
+    let blobSeq = 0;
+    const feedMessages: any[] = [];
+    w.api.application = {
+      available: true,
+      backend: {
+        status: { canAuthor: true, phase: 'ready', connectedPeers: 0 },
+        onStatus() { return () => {}; },
+        identity: { publicKey: 'aa'.repeat(32) },
+        genesis: { privateLog: true },
+        describe: () => ({ commands: ['agentMessage'], queries: ['agentFeed'] }),
+        content: {
+          async put(bytes: Uint8Array, opts: any) {
+            const id = `blob_${++blobSeq}`;
+            w.storedBlobs.set(id, { bytes: Array.from(bytes), opts });
+            return { profile: 'authored-content-v1', id, bytes: bytes.byteLength, mediaType: opts?.mediaType };
+          },
+          async get(ref: any) {
+            const key = typeof ref === 'string' ? ref : ref?.id;
+            const entry = w.storedBlobs.get(key);
+            return entry ? new Uint8Array(entry.bytes) : null;
+          },
+        },
+        async command(name: string, payload: any, opts: any) {
+          w.submittedOps.push({ name, payload, operationId: opts?.operationId });
+          feedMessages.push({
+            author: 'aa'.repeat(32),
+            operationId: opts?.operationId,
+            atMs: Date.now(),
+            text: payload.text,
+            attachments: payload.attachments,
+            data: payload.data,
+          });
+        },
+        async query(name: string) {
+          if (name === 'agentFeed') return { value: { messages: feedMessages, activity: [], receipts: {} } };
+          return null;
+        },
+        changes() { return { async *[Symbol.asyncIterator]() {} }; },
+      },
+    };
+    w.disposeUtility();
+    w.mount();
+  });
+
+  await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  const fileInput = dialog.locator('input[type="file"]');
+
+  // Attach two images, remove one, send with caption
+  await fileInput.setInputFiles([
+    { name: 'leaf.png', mimeType: 'image/png', buffer: tinyPng },
+    { name: 'soil.png', mimeType: 'image/png', buffer: tinyPng },
+  ]);
+  await expect(dialog.locator('.pending-thumb')).toHaveCount(2);
+  await dialog.getByRole('button', { name: 'Remove soil.png', exact: true }).click();
+  await expect(dialog.locator('.pending-thumb')).toHaveCount(1);
+
+  const sendBtn = dialog.getByRole('button', { name: 'Send message', exact: true });
+  await expect(sendBtn).toBeVisible();
+  await expect(sendBtn).toBeEnabled();
+
+  // Send image-only (no text required!)
+  await sendBtn.click();
+  await expect.poll(() => page.evaluate(() => (window as any).submittedOps.length)).toBe(1);
+  const firstOp = await page.evaluate(() => (window as any).submittedOps[0]);
+  expect(firstOp.name).toBe('agentMessage');
+  expect(firstOp.payload.text).toBe('Sent an image');
+  expect(firstOp.payload.attachments).toHaveLength(1);
+  expect(firstOp.payload.attachments[0]).toMatchObject({ contentId: 'blob_1', name: 'leaf.png', mime: 'image/png' });
+  expect(JSON.parse(firstOp.payload.data)).toMatchObject({
+    attachmentRefs: { blob_1: { profile: 'authored-content-v1', id: 'blob_1' } },
+  });
+  await expect(dialog.locator('.chat-img-link img')).toHaveCount(1);
+  await expect(dialog.locator('.pending-thumb')).toHaveCount(0);
 });

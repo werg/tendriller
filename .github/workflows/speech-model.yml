@@ -1,6 +1,7 @@
 name: Pinned speech model
 
 on:
+  workflow_call:
   workflow_dispatch:
   schedule:
     - cron: "20 5 * * 1"
@@ -8,11 +9,18 @@ on:
     branches: [master]
     paths:
       - "runtime/src/voice/**"
+      - "runtime/src/utility/**"
+      - "runtime/src/utility.ts"
       - "runtime/src/sensors.ts"
       - "runtime/resources.*"
+      - "runtime/test/tts/**"
+      - "runtime/test/utility-layout.spec.ts"
+      - "server/src/runtime-assets.ts"
       - "contract/voice.d.mts"
       - "contract/index.d.mts"
       - "scripts/e2e-speech-assets.mjs"
+      - "scripts/install-runtime-resources.mjs"
+      - "scripts/dev.mjs"
       - "scripts/qualify-speech-node.mjs"
       - "scripts/generate-speech-fixture.mjs"
       - "scripts/generate-wake-fixtures.mjs"
@@ -29,11 +37,18 @@ on:
   pull_request:
     paths:
       - "runtime/src/voice/**"
+      - "runtime/src/utility/**"
+      - "runtime/src/utility.ts"
       - "runtime/src/sensors.ts"
       - "runtime/resources.*"
+      - "runtime/test/tts/**"
+      - "runtime/test/utility-layout.spec.ts"
+      - "server/src/runtime-assets.ts"
       - "contract/voice.d.mts"
       - "contract/index.d.mts"
       - "scripts/e2e-speech-assets.mjs"
+      - "scripts/install-runtime-resources.mjs"
+      - "scripts/dev.mjs"
       - "scripts/qualify-speech-node.mjs"
       - "scripts/generate-speech-fixture.mjs"
       - "scripts/generate-wake-fixtures.mjs"
@@ -51,15 +66,18 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: pinned-speech-${{ github.ref }}
-  cancel-in-progress: true
+  group: pinned-speech-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   real-model:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -72,12 +90,17 @@ jobs:
       # Cache hits are still SHA-256 verified; an unavailable download fails the
       # job instead of turning a missing real-model check into a passing skip.
       - run: node scripts/e2e-speech-assets.mjs
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e:speech-real
+      - run: npx playwright install --with-deps chromium firefox
+      - name: Verify real bundled voice generation (TTS) in Chromium and Firefox
+        run: npm run build && npm run test:tts
+      - name: Verify real pinned voice recognition (ASR) and wake word in Chromium and Firefox
+        run: npm run test:e2e:speech-real
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pinned-speech-results
-          path: test-results/speech-real/
+          path: |
+            test-results/speech-real/
+            test-results/tts/
           include-hidden-files: true
           if-no-files-found: ignore

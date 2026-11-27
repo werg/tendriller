@@ -96,6 +96,16 @@ export function mountUtility(api: RuntimeApi): () => void {
   const broadcastCard = el("aside", undefined, "float-card broadcast-card"); broadcastCard.hidden = true;
   broadcastCard.setAttribute("aria-label", "System notice"); broadcastCard.setAttribute("role", "status"); broadcastCard.setAttribute("aria-live", "polite");
 
+  const voiceErrorCard = el("aside", undefined, "float-card voice-error-card"); voiceErrorCard.hidden = true;
+  voiceErrorCard.setAttribute("aria-label", "Voice error"); voiceErrorCard.setAttribute("role", "alert"); voiceErrorCard.setAttribute("aria-live", "assertive");
+  const voiceErrorTitle = el("strong", "Voice recognition error");
+  const voiceErrorMsg = el("p", "");
+  const voiceErrorRetry = btn("Try again", "btn primary sm");
+  const voiceErrorDismiss = btn("Dismiss", "btn sm");
+  const voiceErrorActions = el("div", undefined, "row");
+  voiceErrorActions.append(voiceErrorRetry, voiceErrorDismiss);
+  voiceErrorCard.append(voiceErrorTitle, voiceErrorMsg, voiceErrorActions);
+
   const suggestion = el("aside", undefined, "float-card"); suggestion.hidden = true;
   suggestion.setAttribute("aria-label", "Home screen suggestion");
   const suggestAdd = btn("Show me how", "btn primary sm"); suggestAdd.style.flex = "1";
@@ -116,8 +126,12 @@ export function mountUtility(api: RuntimeApi): () => void {
   const recChip = el("div", undefined, "rec-chip"); recChip.hidden = true;
   const recPulse = el("span", undefined, "rec-pulse");
   const recText = el("span", "Listening…");
+  const recUpgrade = btn("+ Talk back & wake", "rec-upgrade");
+  recUpgrade.setAttribute("aria-pressed", "false");
+  recUpgrade.title = "Switch to spoken replies and on-device wake word in the same go";
+  recUpgrade.hidden = true;
   const recCancel = btn("Cancel", "rec-cancel");
-  recChip.append(recPulse, recText, recCancel);
+  recChip.append(recPulse, recText, recUpgrade, recCancel);
 
   const talkPill = el("div", undefined, "talk-pill");
   const voiceReveal = el("div", undefined, "voice-reveal");
@@ -357,6 +371,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     setData(voiceBtn, "recording", String(st.recording));
     setData(voiceBtn, "working", String(st.working && !st.recording));
     setData(voiceBtn, "wake", String(st.wakeActive));
+    setData(voiceBtn, "error", String(Boolean(st.errorMessage) && !st.recording && !st.working));
     voiceBtn.style.setProperty?.("--level", st.audioLevel.toFixed(3));
     if (st.recording !== lastVoiceRecording) {
       lastVoiceRecording = st.recording;
@@ -373,8 +388,22 @@ export function mountUtility(api: RuntimeApi): () => void {
 
     const showChip = Boolean(st.statusChip) && activeModal !== "chat";
     recChip.hidden = !showChip;
-    if (showChip) recText.textContent = st.statusChip;
-    voiceItem.sub.textContent = st.wakeActive ? "Wake word listening" : st.speaking ? "Speaking reply…" : "Mic, wake word & spoken replies";
+    if (showChip) {
+      recText.textContent = st.statusChip;
+      const showUpgrade = st.recording || st.working;
+      recUpgrade.hidden = !showUpgrade;
+      if (showUpgrade) {
+        recUpgrade.setAttribute("aria-pressed", String(st.talkBackAndWake));
+        recUpgrade.textContent = st.talkBackAndWake ? "Talk back + wake on" : "+ Talk back & wake";
+      }
+      recCancel.textContent = st.wakeActive && !st.recording && !st.working ? "Stop wake" : "Cancel";
+    }
+    const showDockError = Boolean(st.errorMessage) && activeModal !== "chat" && !st.recording && !st.working;
+    voiceErrorCard.hidden = !showDockError;
+    if (showDockError) {
+      voiceErrorMsg.textContent = st.errorMessage;
+    }
+    voiceItem.sub.textContent = st.wakeActive ? "Wake word listening" : st.speaking ? "Speaking reply…" : st.errorMessage ? "Needs attention" : "Mic, wake word & spoken replies";
   };
 
   const chatModal = createChatModal(api, {
@@ -491,10 +520,21 @@ export function mountUtility(api: RuntimeApi): () => void {
   };
 
   // ── Floating Broadcast Card & Updates ─────────────────────────────────
+  let pendingUpdateNotice: ReturnType<typeof setTimeout> | undefined;
   const offUpdate = api.publication.onUpdate(({ version, kind }) => {
     if (disposed) return;
-    const show = version !== null && kind !== "hot-swapped" && (api.publication.pinned || api.publication.policy === "careful");
-    updateCard.hidden = !show;
+    clearTimeout(pendingUpdateNotice);
+    pendingUpdateNotice = undefined;
+    const pending = version !== null && kind !== "hot-swapped";
+    updateCard.hidden = !pending || (!api.publication.pinned && api.publication.policy !== "careful");
+    if (pending && !api.publication.pinned && api.publication.policy !== "careful") {
+      // Safe live updates navigate immediately. If the old document remains,
+      // inform the user that a draft, hold or interrupted navigation deferred it.
+      pendingUpdateNotice = setTimeout(() => {
+        pendingUpdateNotice = undefined;
+        if (!disposed && api.publication.updateAvailable) updateCard.hidden = false;
+      }, 300);
+    }
     popUpdateBanner.hidden = version === null || kind === "hot-swapped";
     updateMenuMeta();
   });
@@ -553,7 +593,10 @@ export function mountUtility(api: RuntimeApi): () => void {
   modalBackdrop.addEventListener("click", (e: MouseEvent) => { if (e.target === modalBackdrop) closeModal(true); });
   stopSensors.addEventListener("click", () => { api.sensors.stopAll(); optionsBtn.focus(); });
   modalStopSensors.addEventListener("click", () => { api.sensors.stopAll(); });
+  recUpgrade.addEventListener("click", () => chatModal.upgradeToTalkBackAndWake());
   recCancel.addEventListener("click", () => chatModal.cancelHoldVoice());
+  voiceErrorRetry.addEventListener("click", () => chatModal.toggleDockVoice());
+  voiceErrorDismiss.addEventListener("click", () => { chatModal.dismissVoiceError(); voiceBtn.focus(); });
 
   // ── Corner Positioning & Drag-to-Snap + Hold-to-Talk Coexistence ──────
   let lastKeyboardHeight = 0;
@@ -644,6 +687,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   nav.addEventListener("pointerdown", (event: PointerEvent) => {
     if (!event.isPrimary || (event.button !== 0 && event.pointerType === "mouse")) return;
     const path = event.composedPath?.() ?? [];
+    if (path.includes(recUpgrade) || path.includes(recCancel)) return;
     const onVoice = path.includes(voiceBtn);
     drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, onVoice };
     if (onVoice) {
@@ -768,7 +812,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   window.addEventListener("pagehide", hide);
   window.addEventListener("pageshow", show);
 
-  root.append(style, themeStyle, broadcastCard, updateCard, suggestion, panel, nav, modalBackdrop);
+  root.append(style, themeStyle, broadcastCard, updateCard, voiceErrorCard, suggestion, panel, nav, modalBackdrop);
 
   const attach = () => { const parent = document.body || document.documentElement; if (host.parentNode !== parent) parent.append(host); };
   const observer = new MutationObserver(attach);
@@ -796,6 +840,7 @@ export function mountUtility(api: RuntimeApi): () => void {
 
   return () => {
     disposed = true;
+    clearTimeout(pendingUpdateNotice);
     clearHoldTimer();
     stopFollowing();
     chatModal.dispose();

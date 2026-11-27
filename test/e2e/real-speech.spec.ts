@@ -46,6 +46,11 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
   try {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("No test server address");
+    const securityErrors: string[] = [];
+    page.on("console", msg => {
+      if (/security error|file:\/\/\//i.test(msg.text())) securityErrors.push(msg.text());
+    });
+    page.on("pageerror", err => securityErrors.push(err.message));
     await page.goto(`http://127.0.0.1:${address.port}/`);
     const messages = await page.evaluate(async config => {
       const worker = new Worker(config.worker);
@@ -106,6 +111,111 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
       expect(words(entry.response.command), entry.file).toBe(words(entry.command));
       expect(entry.response).not.toHaveProperty("text");
     }
+    expect(securityErrors).toEqual([]);
+  } finally {
+    const closed = new Promise<void>(resolve => server.close(() => resolve()));
+    for (const socket of sockets) socket.destroy();
+    await closed;
+  }
+});
+
+test("built voice.mjs transcribeAudio runs real Cactus/Whistle WASM end-to-end and surfaces HTTP 404 details clearly", async ({ page }) => {
+  test.skip(process.env.E2E_REAL_SPEECH !== "1", "Use npm run test:e2e:speech-real; CI also runs the cached model workflow");
+  test.setTimeout(180_000);
+  const cache = execFileSync(process.execPath, ["scripts/e2e-speech-assets.mjs"], { encoding: "utf8", timeout: 150_000 }).trim();
+  const fixture = JSON.parse(await readFile("test/fixtures/speech/manifest.json", "utf8"));
+  const spoken = await readFile(join("test/fixtures/speech", fixture.file));
+  const runtime = JSON.parse(await readFile("dist/runtime/assets/manifest.json", "utf8"));
+  const voiceMjs = await readFile("dist/runtime/assets/voice.mjs");
+  const workerJs = await readFile("dist/runtime/assets/voice-worker.js");
+  const resourcesJson = await readFile("dist/runtime/assets/resources.json");
+  const js = await readFile(join(cache, "cactus.js"));
+  const wasm = await readFile(join(cache, "cactus.wasm"));
+  const model = await readFile(join(cache, "whistle.cact"));
+  const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const prefix = `/_tendril/runtime/${runtime.id}`;
+  const assets = new Map<string, { bytes: Buffer | Uint8Array; type: string }>([
+    [`${prefix}/voice.mjs`, { bytes: voiceMjs, type: "text/javascript" }],
+    [`${prefix}/voice-worker.js`, { bytes: workerJs, type: "text/javascript" }],
+    [`${prefix}/resources.json`, { bytes: resourcesJson, type: "application/json" }],
+    [`/_tendril/assets/${hash(js)}/cactus.js`, { bytes: js, type: "text/javascript" }],
+    [`/_tendril/assets/${hash(wasm)}/cactus.wasm`, { bytes: wasm, type: "application/wasm" }],
+    [`/_tendril/assets/${hash(model)}/whistle.cact`, { bytes: model, type: "application/octet-stream" }],
+    ["/known-speech.wav", { bytes: spoken, type: "audio/wav" }],
+  ]);
+
+  let simulateMissingModel = false;
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer((req, res) => {
+    const urlPath = (req.url ?? "/").split("?")[0];
+    if (simulateMissingModel && urlPath.endsWith("/cactus.js")) {
+      const body = JSON.stringify({ error: { code: "not_found", message: "The runtime resource is not installed" } });
+      res.writeHead(404, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+      return;
+    }
+    const asset = assets.get(urlPath);
+    if (asset) {
+      res.writeHead(200, { "Content-Type": asset.type, "Content-Length": asset.bytes.length });
+      res.end(asset.bytes);
+    } else {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<!doctype html><html lang=en><title>Voice Module E2E</title><main>Voice module</main></html>");
+    }
+  });
+  server.on("connection", s => { sockets.add(s); s.once("close", () => sockets.delete(s)); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+
+  const securityErrors: string[] = [];
+  page.on("console", msg => {
+    if (/security error|file:\/\/\//i.test(msg.text())) securityErrors.push(msg.text());
+  });
+  page.on("pageerror", err => securityErrors.push(err.message));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No test server address");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await page.goto(`${origin}/`);
+
+    // 1) Verify real 404 server error detail propagates clearly (not swallowed or hidden)
+    simulateMissingModel = true;
+    const missingErr = await page.evaluate(async ({ origin, prefix }) => {
+      const voice = await import(`${origin}${prefix}/voice.mjs`);
+      const runtimeApi: any = {
+        identity: { page: "test-page", base: `${origin}/` },
+        assetUrl: (name: string) => `${origin}${prefix}/${name}`,
+        on: () => () => {},
+      };
+      const wav = await (await fetch(`${origin}/known-speech.wav`)).blob();
+      try {
+        await voice.transcribeAudio(runtimeApi, wav, { language: "en-US" });
+        return null;
+      } catch (err: any) {
+        return err?.message ?? String(err);
+      }
+    }, { origin, prefix });
+    expect(missingErr).toMatch(/404/);
+    expect(missingErr).toMatch(/The runtime resource is not installed/);
+
+    // 2) Restore assets and verify real end-to-end transcription via built voice.mjs
+    simulateMissingModel = false;
+    const result = await page.evaluate(async ({ origin, prefix }) => {
+      const voice = await import(`${origin}${prefix}/voice.mjs`);
+      const runtimeApi: any = {
+        identity: { page: "test-page", base: `${origin}/` },
+        assetUrl: (name: string) => `${origin}${prefix}/${name}`,
+        on: () => () => {},
+      };
+      const wav = await (await fetch(`${origin}/known-speech.wav`)).blob();
+      return await voice.transcribeAudio(runtimeApi, wav, { language: "en-US" });
+    }, { origin, prefix });
+
+    const transcript = typeof result === "string" ? result : String((result as any)?.text ?? "");
+    const errorRate = wordErrorRate(fixture.transcript, transcript);
+    expect(transcript.trim()).toBeTruthy();
+    expect(errorRate, `Expected '${fixture.transcript}', received '${transcript}'`).toBeLessThanOrEqual(fixture.max_word_error_rate);
+    expect(securityErrors).toEqual([]);
   } finally {
     const closed = new Promise<void>(resolve => server.close(() => resolve()));
     for (const socket of sockets) socket.destroy();

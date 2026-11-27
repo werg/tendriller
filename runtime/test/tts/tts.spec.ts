@@ -1,5 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { build } from "esbuild";
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 let entry: string;
@@ -177,4 +180,88 @@ test("returning to a page invalidates an unfinished model load", async ({page}) 
   expect(await page.evaluate(() => (window as any).tts.status.state)).toBe('idle');
   await page.evaluate(async () => { const w=window as any; w.holdLoad=false; await w.tts.enable(); w.tts.speak('fresh'); });
   await expect.poll(() => page.evaluate(() => (window as any).spoken)).toEqual(['fresh']);
+});
+
+test("real bundled phonon-tts module, worker, and WASM load cleanly with zero security/file:/// errors and safe fallback", async ({ page }) => {
+  const assetsDir = resolve(fileURLToPath(new URL("../../../dist/runtime/assets", import.meta.url)));
+  const mimeTypes: Record<string, string> = {
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".wasm": "application/wasm",
+    ".json": "application/json; charset=utf-8",
+  };
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer(async (req, res) => {
+    const reqPath = (req.url || "/").split("?")[0];
+    if (reqPath === "/") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end("<!doctype html><meta charset=utf-8><title>Real TTS Check</title><main>TTS</main>");
+      return;
+    }
+    if (reqPath.startsWith("/runtime/")) {
+      const rel = reqPath.slice("/runtime/".length);
+      if (rel.includes("..") || rel.startsWith("/")) { res.writeHead(400); res.end(); return; }
+      try {
+        const bytes = await readFile(join(assetsDir, rel));
+        res.writeHead(200, { "Content-Type": mimeTypes[extname(rel)] || "application/octet-stream" });
+        res.end(bytes);
+        return;
+      } catch {
+        res.writeHead(404); res.end("not found"); return;
+      }
+    }
+    res.writeHead(404); res.end("not found");
+  });
+  server.on("connection", s => { sockets.add(s); s.once("close", () => sockets.delete(s)); });
+  await new Promise<void>(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
+  const securityErrors: string[] = [];
+  page.on("console", msg => {
+    if (msg.type() === "error" || /security error|file:\/\/\//i.test(msg.text())) securityErrors.push(msg.text());
+  });
+  page.on("pageerror", err => securityErrors.push(err.message));
+
+  try {
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("No server address");
+    const base = `http://127.0.0.1:${addr.port}`;
+    await page.goto(`${base}/`);
+    const result = await page.evaluate(async (origin) => {
+      const mod = await import(`${origin}/runtime/tts/index.js`);
+      const wasmRes = await fetch(`${origin}/runtime/tts/wasm/phonon_tts_simd_bg.wasm`);
+      const wasmBytes = await wasmRes.arrayBuffer();
+      const wasmCompiled = await WebAssembly.validate(wasmBytes);
+      const workerRes = await fetch(`${origin}/runtime/tts/worker.js`);
+      const workerText = await workerRes.text();
+      // Instantiate the real module worker and verify it boots without any file:/// or SyntaxError
+      const workerErrors: string[] = [];
+      const w = new Worker(`${origin}/runtime/tts/worker.js`, { type: "module" });
+      w.onerror = e => workerErrors.push(e.message || "worker error");
+      await new Promise(r => setTimeout(r, 150));
+      w.terminate();
+      return {
+        hasPhononTTS: typeof mod.PhononTTS === "function",
+        hasLoad: typeof mod.PhononTTS?.load === "function",
+        wasmStatus: wasmRes.status,
+        wasmSize: wasmBytes.byteLength,
+        wasmCompiled,
+        workerStatus: workerRes.status,
+        workerHasFileUrl: /file:\/\/\//.test(workerText),
+        workerErrors,
+      };
+    }, base);
+
+    expect(result.hasPhononTTS).toBe(true);
+    expect(result.hasLoad).toBe(true);
+    expect(result.wasmStatus).toBe(200);
+    expect(result.wasmSize).toBeGreaterThan(10_000);
+    expect(result.wasmCompiled).toBe(true);
+    expect(result.workerStatus).toBe(200);
+    expect(result.workerHasFileUrl).toBe(false);
+    expect(result.workerErrors).toEqual([]);
+    expect(securityErrors).toEqual([]);
+  } finally {
+    const closed = new Promise<void>(r => server.close(() => r()));
+    for (const s of sockets) s.destroy();
+    await closed;
+  }
 });

@@ -84,6 +84,25 @@ export async function mountConnectedAgentChat({
         const hit = agentByKey(target);
         return hit ? hit.handle : target.slice(0, 8);
       });
+      let attachments;
+      if (Array.isArray(m.attachments) && m.attachments.length > 0) {
+        let refsById = {};
+        if (typeof m.data === 'string' && m.data.trim().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(m.data);
+            if (parsed && typeof parsed.attachmentRefs === 'object' && parsed.attachmentRefs) {
+              refsById = parsed.attachmentRefs;
+            }
+          } catch { /* ignore */ }
+        }
+        attachments = m.attachments.map(a => ({
+          contentId: a.contentId,
+          name: a.name || 'image',
+          mime: a.mime || 'application/octet-stream',
+          ...(typeof a.size === 'number' ? { size: a.size } : {}),
+          ...(refsById[a.contentId] !== undefined ? { ref: refsById[a.contentId] } : {}),
+        }));
+      }
       return {
         id: m.operationId || `${m.author}:${m.eventId}`,
         role: isUser ? 'user' : 'agent',
@@ -96,6 +115,7 @@ export async function mountConnectedAgentChat({
           isPrimary: sender.id === roster.primary_agent_id || sender.is_primary,
         } : {}),
         ...(toHandles.length ? { toHandles } : {}),
+        ...(attachments ? { attachments } : {}),
       };
     });
     for (const pending of optimistic.values()) {
@@ -118,9 +138,10 @@ export async function mountConnectedAgentChat({
     updateFailoverBanner();
   };
 
-  const sendMessage = async ({ text, context, explicitTo }) => {
+  const sendMessage = async ({ text, context, explicitTo, files }) => {
     const roster = currentRoster();
-    const parsed = parseAddressing(text, roster);
+    const messageText = String(text ?? '').trim() || (files?.length ? (files.length === 1 ? 'Sent an image' : `Sent ${files.length} images`) : '');
+    const parsed = parseAddressing(messageText, roster);
     let to = explicitTo ?? parsed.to;
     if (!explicitTo && to.length === 0 && selectedTarget) {
       if (selectedTarget === '*') {
@@ -132,22 +153,46 @@ export async function mountConnectedAgentChat({
       }
     }
     const operationId = crypto.randomUUID();
-    const body = context ? `[Context: ${typeof context === 'string' ? context : JSON.stringify(context)}]\n${text}` : text;
+    const body = context ? `[Context: ${typeof context === 'string' ? context : JSON.stringify(context)}]\n${messageText}` : messageText;
+    const attachments = [];
+    const attachmentRefs = {};
+    if (Array.isArray(files) && files.length > 0 && session.content?.put) {
+      const visibility = session.genesis?.privateLog === false ? 'public' : 'private';
+      for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const stored = await session.content.put(bytes, {
+          visibility,
+          mediaType: file.type || 'image/png',
+          deduplicate: true,
+        });
+        const contentId = stored.id || stored.hash;
+        attachmentRefs[contentId] = stored;
+        attachments.push({
+          contentId,
+          name: file.name || 'image.png',
+          mime: file.type || 'image/png',
+          size: file.size,
+        });
+      }
+    }
     optimistic.set(operationId, {
       id: operationId,
       role: 'user',
-      text,
+      text: messageText,
       at: Date.now(),
       status: 'sending',
+      ...(attachments.length ? { attachments } : {}),
       ...(context ? { contextLabel: typeof context === 'string' ? context : context.title || 'Card' } : {}),
     });
     renderFeed();
     try {
-      const op = await session.command('agentMessage', {
+      const payload = {
         channel: 'chat',
         to,
         text: body.slice(0, 8000),
-      }, { operationId });
+        ...(attachments.length ? { attachments, data: JSON.stringify({ attachmentRefs }) } : {}),
+      };
+      const op = await session.command('agentMessage', payload, { operationId });
       const item = optimistic.get(operationId);
       if (item) { item.status = 'delivered'; renderFeed(); }
       const materialized = await op.materialized({ signal: AbortSignal.any([lifetime, AbortSignal.timeout(20_000)]) });
@@ -184,8 +229,8 @@ export async function mountConnectedAgentChat({
       dismissedFailoverFor = null;
       syncRosterToUi();
     },
-    async onSend({ text, context }) {
-      await sendMessage({ text, context });
+    async onSend({ text, context, files }) {
+      await sendMessage({ text, context, files });
     },
   });
 

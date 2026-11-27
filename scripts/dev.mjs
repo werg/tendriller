@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import { createAttestationKey } from "./attestation-key.mjs";
+import { ensureLocalRuntimeResources } from "./install-runtime-resources.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const children = new Set();
@@ -57,6 +58,14 @@ try {
   ensureAttestationKey();
   const nonInteractive = { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, CI: "1" } };
   await run(["scripts/build.mjs"]);
+  try {
+    const seeded = await ensureLocalRuntimeResources();
+    if (seeded.installed > 0) {
+      console.log(`Installed ${seeded.installed} pinned local speech/runtime resource(s) into local R2.`);
+    }
+  } catch (error) {
+    console.warn(`Warning: could not seed local speech/runtime resources (${error.message}). Voice recognition will stay unavailable until installed via scripts/install-runtime-resources.mjs.`);
+  }
   await run(["node_modules/wrangler/bin/wrangler.js", "d1", "migrations", "apply", "ACCOUNTS", "--local", "--config", "server/wrangler.jsonc"], nonInteractive);
   await run(["node_modules/wrangler/bin/wrangler.js", "d1", "execute", "ACCOUNTS", "--local", "--config", "server/wrangler.jsonc", "--command", "UPDATE service_state SET mode='open', account_page_cap=NULL, account_resident_cap=NULL, account_storage_cap=NULL WHERE id=1"], nonInteractive);
   if (!stopping) {
