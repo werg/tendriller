@@ -881,7 +881,7 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
     const partition: 'public' | 'private' = item.partition === 'private' ? 'private' : 'public';
     if (partition === 'private' && !state.genesis.privateLog) continue;
     if (item.bytes.length > MAX_PUBLIC_CAS_BYTES * 2) throw new HttpError(413, 'mailbox_cas_too_large');
-    const bytes = item.bytes.length === 0 ? new Uint8Array(0) : Uint8Array.from(item.bytes.match(/../g)!, b => parseInt(b, 16));
+    const bytes = item.bytes.length === 0 ? new Uint8Array(0) : Uint8Array.from(item.bytes.match(/../g) as string[], (b: string) => parseInt(b, 16));
     if (hashCasNode(bytes) !== item.hash && computeCasHash(bytes, []) !== item.hash) {
       throw new HttpError(400, 'mailbox_cas_hash_mismatch');
     }
