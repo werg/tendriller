@@ -45,12 +45,13 @@
     "test:idle:soak": "node scripts/idle-soak/run.mjs",
     "test:idle:metrics": "node scripts/idle-soak/metrics.mjs",
     "test:first-app:feedback": "node scripts/test-first-app.mjs --feedback-qualification",
-    "test:chaos": "node scripts/test-chaos.mjs"
+    "test:chaos": "node scripts/test-chaos.mjs",
+    "bench": "node scripts/bench/run.mjs"
   },
   "devDependencies": {
-    "@chronolog/authority": "file:test/artifacts/chronolog-authority-e6e09c1c.tgz",
+    "@chronolog/authority": "file:test/artifacts/chronolog-authority-10252aae.tgz",
     "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-10252aae.tgz",
-    "@chronolog/signals": "file:test/artifacts/chronolog-signals-e6e09c1c.tgz",
+    "@chronolog/signals": "file:test/artifacts/chronolog-signals-10252aae.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",
