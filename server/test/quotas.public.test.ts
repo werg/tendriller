@@ -40,7 +40,7 @@ describe("Per-tier quotas, cost guardrails, and coalesced metering", () => {
     const h = await create();
     // Age past the 7-day young-page visitor-burst anti-phishing hold so this tests the tier guest cap cleanly.
     const link = await inDO(h.id, t => {
-      t.db.set("created_at", Date.now() - 8 * 24 * HOUR);
+      t.db.set("created_at", t.now() - 8 * 24 * HOUR);
       return t.createLink("guest", "Friends", null);
     });
     const guestCap = PLANS.free.quotas.guestsPerPage!;

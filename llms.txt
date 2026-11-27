@@ -63,7 +63,7 @@ Page creation or package installation alone is not completion. Verify a locally 
 - [CLI](https://tendriller.dev/docs/tools/CLI.md): `tendril guide --server URL`, `tendril service --server URL`, the agent workspace (`workspace`, `page`, `agent run`), and session inspection.
 - [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): static and live authored-file preview.
 - [Releases](https://github.com/werg/tendriller/releases): SDK, runtime, tools, and first-app kit archives.
-- [Chronolog](https://github.com/werg/chronolog-db): native/browser session implementation and package builder.
+- [Chronolog](https://github.com/werg/chronolog): native/browser session implementation and package builder.
 - [Cookbooks](https://github.com/werg/tendriller-contrib): application patterns, larger examples, and independent qualification.
 - [Requested observation reference](https://tendriller.dev/docs/OBSERVATION_REFERENCE.md): browser/native simulation and location, correlated replies, durable review/retry and a real Worker qualifier.
 - [Cold-start acceptance](https://tendriller.dev/docs/AGENT_ONBOARDING_TEST.md): domain-only agent evaluation.

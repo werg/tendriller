@@ -44,11 +44,13 @@ function checkFile(file) {
 
 /**
  * Retain verified publication asset blobs in the local Chronolog session store
+ * via the unified lazy public blob pipe (`content.put` / `content.putBlob`)
  * so connected peers can recover historical versions if the host later prunes them.
- * Safely no-ops if the installed Chronolog session does not expose `content.putBlob`.
  */
 export async function retainPublicationBlobs(session, assets, { signal } = {}) {
-  if (typeof session?.content?.putBlob !== 'function') {
+  const hasUnifiedPut = typeof session?.content?.put === 'function';
+  const hasLegacyPut = typeof session?.content?.putBlob === 'function';
+  if (!hasUnifiedPut && !hasLegacyPut) {
     return { supported: false, retained: 0, skipped: Array.isArray(assets) ? assets.length : 0 };
   }
   const seen = new Set();
@@ -64,7 +66,13 @@ export async function retainPublicationBlobs(session, assets, { signal } = {}) {
     if (await sha256Hex(bytes) !== asset.hash) {
       throw Object.assign(new Error(`Publication asset hash mismatch for ${asset.hash}`), { code: 'PUBLICATION_HASH_MISMATCH' });
     }
-    const info = await session.content.putBlob(bytes, signal === undefined ? {} : { signal });
+    const info = hasUnifiedPut
+      ? await session.content.put(bytes, {
+          visibility: 'public',
+          ...(typeof asset.type === 'string' && asset.type.length > 0 ? { mediaType: asset.type } : {}),
+          ...(signal === undefined ? {} : { signal }),
+        })
+      : await session.content.putBlob(bytes, signal === undefined ? {} : { signal });
     if (info.hash !== asset.hash) {
       throw Object.assign(new Error(`Publication asset hash mismatch for ${asset.hash}`), { code: 'PUBLICATION_HASH_MISMATCH' });
     }
@@ -103,19 +111,35 @@ export async function recoverPublicationAsset(session, file, options = {}) {
   const hostBytes = await resolveHostBytes(fetchHost, file, signal);
   if (hostBytes !== null) {
     await verifyAsset(file, hostBytes);
-    if (seedFromHost && typeof session?.content?.putBlob === 'function') {
-      try { await session.content.putBlob(hostBytes, signal === undefined ? {} : { signal }); }
-      catch { /* Best-effort local seeding never blocks reads. */ }
+    if (seedFromHost) {
+      try {
+        if (typeof session?.content?.put === 'function') {
+          await session.content.put(hostBytes, {
+            visibility: 'public',
+            ...(typeof file.type === 'string' && file.type.length > 0 ? { mediaType: file.type } : {}),
+            ...(signal === undefined ? {} : { signal }),
+          });
+        } else if (typeof session?.content?.putBlob === 'function') {
+          await session.content.putBlob(hostBytes, signal === undefined ? {} : { signal });
+        }
+      } catch { /* Best-effort local seeding never blocks reads. */ }
     }
     return { source: 'host', bytes: hostBytes };
   }
 
-  if (typeof session?.content?.getBlob !== 'function') return null;
-  const peerBytes = await session.content.getBlob(file.hash, {
+  const getOpts = {
     expectedBytes: file.size,
     cache,
     ...(signal === undefined ? {} : { signal }),
-  });
+  };
+  let peerBytes = null;
+  if (typeof session?.content?.get === 'function') {
+    peerBytes = await session.content.get(file.hash, getOpts);
+  } else if (typeof session?.content?.getBlob === 'function') {
+    peerBytes = await session.content.getBlob(file.hash, getOpts);
+  } else {
+    return null;
+  }
   if (peerBytes === null) return null;
   await verifyAsset(file, peerBytes);
   return { source: 'peer', bytes: peerBytes };

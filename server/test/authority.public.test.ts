@@ -706,5 +706,22 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
       action: 'control.sync',
     }, newcomer.identity);
     expect((await openPage.ownerApi('POST', 'peers/participant', rec(strangerSync))).status).toBe(200);
+
+    // Unauthenticated visitor (zero OAuth cookie) can load the open-read page, read /_tendril/application,
+    // and sync public control facts — while owner-only /_tendril/manage stays forbidden.
+    const openUrl = new URL(openPage.pageUrl);
+    const anonPageRes = await req(openPage.pageUrl, { anonymous: true });
+    expect(anonPageRes.status).toBe(200);
+    const anonAppRes = await req(new URL('_tendril/application', openUrl).href, { anonymous: true });
+    expect(anonAppRes.status).toBe(200);
+    const anonSyncRes = await req(new URL('_tendril/peers/participant', openUrl).href, {
+      anonymous: true,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: openUrl.origin },
+      body: JSON.stringify(rec(strangerSync)),
+    });
+    expect(anonSyncRes.status).toBe(200);
+    const anonManageRes = await req(new URL('_tendril/manage', openUrl).href, { anonymous: true });
+    expect(anonManageRes.status).toBe(403);
   });
 });

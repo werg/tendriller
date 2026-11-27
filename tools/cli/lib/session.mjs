@@ -1,9 +1,11 @@
 // Operational commands use the application's public session composition. This module
 // has no transport, signer, delivery queue, event checkpoint or data store.
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pack } from './pack.mjs';
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
-import { retainPublicationBlobs } from '@tendriller/core/publication-blobs';
+import { retainPublicationBlobs, recoverPublication } from '@tendriller/core/publication-blobs';
 
 function invocationFailure(error, signal) {
   // A watch classifies intentional cancellation itself; its remaining failures
@@ -256,6 +258,102 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     await session.signals.send(required(args[0], 'a live topic'), jsonInput(args[1]),
       options.ttl === undefined ? {} : { ttlMs: Number(options.ttl) });
     return { sent: true, durable: false };
+  }
+  if (command === 'topic') {
+    return session.topic(required(args[0], 'a Chronolog topic name'));
+  }
+  if (command === 'sql') {
+    const sub = required(args[0], 'sql subcommand: query, exec, migrate, rls, schema, or tables');
+    const topic = options.topic || 'sql';
+    if (sub === 'schema' || sub === 'tables') {
+      return session.query(topic, { kind: sub });
+    }
+    if (sub === 'query') {
+      const input = args[1] ? (args[1].trim().startsWith('{') ? jsonInput(args[1], 'SQL query JSON') : { sql: args[1], format: 'objects' }) : null;
+      if (!input) throw Error('Supply a SQL string or JSON query object');
+      return session.query(topic, input);
+    }
+    if (['exec', 'migrate', 'rls'].includes(sub)) {
+      const payload = jsonInput(args[1], `SQL ${sub} JSON payload`);
+      const action = sub === 'rls' ? 'setRls' : sub;
+      const op = await session.submit({
+        ...identity(options),
+        updates: [{ topic, input: { action, ...payload } }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use sql query|exec|migrate|rls|schema|tables');
+  }
+  if (command === 'reducers') {
+    const sub = args[0] ?? 'inspect';
+    if (sub === 'inspect') return session.topic('$reducers');
+    if (sub === 'set') {
+      const payload = jsonInput(args[1], 'reducers JSON ({ imports?, topics? })');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$reducers', input: payload }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use reducers inspect or reducers set <json> --operation ID');
+  }
+  if (command === 'permissions') {
+    const sub = args[0] ?? 'inspect';
+    if (sub === 'inspect') return session.query('$permissions', { summary: true });
+    if (['set-member', 'remove-member', 'invite', 'revoke-invite'].includes(sub)) {
+      const payload = jsonInput(args[1], `permissions ${sub} JSON payload`);
+      const actionMap = {
+        'set-member': 'setMember',
+        'remove-member': 'removeMember',
+        'invite': 'createInvite',
+        'revoke-invite': 'revokeInvite',
+      };
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$permissions', input: { action: actionMap[sub], ...payload } }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use permissions inspect|set-member|remove-member|invite|revoke-invite');
+  }
+  if (command === 'publication-recover') {
+    const target = required(args[0], 'a revision number or publication opId');
+    const query = /^\d+$/.test(target) ? { revision: Number(target) } : { opId: target };
+    const found = (await session.query('$publications', query))?.value ?? null;
+    if (!found || !Array.isArray(found.files)) {
+      throw Object.assign(Error(`Historical publication ${target} was not found in $publications`), { code: 'publication_not_found' });
+    }
+    const result = await recoverPublication(session, { id: found.opId, payload: { files: found.files } }, { signal });
+    if (args[1] && result.complete) {
+      for (const file of result.files) {
+        const dest = join(args[1], file.path);
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, file.bytes);
+      }
+    }
+    return {
+      revision: found.revision,
+      opId: found.opId,
+      entry: found.entry,
+      complete: result.complete,
+      fromPeers: result.fromPeers,
+      fromHost: result.fromHost,
+      writtenTo: args[1] && result.complete ? args[1] : null,
+      missing: result.missing.map(f => ({ path: f.path, hash: f.hash, size: f.size })),
+      files: result.files.map(f => ({ path: f.path, hash: f.hash, size: f.size, source: f.source })),
+    };
+  }
+  if (command === 'publication-rollback') {
+    const target = required(args[0], 'a revision number or publication opId');
+    const payload = /^\d+$/.test(target) ? { action: 'rollback', revision: Number(target) } : { action: 'rollback', opId: target };
+    const op = await session.submit({
+      visibility: 'public',
+      ...identity(options),
+      updates: [{ topic: '$publications', input: payload }],
+    });
+    return observe(op, options, signal);
   }
   throw Error(`Unknown application command: ${command}`);
 }

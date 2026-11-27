@@ -196,7 +196,7 @@ export async function createAdmissionHost({
           const raw = authorityRecordBytes(opRec, 256 * 1024);
           const signed = decodeSignedOperation(raw);
           const { core, opId } = await verifySignedOperation(signed);
-          if (bytesToHex(core.logId) !== state.applicationId) fail(400, 'operation_chain_mismatch');
+          if (bytesToHex(core.logId) !== state.applicationId) fail(400, 'operation_log_mismatch');
           if (core.visibility !== 'public' || core.updates.some(u => !isControlTopic(u.topic))) fail(400, 'control_topic_required');
           const opIdHex = bytesToHex(opId);
           if (!state.publicOps.has(opIdHex)) {

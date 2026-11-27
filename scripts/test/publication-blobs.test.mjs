@@ -111,3 +111,87 @@ test('recoverPublicationAsset rejects tampered peer bytes and reports missing bl
     }),
   );
 });
+
+test('recoverPublication works end-to-end across real Chronolog v2 peers over unified lazy content pipe', async () => {
+  const {
+    createApplicationSession,
+    createLogGenesis,
+    openApplicationDevice,
+  } = await import('@chronolog/peer-session');
+  const { MemoryBytesStore } = await import('@chronolog/peer-session/kernel');
+
+  function framedPair() {
+    const stop = new AbortController();
+    const queues = [[], []], wakes = [[], []];
+    const side = idx => {
+      const other = idx === 0 ? 1 : 0;
+      return {
+        signal: stop.signal,
+        async send(frame) {
+          stop.signal.throwIfAborted();
+          queues[other].push(frame.slice());
+          wakes[other].splice(0).forEach(fn => fn());
+        },
+        async *frames(sig) {
+          const combined = sig ? AbortSignal.any([stop.signal, sig]) : stop.signal;
+          while (!combined.aborted) {
+            if (queues[idx].length > 0) { yield queues[idx].shift(); continue; }
+            await new Promise(resolve => {
+              const wake = () => { combined.removeEventListener('abort', wake); resolve(); };
+              wakes[idx].push(wake);
+              combined.addEventListener('abort', wake, { once: true });
+            });
+          }
+        },
+        async close() {
+          if (!stop.signal.aborted) stop.abort(new Error('CLOSED'));
+          wakes[0].splice(0).forEach(fn => fn());
+          wakes[1].splice(0).forEach(fn => fn());
+        },
+      };
+    };
+    return [side(0), side(1)];
+  }
+
+  const devA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+  const devB = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+  const created = await createLogGenesis({
+    creator: { publicKey: devA.identity.publicKey, wrapKey: devA.wrapKey.publicKey, reader: true, writer: true, administrator: true, publisher: true },
+    members: [{ publicKey: devB.identity.publicKey, wrapKey: devB.wrapKey.publicKey, reader: true, writer: true }],
+    privateLog: true,
+  });
+
+  const sessA = await createApplicationSession({ device: devA, genesis: created.genesisBytes, casNodes: created.casNodes, epochKeys: new Map([[0, created.epoch0Key]]) });
+  const sessB = await createApplicationSession({ device: devB, genesis: created.genesisBytes, casNodes: created.casNodes, epochKeys: new Map([[0, created.epoch0Key]]) });
+  const [c1, c2] = framedPair();
+  const [linkA, linkB] = await Promise.all([sessA.connectPeer({ connection: c1 }), sessB.connectPeer({ connection: c2 })]);
+
+  try {
+    const htmlV1 = new TextEncoder().encode('<!doctype html><h1>Pruned historical release v1</h1>');
+    const jsV1 = new TextEncoder().encode('console.log("historical bundle");'.repeat(2500));
+    await (await sessA.publishRelease({
+      entry: 'index.html',
+      files: [
+        { path: 'index.html', bytes: htmlV1, type: 'text/html' },
+        { path: 'app.js', bytes: jsV1, type: 'text/javascript' },
+      ],
+      authorTimestampMs: 100n,
+    })).materialized();
+
+    await linkA.synchronize();
+    await linkB.synchronize();
+
+    // Peer B reads the historical $publications manifest and recovers pruned v1 assets (host returns 404) via Chronolog P2P!
+    const rev1 = (await sessB.query('$publications', { revision: 1 })).value;
+    const recovered = await recoverPublication(sessB, { id: rev1.opId, payload: { files: rev1.files } }, {
+      fetchHost: async () => new Response('pruned', { status: 404 }),
+    });
+    assert.equal(recovered.complete, true);
+    assert.equal(recovered.fromHost, 0);
+    assert.equal(recovered.fromPeers, 2);
+    assert.deepEqual(recovered.files.find(f => f.path === 'index.html')?.bytes, htmlV1);
+    assert.deepEqual(recovered.files.find(f => f.path === 'app.js')?.bytes, jsV1);
+  } finally {
+    await Promise.all([linkA.close(), linkB.close(), c1.close(), c2.close(), sessA.close(), sessB.close()]);
+  }
+});

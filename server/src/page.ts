@@ -86,14 +86,20 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const m = req.method;
   if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
   if (sub === "application") return handleApplication(t, req, principal);
-  if (sub === 'manage') return handleManagement(t, req, base, principal);
+  if (sub === 'manage') {
+    if (principal.openPublic) throw new HttpError(403, 'forbidden');
+    return handleManagement(t, req, base, principal);
+  }
   if (sub === 'mcp/grants' || sub === 'mcp/connect' || sub === 'mcp/rekey' || sub === 'mcp/sync' || /^mcp\/[A-Za-z0-9_-]{1,128}$/.test(sub)) {
+    if (principal.openPublic) throw new HttpError(403, 'forbidden');
     return handlePageMcp(t, req, sub, principal);
   }
   if (sub === 'connections' || sub.startsWith('connections/')) {
+    if (principal.openPublic) throw new HttpError(403, 'forbidden');
     return handlePageConnections(t, req, sub, principal);
   }
   if (sub === 'groups' || sub.startsWith('groups/')) {
+    if (principal.openPublic) throw new HttpError(403, 'forbidden');
     return handlePageGroups(t, req, sub, principal);
   }
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t.env));

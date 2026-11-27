@@ -14,7 +14,7 @@ export const AGENT_SCOPES_HEADER = 'x-tendril-agent-scopes';
 export interface AgentPrincipal { kind: "agent"; agentId: string; scopes: AgentScope[]; revision: number }
 export interface PagePrincipal {
   kind: "page"; name: string; role: Role; accountId: string | null; linkId: string;
-  sessionHash: string | null;
+  sessionHash: string | null; openPublic?: boolean;
 }
 export type Principal = AgentPrincipal | PagePrincipal;
 export interface PageSession { account_id: string; role: Role; hash: string }
@@ -120,6 +120,8 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
   if (!link || (key !== undefined && link.key !== key) || (link.role !== identity.role && !(link.role === "owner" && identity.role === "guest")) || link.expires_at !== null && link.expires_at <= t.now()) return null;
   if (identity.role === "display") {
     if (link.created_by_agent || !t.db.get("owner_account", null)) return null;
+  } else if (identity.openPublic === true) {
+    if (identity.role !== "guest" || identity.accountId !== null || !t.db.get<boolean>("v2_open_readers", false)) return null;
   } else {
     const session = identity.sessionHash && localSession(t, identity.sessionHash);
     if (!session || session.account_id !== identity.accountId || session.role !== identity.role || session.expires_at <= t.now()) return null;
@@ -130,7 +132,7 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
         t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, targetLink))) return null;
     }
   }
-  return { kind: "page", name: identity.accountId ?? identity.linkId, ...identity };
+  return { kind: "page", name: identity.accountId ?? (identity.openPublic ? `public:${identity.linkId}` : identity.linkId), ...identity };
 }
 
 /** Recheck local revocation at a synchronous commit after asynchronous preparation. */
@@ -150,7 +152,12 @@ export async function freshPrincipal(t: Tendril, principal: Principal, pageKey?:
  * agents never multiplies an account's budget. */
 export function participantIdentity(t: Tendril, principal: Principal): { route: string; budget: string } {
   const current = currentPrincipal(t, principal);
-  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
+  if (!current) throw new HttpError(403, 'forbidden', 'Peer participation requires an authenticated participant');
+  if (current.kind === 'page' && current.openPublic === true && t.db.get<boolean>('v2_open_readers', false)) {
+    const owner = t.db.get<string | null>('owner_account', null);
+    return { route: `public:${current.linkId}`, budget: owner ? `account:${owner}` : `public:${t.tid}` };
+  }
+  if (current.kind === 'page' && (current.role === 'display' || !current.accountId))
     throw new HttpError(403, 'forbidden', 'Peer participation requires an authenticated participant');
   if (current.kind === 'agent') {
     requireAgentScope(current, 'participants:connect');
@@ -165,6 +172,10 @@ export async function authenticateLocalPage(t: Tendril, req: Request, link: Link
   const role: Role = link.role === "owner" && session?.role === "guest" ? "guest" : link.role;
   const principal = localPagePrincipal(t, { role, accountId: session?.account_id ?? null,
     linkId: link.id, sessionHash: session?.hash ?? null });
-  if (!principal) throw new HttpError(401, "unauthorized", "Page sign-in required");
-  return { principal, session };
+  if (principal) return { principal, session };
+  if (link.role !== "display" && t.db.get<boolean>("v2_open_readers", false)) {
+    const openPrincipal = localPagePrincipal(t, { role: "guest", accountId: null, linkId: link.id, sessionHash: null, openPublic: true });
+    if (openPrincipal) return { principal: openPrincipal, session: null };
+  }
+  throw new HttpError(401, "unauthorized", "Page sign-in required");
 }

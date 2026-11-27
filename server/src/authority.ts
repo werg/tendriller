@@ -178,7 +178,14 @@ export function authorityError(error: unknown): never {
 
 export function authorityAccount(t: Tendril, principal: Principal, ownerOnly = false): string {
   const current = currentPrincipal(t, principal), owner = t.db.get<string | null>('owner_account', null);
-  if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId)) throw new HttpError(403, 'forbidden');
+  if (!current) throw new HttpError(403, 'forbidden');
+  if (current.kind === 'page' && current.openPublic === true) {
+    if (ownerOnly || !t.db.get<boolean>('v2_open_readers', false)) throw new HttpError(403, 'forbidden');
+    const expires = t.expiresAt();
+    if (expires !== null && expires <= t.now()) throw new HttpError(410, 'expired');
+    return `public:${current.linkId}`;
+  }
+  if (current.kind === 'page' && (current.role === 'display' || !current.accountId)) throw new HttpError(403, 'forbidden');
   const account = current.kind === 'agent' ? owner ?? `pending:${t.tid}` : current.accountId!;
   if (ownerOnly && current.kind === 'page' && account !== owner) throw new HttpError(403, 'owner_required');
   const expires = t.expiresAt();
@@ -241,7 +248,7 @@ export async function verifyPublicControlOp(
   const signed = decodeSignedOperation(rawBytes);
   const { core, opId } = await verifySignedOperation(signed);
   const logIdHex = bytesToHex(core.logId);
-  if (logIdHex !== expectedLogId) throw new HttpError(400, 'operation_chain_mismatch', 'Operation logId does not match this page');
+  if (logIdHex !== expectedLogId) throw new HttpError(400, 'operation_log_mismatch', 'Operation logId does not match this page');
   if (core.visibility !== 'public') throw new HttpError(400, 'public_control_required', 'Blind host only accepts public control operations');
   if (!core.updates.length || core.updates.some(u => !isControlTopic(u.topic))) {
     throw new HttpError(400, 'control_topic_required', 'Blind host only accepts operations targeting $* control topics');
@@ -463,6 +470,12 @@ export async function readControlState(t: Tendril): Promise<MaterializedControlS
  *    releases when `$finality` has an active finalizing policy).
  */
 export function reconcileHostEffects(t: Tendril, state: MaterializedControlState): void {
+  if (t.db.get<boolean>('v2_open_readers', false) !== state.permissions.openReaders) {
+    t.db.set('v2_open_readers', state.permissions.openReaders);
+  }
+  if (t.db.get<boolean>('v2_open_writers', false) !== state.permissions.openWriters) {
+    t.db.set('v2_open_writers', state.permissions.openWriters);
+  }
   const previousReaders = new Set(t.db.get<string[]>('v2_known_readers', []));
   const activeReaders = state.permissions.readers;
   const revokedKeys = new Set<string>();
@@ -912,9 +925,9 @@ async function initializeGenesis(
     throw new HttpError(403, 'owner_required');
   }
 
-  // Host-attested admission is OPT-IN: enforce hostKey & admissionAccounts when the chain
+  // Host-attested admission is OPT-IN: enforce hostKey & admissionAccounts when the log
   // declares an admission policy, while allowing non-host-attested authority models (admission: null)
-  // such as multisig or open-write chains without host coupling!
+  // such as multisig or open-write logs without host coupling!
   const admission = state.permissions.admission;
   if (admission !== null) {
     const hostKey = hostAttestationKey(t.env);
