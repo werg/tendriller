@@ -127,6 +127,7 @@ it('upgrades pre-mailbox revision 15 storage in place without losing existing da
     storage.sql.exec('DROP TABLE v2_mailbox_envelopes');
     storage.sql.exec('DROP TABLE v2_mailbox_ops');
     storage.sql.exec('DROP TABLE v2_mailbox_cas');
+    storage.sql.exec('DROP TABLE hub_subscribers');
 
     const upgraded = new Db(storage);
     upgraded.init();
@@ -134,6 +135,7 @@ it('upgrades pre-mailbox revision 15 storage in place without losing existing da
     expect(upgraded.all('SELECT digest FROM v2_mailbox_envelopes')).toEqual([]);
     expect(upgraded.all('SELECT op_id FROM v2_mailbox_ops')).toEqual([]);
     expect(upgraded.all('SELECT hash FROM v2_mailbox_cas')).toEqual([]);
+    expect(upgraded.all('SELECT key FROM hub_subscribers')).toEqual([]);
   });
 });
 
@@ -145,6 +147,6 @@ it('pins SCHEMA content to STORAGE_SCHEMA_REVISION so table changes cannot ship 
   // and update both pinned values below so existing DO namespaces never silently drift.
   expect({ revision: STORAGE_SCHEMA_REVISION, schemaSha256: hex }).toEqual({
     revision: 15,
-    schemaSha256: 'd7c366b74a4f9cba58aa388650b54fdb3ba9a502476664367b4ccb6ded4bddc3',
+    schemaSha256: '5e897f43d6db3b2882b32d46d3f3198920b851278378220299a317a97827d1c7',
   });
 });
