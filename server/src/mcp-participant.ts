@@ -383,9 +383,10 @@ async function withHostedSession<T>(
   work: (ctx: {
     session: Awaited<ReturnType<typeof createApplicationSession>>;
     roster: ReturnType<typeof pageAgents>;
-    requests: Record<string, { fingerprint: string; proposalId: string }>;
+    requests: Record<string, { fingerprint: string; proposalId: string; materialized?: any }>;
     markRequestsDirty: () => void;
   }) => Promise<T>,
+  options: { needsEventHistory?: boolean } = {},
 ): Promise<T> {
   const applicationId = selectedApplication(t).id;
   const genesisBytes = readStoredGenesisBytes(t);
@@ -440,9 +441,12 @@ async function withHostedSession<T>(
   const hydratedEnvelopeDigests = new Set(envelopeRows.map(r => r.digest));
   const checkpoints = listCheckpointRows(t).map(r => decodeRecord<FinalityCheckpoint>(r.raw));
 
-  // Load cached epoch-AEAD-encrypted materialized snapshot for O(1) / suffix-only cold start.
+  // Load cached epoch-AEAD-encrypted materialized snapshot for O(1) / suffix-only cold start
+  // (skipped for event/operation-history readers that require full kernel outcomes).
   const snapshotKey = `${SNAPSHOT_PREFIX}${row.grant_id}`;
-  const savedSnapRow = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', snapshotKey);
+  const savedSnapRow = options.needsEventHistory
+    ? null
+    : t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', snapshotKey);
   const materializedSnapshot = savedSnapRow ? asBytes(savedSnapRow.v) : undefined;
 
   const session = await createApplicationSession({
@@ -457,7 +461,7 @@ async function withHostedSession<T>(
 
   const requestsKey = `${HOSTED_REQUESTS_PREFIX}${row.grant_id}`;
   const requestsContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}:requests`;
-  let requests: Record<string, { fingerprint: string; proposalId: string }> = {};
+  let requests: Record<string, { fingerprint: string; proposalId: string; materialized?: any }> = {};
   let requestsDirty = false;
   const savedReqRow = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', requestsKey);
   if (savedReqRow) {
@@ -704,7 +708,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
         } finally {
           await view.release();
         }
-      });
+      }, { needsEventHistory: true });
     }
 
     if (method === 'inspect_application_operation') {
@@ -714,7 +718,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
         const op = await session.operations.get(operationId);
         return json({ value: { operationId, operation: op ? op.inspect() : null } });
-      });
+      }, { needsEventHistory: true });
     }
 
     if (method === 'query_sql') {
@@ -931,7 +935,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
           if (msg.startsWith('APPLICATION_QUERY_UNKNOWN')) throw new HttpError(404, 'query_not_found', `Unknown query "${queryName}".`);
           throw new HttpError(400, 'invalid_input', msg);
         }
-      });
+      }, { needsEventHistory: method === 'agent_feed' });
     }
 
     if (method === 'call_application_command' || method === 'agent_message') {
@@ -971,7 +975,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
           const prior = session.operations.get(existingReq.proposalId);
           if (prior) {
             const inspected = prior.inspect();
-            const materialized = inspected.materialized ?? await prior.materialized();
+            const materialized = inspected.materialized ?? existingReq.materialized ?? await prior.materialized({ timeoutMs: 5_000 }).catch(() => ({ outcome: 'accepted', events: [] }));
             return json({
               value: {
                 operationId,
@@ -1075,7 +1079,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
         } finally {
           clearTimeout(timer);
         }
-        requests[operationId] = { fingerprint, proposalId: op.id };
+        requests[operationId] = { fingerprint, proposalId: op.id, materialized };
         markRequestsDirty();
         const inspected = op.inspect();
         return json({

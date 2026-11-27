@@ -279,9 +279,9 @@ export async function buildManifestIcons(
       iconBlobUrl(t.env, t.tid, rTag, "maskable-512.png"),
     ]);
     icons.push(
-      { src: u192, sizes: "192x192", type: "image/png", purpose: "any" },
       { src: u512, sizes: "512x512", type: "image/png", purpose: "any" },
       { src: uMask, sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: u192, sizes: "192x192", type: "image/png", purpose: "any" },
     );
   }
 

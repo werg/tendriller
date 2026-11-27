@@ -1,7 +1,7 @@
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
 import { createApplicationBackend, createLiveView, createViewStore } from '@chronolog/peer-session';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
-import { createOwnerConnection, reloadOnOwnerReplaced } from '../../shared/connection.mjs';
+import { createOwnerConnection } from '../../shared/connection.mjs';
 import { mountConnectionView } from '../../shared/connect-view.mjs';
 import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { createDraftGuard } from '../../shared/helpers/live-updates.mjs';
@@ -680,7 +680,6 @@ const connection = createOwnerConnection({
       context: { viewId },
       timeoutMs: 30_000,
       signal,
-      onOwnerReplaced: reloadOnOwnerReplaced,
     });
     session = attachment.session;
     let lastSyncErr = null;

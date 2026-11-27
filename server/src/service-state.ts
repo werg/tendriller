@@ -5,7 +5,6 @@ import { serviceIdentity } from './service-identity';
 import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
 import { broadcastSummary } from './broadcasts';
 import ipaddr from "ipaddr.js";
-import { TtlCache } from "./isolate-cache";
 
 export type ServiceMode = "open" | "creation_paused" | "read_only";
 
@@ -43,25 +42,14 @@ export async function accountLimits(env: Env, accountId?: string | null): Promis
   }
 }
 
-/**
- * Operator service mode, reused for 5 seconds per isolate. Pausing creation or
- * entering read-only mode therefore takes effect everywhere within 5 seconds;
- * `setServiceMode` callers in this isolate see it at once. An unreadable or
- * uninitialized state is never cached, so recovery is immediate.
- */
-const SERVICE_MODE_TTL_MS = 5_000;
-const serviceModes = new TtlCache<ServiceMode>(SERVICE_MODE_TTL_MS, 0, 4);
-
-export function invalidateServiceMode(): void { serviceModes.clear(); }
+export function invalidateServiceMode(): void {}
 
 export async function serviceMode(env: Env): Promise<ServiceMode> {
-  return serviceModes.get('mode', async () => {
-    const row = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: ServiceMode }>();
-    if (!row || !["open", "creation_paused", "read_only"].includes(row.mode)) {
-      throw new HttpError(503, "unavailable", "Service state is not initialized");
-    }
-    return row.mode;
-  });
+  const row = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: ServiceMode }>();
+  if (!row || !["open", "creation_paused", "read_only"].includes(row.mode)) {
+    throw new HttpError(503, "unavailable", "Service state is not initialized");
+  }
+  return row.mode;
 }
 
 /** Device and agent admission need a valid host attestation key; pages pin its public key. */

@@ -89,6 +89,8 @@ function write(ws: WebSocket, value: Attachment): void {
   }
   ws.serializeAttachment({ ...value, pending: bytes.buffer });
 }
+/** Each endpoint's paired socket, rechecked on every use. */
+const paired = new WeakMap<WebSocket, WebSocket>();
 export const isRelaySocket = (ws: WebSocket): boolean => attachment(ws) !== null;
 const all = (t: Tendril) => t.ctx.getWebSockets('peer-relay');
 function owner(t: Tendril, principal: Principal): string {
@@ -304,15 +306,21 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL } });
 }
 
-function endpoints(t: Tendril, value: Attachment): Route {
+function endpoints(t: Tendril, value: Attachment, self: WebSocket): Route {
   owner(t, value.principal);
   const now = t.now();
   if (!value.ready || value.expiresAt <= now || value.pending.length && value.progressAt + LIMITS.progressMs <= now) throw new Error('Relay expired');
-  const other = members(t, value.session).find(socket => {
-    const recipient = attachment(socket)!;
-    return recipient.peerId === value.remotePeerId && recipient.remotePeerId === value.peerId && recipient.lane === value.lane;
-  });
-  if (!other) throw new Error('Relay peer disconnected');
+  const pairs = (socket: WebSocket) => {
+    const recipient = attachment(socket);
+    return !!recipient && socket.readyState === WebSocket.READY_STATE_OPEN && recipient.session === value.session &&
+      recipient.peerId === value.remotePeerId && recipient.remotePeerId === value.peerId && recipient.lane === value.lane;
+  };
+  let other = paired.get(self);
+  if (!other || !pairs(other)) {
+    other = members(t, value.session).find(pairs);
+    if (!other) throw new Error('Relay peer disconnected');
+    paired.set(self, other);
+  }
   const recipient = attachment(other)!; owner(t, recipient.principal);
   if (!recipient.ready || recipient.expiresAt <= now || recipient.pending.length && recipient.progressAt + LIMITS.progressMs <= now)
     throw new Error('Relay expired');
@@ -323,7 +331,7 @@ export function handleRelayMessage(t: Tendril, ws: WebSocket, message: string | 
   const value = attachment(ws);
   if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
   try {
-    const route = endpoints(t, value), existing = refreshing.get(t)?.get(value.session);
+    const route = endpoints(t, value, ws), existing = refreshing.get(t)?.get(value.session);
     if (!existing && Math.min(value.authorizedUntil, route.recipient.authorizedUntil) > t.now()) return forward(t, ws, message, route);
     const bytes = typeof message === 'string' ? new TextEncoder().encode(message).length : message.byteLength;
     if (typeof message === 'string' ? bytes > 256 : bytes <= 4 || bytes > LIMITS.packetBytes + 4) throw new Error('Relay packet too large');
@@ -353,7 +361,7 @@ function forward(t: Tendril, ws: WebSocket, message: string | ArrayBuffer, check
   const value = checked?.value ?? attachment(ws);
   if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
   try {
-    const route = checked ?? endpoints(t, value), { other, recipient } = route;
+    const route = checked ?? endpoints(t, value, ws), { other, recipient } = route;
     if (Math.min(value.authorizedUntil, recipient.authorizedUntil) <= t.now()) throw new Error('Relay authorization expired');
     if (typeof message === 'string') {
       other.send(receiveReceipt(t, message, route));

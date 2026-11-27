@@ -193,27 +193,19 @@ try {
     }, 35000);
   }
 
-  await stage('second-tab-reports-active-elsewhere-without-stealing', async () => {
+  await stage('second-tab-opens-lock-free-and-converges-with-first-tab', async () => {
     await two.goto(url('discussion.html', 'tab-two'));
-    await two.waitForFunction(() => window.ownerStage === 'failed:attachment');
-    const failure = await two.evaluate(() => window.ownerFailure);
-    assert.equal(failure.code, 'TAB_ACTIVE_ELSEWHERE');
-    assert.equal(await one.evaluate(() => window.ownerReplacedCount), 0);
-    assert.equal(await one.evaluate(() => window.session.signal.aborted), false);
-  });
-
-  await stage('explicit-takeover-transfers-lock-and-preserves-local-state', async () => {
-    await two.goto(url('discussion.html', 'tab-two', '&takeover=1'));
     const b = await two.evaluate(() => window.ready);
     assert.equal(b.publicKey, a.publicKey);
     assert.equal(b.status.canAuthor, true);
-    await one.waitForFunction(() => window.ownerReplacedCount === 1);
+    assert.equal(await one.evaluate(() => window.session.signal.aborted), false);
     assert.equal(await two.evaluate(async () => (await (await window.session.operations.get('first')).materialized({ timeoutMs: 15000 })).outcome), 'accepted');
     await two.evaluate(async () => {
       const op = await window.session.command('say', 'second', { operationId: 'second' });
       await op.materialized();
     });
     assert.equal(await two.evaluate(async () => (await window.session.query('messages', null)).value.events.length), 2);
+    await one.waitForFunction(async () => (await window.session.query('messages', null)).value.events.length === 2, { timeout: 10000 });
   });
 
   await stage('reload-retains-identity-and-stored-operations', async () => {
@@ -227,7 +219,7 @@ try {
     mode: 'dedicated',
     oneSigner: true,
     localAuthoringAvailable: true,
-    singleActiveTabLock: true,
+    lockFreeMultiTab: true,
     explicitTakeoverPreservesState: true,
     suspendResume: true,
     automaticChromiumFreezeResume:qualifyLifecycle,

@@ -6,7 +6,7 @@ import type { Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "./pwa";
 import { fileKey, servedVersion, versionFile } from "./files";
-import { allPageBases, type AuthoredIconRecord } from "./page-icon";
+import { allPageBases, iconBlobUrl, type AuthoredIconRecord } from "./page-icon";
 
 export const ICON_RASTER_SIZE = 512;
 export const ICON_RASTER_SMALL_SIZE = 192;
@@ -96,7 +96,9 @@ export async function appleTouchIcon(t: Tendril, base: string, requestBase: stri
   const icon = t.db.get<string | null>("icon", null);
   if (!icon || isEmojiIcon(icon)) {
     const raster = currentIconRaster(t);
-    return raster ? { href: `${base}_tendril/icon-maskable-512.png?v=${iconRasterTag(raster.key)}`, sizes: "512x512" } : null;
+    if (!raster) return null;
+    const href = await iconBlobUrl(t.env, t.tid, `r-${iconRasterTag(raster.key)}`, "maskable-512.png");
+    return { href, sizes: "512x512" };
   }
   if (!/^https:\/\//.test(icon)) return null;
   if (/\.png(?:$|[?#])/i.test(icon)) return { href: icon };

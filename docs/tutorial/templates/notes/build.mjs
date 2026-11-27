@@ -28,6 +28,7 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
       outdir: fileURLToPath(output),
       bundle: true,
+      minify: true,
       splitting: true,
       format: 'esm',
       platform: 'browser',

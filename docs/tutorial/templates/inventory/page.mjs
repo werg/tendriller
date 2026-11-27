@@ -168,18 +168,10 @@ try {
     workerUrl: new URL('./worker.mjs', import.meta.url),
     profileId,
     applicationId: configuration.applicationId,
+    configuration,
     requiresDedicatedWorker: true,
     context: { viewId },
     timeoutMs: 30_000,
-    onOwnerReplaced() {
-      telemetry?.close(); unregisterFlush?.(); live?.close(); stopAdmission?.(); devices?.close();
-      submission.update({ attached: false });
-      $('#session-status').textContent = 'This page moved to another tab or window. Reload this tab to use it here.';
-      if (document.visibilityState === 'hidden') {
-        const onVisible = () => { if (document.visibilityState !== 'visible') return; document.removeEventListener('visibilitychange', onVisible); location.reload(); };
-        document.addEventListener('visibilitychange', onVisible);
-      }
-    },
   });
   session = attachment.session;
   submission.update({ attached: true });
@@ -205,7 +197,11 @@ try {
   unregisterFlush=registerLifecycleFlush(()=>telemetry.sendSnapshot());
   devices = mountDevices({ root: $('#devices'), session, pageUrl: configuration.page_url, storage }); mountFinality({ root: $('#finality'), session });
   const viewError = error => { stale = true; $('#view-error').hidden = false; $('#view-error').textContent = `View not current: ${error.message}. The last snapshot and your local drafts are retained. On a fresh app, create the initial tables with the ordinary transaction button; storing that intent does not wait for this read.`; $('#summary').textContent = snapshot ? `${snapshot.value.stock.length} bins in last snapshot — not current` : 'No current domain snapshot; schema may not exist yet.'; renderDetail(); };
-  live = createLiveView(session, deriveInventory, { onError: viewError });
+  live = createLiveView(session, deriveInventory, {
+    watchTopics: ['inventory'],
+    persistKey: `tendril:view:inventory:${configuration.applicationId}`,
+    onError: viewError,
+  });
   live.subscribe(render);
   try { await live.ready({ timeoutMs: 30_000 }); } catch (error) { viewError(error); }
   window.tendril.ready();

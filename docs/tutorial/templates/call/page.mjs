@@ -1,7 +1,7 @@
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
 import { createApplicationBackend } from '@chronolog/peer-session';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
-import { mountCallRoom, renderTabTakeoverBanner } from '../../shared/ui/call-room.mjs';
+import { mountCallRoom } from '../../shared/ui/call-room.mjs';
 
 const root = document.querySelector('#call-root') ?? document.body;
 const response = await fetch(new URL('./configuration.json', import.meta.url));
@@ -11,20 +11,13 @@ const profileId = browserProfileId(configuration.applicationId);
 
 let attachment, callUi;
 
-async function connect(takeover = 'auto') {
+async function connect() {
   try {
     attachment = await openBrowserOwner({
       workerUrl: new URL('./worker.mjs', import.meta.url),
       profileId,
       applicationId: configuration.applicationId,
-      takeover,
-      onOwnerReplaced() {
-        void callUi?.dispose();
-        renderTabTakeoverBanner(root, {
-          message: 'This call moved to another tab.',
-          onTakeover: () => connect(true),
-        });
-      },
+      configuration,
     });
     const session = attachment.session;
     window.tendril.application.install(createApplicationBackend(session));
@@ -45,13 +38,6 @@ async function connect(takeover = 'auto') {
     });
     window.tendril.ready();
   } catch (error) {
-    if (error?.code === 'TAB_ACTIVE_ELSEWHERE') {
-      renderTabTakeoverBanner(root, {
-        message: 'This call page is already open in another tab.',
-        onTakeover: () => connect(true),
-      });
-      return;
-    }
     root.textContent = `Could not open local call session: ${error.message}`;
   }
 }

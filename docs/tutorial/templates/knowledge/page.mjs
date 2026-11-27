@@ -170,14 +170,10 @@ try {
     workerUrl: new URL('./worker.mjs', import.meta.url),
     profileId,
     applicationId: configuration.applicationId,
+    configuration,
     requiresDedicatedWorker: true,
     context: { viewId },
     timeoutMs: 30_000,
-    onOwnerReplaced() {
-      live?.close(); devices?.close(); govBanner?.destroy(); hostedMcp?.close();
-      setWriteEnabled(false);
-      $('#session-status').textContent = 'This page moved to another tab.';
-    },
   });
   session = attachment.session;
   govBanner = mountGovernanceBanner({ root: $('#governance-slot'), session });
@@ -186,11 +182,15 @@ try {
   const adm = await session.extensions.call('admission.state', []).catch(() => null);
   setWriteEnabled(adm ? adm.canWrite !== false : true);
   $('#session-status').textContent = 'Local encrypted database ready (offline-capable).';
-  live = createLiveView(session, {
-    read: view => deriveKnowledge(view, { query: $('#search-q').value, mode: $('#search-mode').value, tag: activeTag }),
-    onChange: renderResults,
-    onError(err) { $('#view-error').hidden = false; $('#view-error').textContent = err.message ?? String(err); },
-  });
+  live = createLiveView(
+    session,
+    view => deriveKnowledge(view, { query: $('#search-q').value, mode: $('#search-mode').value, tag: activeTag }),
+    {
+      persistKey: `tendril:view:knowledge:${configuration.applicationId}`,
+      onError(err) { $('#view-error').hidden = false; $('#view-error').textContent = err.message ?? String(err); },
+    },
+  );
+  live.subscribe(renderResults);
 } catch (err) {
   $('#session-status').textContent = `Could not open local session: ${err.message ?? String(err)}`;
 }
