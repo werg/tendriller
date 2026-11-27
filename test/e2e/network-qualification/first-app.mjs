@@ -85,6 +85,10 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
           backgroundProof.publicAppliedReadWhileHidden = true;
         })();
         const results = await Promise.allSettled([signalWork, commandWork]);
+        if (results[1].status === 'fulfilled') {
+          await expect.poll(async () => (await peer.request('transport-snapshot')).receivedReliableBytes, { timeout: 5000 })
+            .toBeGreaterThan(transportBefore.receivedReliableBytes);
+        }
         backgroundProof.hiddenAfter = await page.evaluate(() => document.hidden);
         const after = await browser.diagnostics();
         const transportAfter = await adapter.snapshot({ signal });
