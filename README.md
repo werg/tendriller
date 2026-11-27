@@ -6,7 +6,7 @@ Tendriller lets you and your AI agent launch an interactive web app across your 
 
 ---
 
-## Under the hood: why Chronolog v2 is cool *(geek section)*
+## Under the hood: why Chronolog v2 is cool
 
 Every Tendriller app runs on one owned **Chronolog v2** peer session (`@chronolog/peer-session`): a **flat timestamp-ordered CRDT log with hash-pinned ES Module reducers and built-in deterministic `chronolog-db` (SQLite-CAS)**. Most local-first stacks force an awkward choice between a rigid centralized sync engine or a hand-rolled event log with fragile migrations and native C++ builds. Chronolog v2 collapses all of that into five composable primitives:
 
