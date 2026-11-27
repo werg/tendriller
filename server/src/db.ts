@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS invite_redemptions (invite_id TEXT NOT NULL, account_
 CREATE TABLE IF NOT EXISTS v2_public_ops (op_id TEXT PRIMARY KEY, author TEXT NOT NULL, author_ts INTEGER NOT NULL, raw BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS v2_public_cas (hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS v2_checkpoints (scope_id TEXT NOT NULL, closed_through INTEGER NOT NULL, raw BLOB NOT NULL, PRIMARY KEY (scope_id, closed_through));
+CREATE TABLE IF NOT EXISTS v2_mailbox_envelopes (digest TEXT PRIMARY KEY, epoch INTEGER NOT NULL, author TEXT NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS v2_mailbox_ops (op_id TEXT PRIMARY KEY, author TEXT NOT NULL, author_ts INTEGER NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS v2_mailbox_cas (hash TEXT PRIMARY KEY, partition TEXT NOT NULL, bytes BLOB NOT NULL, stored_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_store (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_connections (grant_id TEXT PRIMARY KEY, handle TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '',
   public_key TEXT NOT NULL, wrapped_keys BLOB NOT NULL, label TEXT NOT NULL, capabilities TEXT NOT NULL,

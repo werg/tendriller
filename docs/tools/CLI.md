@@ -235,9 +235,39 @@ Output is NDJSON with backpressure. An unexpected end, owner loss or read failur
 ## Optional author-time finality
 
 ```sh
+tendril --page notes finality status
+tendril --page notes finality schedule --kind signed-frontier --signer <64-hex-pk> --operation fin-1
 tendril --page notes finality close --through 1700000000000
 tendril --page notes finality vote --through 1700000000000
 tendril --page notes finality submit '{"record":"<canonical proof record hex>"}'
+```
+
+## Live SQL evolution, reducers, governance, lazy blobs & portable blueprints
+
+Chronolog v2 session commands let you evolve live logs, inspect governance, move lazy P2P blobs, and export secret-free blueprints directly through the running agent owner:
+
+```sh
+# Live chronolog-db SQL migrations (optional --policies policies.json for Postgres-style write RLS)
+tendril --page inventory sql migrate-file ./002_add_priority.sql --policies ./rls.json --operation mig-2 --wait materialized
+
+# Hot-publish a hash-pinned ES Module reducer into $reducers without redeploying peers
+tendril --page inventory reducers publish @app/counter ./counter.mjs --bind counter=@app/counter --operation red-1 --wait materialized
+
+# Pluggable $permissions governance (zero-OAuth public openMembers, moderation & M-of-N multisigMembers)
+tendril --page notes permissions set-open '{"openRead":true,"openWrite":false}' --operation open-1
+tendril --page notes permissions block-author '{"publicKey":"<64-hex>","reason":"spam"}' --operation blk-1
+tendril --page notes permissions unblock-author <64-hex> --operation unblk-1
+tendril --page notes permissions multisig-propose '{"action":"setMember","publicKey":"<hex>","writer":true}' --operation ms-1
+tendril --page notes permissions multisig-approve <proposalId> --operation ms-2
+tendril --page notes permissions multisig-cancel <proposalId> --operation ms-3
+
+# Unified lazy P2P blob pipe (session.content) & $publications history
+tendril --page notes content put ./photo.jpg --visibility private
+tendril --page notes content get <sha256-or-ref-json> ./restored.jpg
+tendril --page notes publication-history
+
+# Portable secret-free PageBlueprint (zero rows, zero epoch keys, zero PII)
+tendril --page inventory blueprint export ./inventory-blueprint.json --title "Shared Inventory"
 ```
 
 Only explicitly configured eligible finalizers can act. On a policy of `none` every `finality` command is explicitly unsupported; the CLI never reports a fabricated "none" success or a finalized result. Closing author time can exclude genuine unseen offline work first included behind the frontier. Providers cannot allocate operation order, promise retention, or make external effects exactly once. A configured but unavailable provider does not block local submission. Do not claim browser/native/host finality qualification from configuration or source inspection alone.

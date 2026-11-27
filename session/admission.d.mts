@@ -87,6 +87,13 @@ export interface AdmissionNotice {
 }
 export interface AdmissionState {
   readonly phase: AdmissionPhase;
+  readonly authorityMode: 'attested' | 'open' | 'multisig' | 'custom';
+  readonly privateLog: boolean;
+  readonly openRead: boolean;
+  readonly openWrite: boolean;
+  readonly canRead: boolean;
+  readonly canWrite: boolean;
+  readonly blockedAuthors: readonly string[];
   readonly publicKey: string;
   readonly wrapKey: string;
   readonly subject: 'device' | 'agent';

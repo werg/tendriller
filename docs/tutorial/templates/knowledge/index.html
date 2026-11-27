@@ -1,0 +1,51 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Local-first Knowledge &amp; AI Memory</title><style>
+:root{font:16px/1.5 system-ui,sans-serif;color:#1b2622;background:#f4f7f5;--panel:#fff;--border:#cfd9d4;--accent:#14684d;--soft:#eaf3ef}*{box-sizing:border-box}body{margin:0}main{max-width:1100px;margin:28px auto;padding:0 16px calc(96px + env(safe-area-inset-bottom,0px))}h1{font-size:2.1rem;line-height:1.15;margin:.2rem 0 .4rem}h2{font-size:1.1rem;margin-top:0}section,details{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;margin:16px 0}.grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,.9fr);gap:18px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}label{display:block;font-weight:600;margin:10px 0 4px}input,textarea,select,button{font:inherit}input:not([type=checkbox]),textarea,select{display:block;width:100%;border:1px solid #96aba1;padding:9px 11px;border-radius:7px;background:var(--panel);color:inherit}textarea{min-height:120px}button{border:1px solid var(--accent);background:var(--accent);color:#fff;padding:8px 13px;border-radius:7px;cursor:pointer;font-weight:600}button.secondary{background:transparent;color:var(--accent)}button.pill{border-radius:999px;padding:4px 10px;font-size:.82rem;background:var(--soft);color:var(--accent);border-color:var(--border)}button.pill[aria-pressed=true]{background:var(--accent);color:#fff;border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}.cards{display:grid;gap:12px;margin-top:12px}.mem{border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--panel)}.mem h3{margin:0 0 4px;font-size:1.02rem}.mem p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.meta{font-size:.8rem;color:#51665d}.muted{color:#51665d}.error{color:#9a2b24}[hidden]{display:none!important}@media(max-width:740px){.grid{display:block}}@media(prefers-color-scheme:dark){:root{color:#e6f0eb;background:#131c18;--panel:#1b2621;--border:#34483f;--accent:#6bd4a5;--soft:#20342b}button{color:#0b1f16}.meta,.muted{color:#9cb3a8}.error{color:#ffaba4}}
+</style></head><body><main>
+<header>
+  <p class="muted">Local-first encrypted SQL + FTS5 + <code>sqlite-vec</code> hybrid memory</p>
+  <h1>Knowledge &amp; AI Memory</h1>
+  <div id="governance-slot"></div>
+  <p id="session-status" role="status">Opening local storage…</p>
+</header>
+<div class="grid">
+  <div>
+    <section aria-labelledby="search-heading">
+      <h2 id="search-heading">Hybrid search</h2>
+      <div class="row">
+        <input id="search-q" type="search" placeholder="Search notes by keyword or meaning…" aria-label="Search memories" style="flex:1 1 220px">
+        <select id="search-mode" aria-label="Search mode" style="width:auto">
+          <option value="hybrid">Hybrid (FTS5 + Vector)</option>
+          <option value="keyword">Keyword (FTS5)</option>
+          <option value="semantic">Semantic (sqlite-vec)</option>
+        </select>
+      </div>
+      <div id="tag-bar" class="row" style="margin-top:10px" aria-label="Filter by tag"></div>
+      <p id="summary" class="meta" style="margin-top:10px">Loading local snapshot…</p>
+      <p id="view-error" class="error" role="alert" hidden></p>
+      <div id="init-banner" hidden><button id="init-btn" data-write disabled>Initialize memory database</button></div>
+      <div id="results" class="cards"></div>
+    </section>
+  </div>
+  <div>
+    <section aria-labelledby="editor-heading">
+      <h2 id="editor-heading">Add or edit memory</h2>
+      <form id="mem-form">
+        <label for="mem-id">Stable ID (blank = new)</label>
+        <input id="mem-id" placeholder="e.g. architecture-notes">
+        <label for="mem-title">Title</label>
+        <input id="mem-title" required maxlength="240" placeholder="What should be remembered?">
+        <label for="mem-body">Content</label>
+        <textarea id="mem-body" required maxlength="16384" placeholder="Notes, facts, decisions, snippets…"></textarea>
+        <label for="mem-tags">Tags (comma-separated)</label>
+        <input id="mem-tags" placeholder="design, sql, decisions">
+        <div class="row" style="margin-top:12px">
+          <button type="submit" data-write disabled>Save memory locally</button>
+          <button type="button" id="mem-clear" class="secondary">New draft</button>
+        </div>
+      </form>
+      <p id="status" class="meta" role="status" style="margin-top:10px"></p>
+    </section>
+    <section id="devices" aria-labelledby="devices-heading"><h2 id="devices-heading">Devices &amp; access</h2><p role="status">Opening…</p></section>
+  </div>
+</div>
+</main><script type="module" src="./page.mjs"></script></body></html>

@@ -53,7 +53,7 @@ async function bundle(source, target, plugins = []) {
   const result = await build({ absWorkingDir: root, entryPoints: [join(root, source)], outfile: join(out, target),
     bundle: true, platform: 'node', format: 'esm', target: 'node22', logLevel: 'warning', metafile: true,
     // Native ownership loads the application's own Chronolog and core packages at run time.
-    external: ['bufferutil', 'utf-8-validate', '@chronolog/*', '@tendriller/core/native-owner', '@tendriller/core/ipc'], plugins: [embeddedRuntime, ...plugins],
+    external: ['bufferutil', 'utf-8-validate', '@chronolog/*', '@tendriller/core/native-owner', '@tendriller/core/ipc', '@tendriller/core/blueprint'], plugins: [embeddedRuntime, ...plugins],
     banner: { js: "import {createRequire as bundleRequire} from 'node:module'; const require=bundleRequire(import.meta.url);" },
   });
   for (const input of Object.keys(result.metafile.inputs)) inputs.add(input);

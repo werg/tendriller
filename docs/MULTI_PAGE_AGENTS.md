@@ -180,6 +180,11 @@ my-pages/
 - `mergeSessionChanges(sessions)` combines change feeds with a cursor per
   application; the per-session exit listener is removed.
 
+## Cross-page federated queries (Hosted MCP & local workspaces)
+
+- **Hosted MCP (`/mcp`):** Call `describe_application` to inspect live `$reducers` topic bindings and automatic `sqlSchemas` (`tables`, `columns`, `policies`) for every `chronolog/sql` topic without a separate bundle. Use `query_sql` (or `POST /v1/apps/:appId/sql`) for read-only parameterized SQL, or `query_multiple_applications` to fan out up to 8 read-only SQL or declared queries across opted-in pages in one parallel turn with per-page capability and grant isolation.
+- **Local workspace agents:** Import `queryMultipleSessions` from `shared/helpers/multi-page.mjs` to query multiple local pages concurrently with bounded concurrency, revision attribution, and per-page error isolation.
+
 ## One conversation, several pages
 
 The workspace owner is not the interactive conversation's request handler.

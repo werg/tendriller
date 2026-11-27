@@ -400,11 +400,6 @@ export class Tendril extends DurableObject<Env> {
       this.db.set("application", applicationSelection({ id: appId }));
       this.db.set("created_at", now);
       this.db.set("next_cleanup", now + DAY);
-      if (authorityHint?.mode === "open") {
-        // Record the creator's requested authority hint, but keep v2_open_readers = false
-        // until the owner's browser actually signs & initializes the real LogGenesis!
-        this.db.set("v2_pending_authority_hint", authorityHint);
-      }
       this.db.run(
         "INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at) VALUES ('l_main', ?, ?, 'owner', 'main', ?, NULL)",
         key, keyHash, now,

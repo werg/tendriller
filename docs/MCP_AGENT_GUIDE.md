@@ -112,16 +112,8 @@ email, account credentials or application keys.
    Give the app a recognizable emoji favicon during
    preparation: set `icon` to an emoji such as `🌱` through the page's metadata (`tendril --page <slug> meta`);
    the [build guide](BUILD_AN_APP.md#give-the-app-a-recognizable-favicon) has a runnable example.
-7. To use the app from this MCP connection, read `topic: "connect"`. Publish a
-   signed `domain.js` bundle with your page, and have the owner opt in on
-   `/connections` (or `_tendril/mcp/connect`) so the browser seals a dedicated
-   signing key and epoch keys to the OAuth grant's X25519 `wrap_public_key`.
-   Zero plaintext keys are stored at rest; the OAuth Bearer token unseals them
-   in RAM per `/mcp` call.
-8. Refresh `list_applications`, call `describe_application`, make a real query and
-   the requested command, then verify the materialized result (revisable until
-   finalized), retained evidence and persistence after reload. Use `topic: "delivery"` for the completion evidence and report
-   the actual running process and how to resume the workspace's saved device stores.
+7. To use the app from this MCP connection, read `topic: "connect"`. Chronolog v2 pages run their hash-pinned `$reducers` ES Modules (including built-in `chronolog/sql` and `chronolog:sqlite` over `sqlite-cas.wasm`) directly in RAM with **zero separate `domain.js` bundle**. Have the owner opt in on `/connections` (or `_tendril/mcp/connect`) so the browser seals a dedicated signing key and epoch keys to the OAuth grant's X25519 `wrap_public_key`. Zero plaintext keys are stored at rest; the OAuth Bearer token unseals them in RAM per `/mcp` call.
+8. Refresh `list_applications`, call `describe_application` (which automatically includes live `sqlSchemas` for every `chronolog/sql` topic plus `permissionsSummary`), run `query_application`, read-only `query_sql` (or `POST /v1/apps/:appId/sql`), or parallel `query_multiple_applications` across up to 8 opted-in pages, submit the requested command, and verify the materialized result (revisable until finalized), retained evidence and persistence after reload. Use `topic: "delivery"` for the completion evidence and report the actual running process and how to resume the workspace's saved device stores.
 
 ## Use browser observations
 

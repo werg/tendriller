@@ -216,11 +216,28 @@ export async function openPageGenesis({
     return null;
   };
 
+  // Local-first reopen: if this device already verified and cached an initialized genesis
+  // for this application, open locally IMMEDIATELY without blocking on host network RTT.
+  // Background participation / admission sync will catch up control ops asynchronously.
+  const cachedReady = await readCachedIntent(applicationId);
+  if (cachedReady?.initialized === true && cachedReady.genesisBytes instanceof Uint8Array) {
+    return {
+      logId: cachedReady.logId,
+      genesis: decodeLogGenesis(cachedReady.genesisBytes),
+      genesisBytes: cachedReady.genesisBytes,
+      casNodes: cachedReady.casNodes ?? [],
+      publicOps: cachedReady.publicOps ?? [],
+      epoch0Key: cachedReady.epoch0Key,
+      created: false,
+      fromCache: true,
+    };
+  }
+
   let metadata;
   try {
     metadata = await peers.application({ signal });
   } catch (error) {
-    const cached = await readCachedIntent(applicationId, 'pending');
+    const cached = cachedReady ?? await readCachedIntent(applicationId, 'pending');
     if (cached) {
       return {
         logId: cached.logId,
@@ -230,13 +247,28 @@ export async function openPageGenesis({
         publicOps: cached.publicOps ?? [],
         epoch0Key: cached.epoch0Key,
         created: false,
+        fromCache: true,
       };
     }
     throw error;
   }
 
+  const sanitizeCas = (nodes = []) => nodes.map(n => ({
+    hash: n.hash,
+    bytes: n.bytes,
+    ...(n.partition ? { partition: n.partition } : {}),
+  }));
+
   const persistCached = async (logId, record) => {
-    const encoded = encodeRecord(record);
+    const clean = {
+      initialized: Boolean(record.initialized),
+      logId: record.logId,
+      genesisBytes: record.genesisBytes,
+      casNodes: sanitizeCas(record.casNodes),
+      publicOps: record.publicOps ?? [],
+      ...(record.epoch0Key instanceof Uint8Array ? { epoch0Key: record.epoch0Key } : {}),
+    };
+    const encoded = encodeRecord(clean);
     await store?.put(GENESIS(logId), encoded);
     if (applicationId && applicationId !== logId) {
       await store?.put(GENESIS(applicationId), encoded);
@@ -253,6 +285,7 @@ export async function openPageGenesis({
     const intent = await readCachedIntent(logId, applicationId, 'pending');
     const epoch0Key = intent?.logId === logId ? intent.epoch0Key : undefined;
     await persistCached(logId, {
+      initialized: true,
       logId,
       genesisBytes,
       casNodes,
@@ -279,7 +312,13 @@ export async function openPageGenesis({
       privateLog,
       finalitySchedule,
     });
-    await store?.put(intentKey, encodeRecord(intent));
+    await store?.put(intentKey, encodeRecord({
+      initialized: false,
+      logId: intent.logId,
+      genesisBytes: intent.genesisBytes,
+      casNodes: sanitizeCas(intent.casNodes),
+      ...(intent.epoch0Key instanceof Uint8Array ? { epoch0Key: intent.epoch0Key } : {}),
+    }));
   }
   try {
     metadata = await peers.initialize({
@@ -298,10 +337,11 @@ export async function openPageGenesis({
     const synced = await peers.syncControl({}, { signal }).catch(() => ({ casNodes: [], publicOps: [] }));
     const casNodes = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
     const publicOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
-    await persistCached(logId, { logId, genesisBytes, casNodes, publicOps });
+    await persistCached(logId, { initialized: true, logId, genesisBytes, casNodes, publicOps });
     return { logId, genesis, genesisBytes, casNodes, publicOps, epoch0Key: undefined, created: false };
   }
   await persistCached(logId, {
+    initialized: true,
     logId,
     genesisBytes,
     casNodes: intent.casNodes,
@@ -316,6 +356,7 @@ export async function openPageGenesis({
     publicOps: [],
     epoch0Key: intent.epoch0Key,
     created: true,
+    ...(metadata.seededVersion ? { seededVersion: metadata.seededVersion } : {}),
   };
 }
 
@@ -406,7 +447,9 @@ export function createAdmission(session, {
     const perms = session.permissions();
     const keys = session.keysState();
     const admission = perms.admission ?? {};
-    const members = (perms.members ?? []).map(m => {
+    const authorityMode = perms.mode ?? 'attested';
+    const rawMembers = Array.isArray(perms.members) ? perms.members : [];
+    const members = rawMembers.map(m => {
       const meta = admittedMeta.get(m.publicKey);
       const isCreator = m.publicKey === creatorKey;
       return Object.freeze({
@@ -421,8 +464,15 @@ export function createAdmission(session, {
       });
     });
     const me = members.find(m => m.publicKey === identity.publicKey) ?? null;
-    const hasKey = !session.genesis.privateLog || keys.currentEpoch < 0 || session.hasEpochKey(keys.currentEpoch);
+    const isPrivate = session.genesis.privateLog !== false;
+    const openRead = Boolean(perms.openReaders);
+    const openWrite = Boolean(perms.openWriters);
+    const canRead = me !== null ? me.reader === true : session.isReader(identity.publicKey);
+    const canWrite = me !== null ? (me.writer === true || me.administrator === true) : session.isWriter(identity.publicKey);
+    const isAdmin = me !== null ? me.administrator === true : session.isAdministrator(identity.publicKey);
+    const hasKey = !isPrivate || keys.currentEpoch < 0 || session.hasEpochKey(keys.currentEpoch);
     const phase = closed ? 'closed'
+      : (!isPrivate && canRead) ? 'admitted'
       : me === null ? (wasMember ? 'removed' : admission.mode === 'strict' ? 'waiting-approval' : 'waiting-admission')
         : !hasKey ? 'waiting-keys' : 'admitted';
     const invites = (admission.invites ?? []).map(item => Object.freeze({
@@ -430,8 +480,16 @@ export function createAdmission(session, {
       redemptions: item.redemptions ?? 0,
       expired: now() >= item.expiresAt,
     }));
+    const blockedAuthors = Object.freeze(Array.isArray(perms.blockedAuthors) ? [...perms.blockedAuthors] : []);
     return Object.freeze({
       phase,
+      authorityMode,
+      privateLog: isPrivate,
+      openRead,
+      openWrite,
+      canRead,
+      canWrite,
+      blockedAuthors,
       publicKey: identity.publicKey,
       wrapKey: wrapKey.publicKey,
       subject,
@@ -439,8 +497,8 @@ export function createAdmission(session, {
       accounts: [...(admission.accounts ?? [])],
       ownerGrant: Object.freeze({ ...(admission.grant ?? DEFAULT_OWNER_GRANT) }),
       epoch: keys.currentEpoch,
-      administrator: me?.administrator === true,
-      canAdmit: me?.administrator === true && hasKey,
+      administrator: isAdmin,
+      canAdmit: isAdmin && hasKey,
       members,
       pending: [...pending],
       invites,
@@ -465,11 +523,11 @@ export function createAdmission(session, {
   }
 
   async function syncWithHost() {
-    const facts = await session.exportFacts();
+    const facts = await session.exportPublicControlFacts();
     await indexPublicOpsMeta(facts.publicOps);
     const synced = await peers.syncControl({
       publicOps: facts.publicOps.map(authorityRecord),
-      casNodes: facts.casNodes.filter(n => n.partition === 'public').map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+      casNodes: facts.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
       checkpoints: facts.checkpoints.map(cp => authorityRecord(encodeRecord(cp))),
     }, { signal: lifetime.signal });
     const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
@@ -926,6 +984,74 @@ export function createAdmission(session, {
     async 'admission.groups'() {
       if (typeof peers.groups !== 'function') return { policy: null, group_attestations: [], departures: [] };
       return peers.groups({ signal: lifetime.signal });
+    },
+    async 'admission.setOpen'({ openRead, openWrite } = {}) {
+      return administer(async () => {
+        const input = {
+          action: 'setOpen',
+          ...(openRead === undefined ? {} : { openRead: Boolean(openRead) }),
+          ...(openWrite === undefined ? {} : { openWrite: Boolean(openWrite) }),
+        };
+        await session.submit({ visibility: 'public', updates: [{ topic: '$permissions', input }] });
+        const raw = session.topic?.('$permissions') ?? {};
+        return { openRead: raw.openRead === true, openWrite: raw.openWrite === true };
+      });
+    },
+    async 'admission.blockAuthor'(publicKey, reason) {
+      if (!HEX.test(publicKey ?? '')) throw failure('MEMBER_KEY_INVALID');
+      return administer(async () => {
+        await session.submit({
+          visibility: 'public',
+          updates: [{
+            topic: '$permissions',
+            input: {
+              action: 'blockAuthor',
+              publicKey,
+              ...(typeof reason === 'string' && reason.trim() ? { reason: reason.trim().slice(0, 160) } : {}),
+            },
+          }],
+        });
+        return { blocked: publicKey };
+      });
+    },
+    async 'admission.unblockAuthor'(publicKey) {
+      if (!HEX.test(publicKey ?? '')) throw failure('MEMBER_KEY_INVALID');
+      return administer(async () => {
+        await session.submit({
+          visibility: 'public',
+          updates: [{ topic: '$permissions', input: { action: 'unblockAuthor', publicKey } }],
+        });
+        return { unblocked: publicKey };
+      });
+    },
+    async 'admission.multisigPropose'(proposal) {
+      return administer(async () => {
+        const op = await session.submit({
+          visibility: 'public',
+          updates: [{ topic: '$permissions', input: { action: 'propose', ...(proposal ?? {}) } }],
+        });
+        return { proposalId: proposal?.proposalId ?? op.id };
+      });
+    },
+    async 'admission.multisigApprove'(proposalId) {
+      if (typeof proposalId !== 'string' || !proposalId) throw failure('PROPOSAL_ID_INVALID');
+      return administer(async () => {
+        await session.submit({
+          visibility: 'public',
+          updates: [{ topic: '$permissions', input: { action: 'approve', proposalId } }],
+        });
+        return { approved: proposalId };
+      });
+    },
+    async 'admission.multisigCancel'(proposalId) {
+      if (typeof proposalId !== 'string' || !proposalId) throw failure('PROPOSAL_ID_INVALID');
+      return administer(async () => {
+        await session.submit({
+          visibility: 'public',
+          updates: [{ topic: '$permissions', input: { action: 'cancel', proposalId } }],
+        });
+        return { cancelled: proposalId };
+      });
     },
     async 'admission.redeem'(fragment) {
       const match = /^(?:#?invite=)?([0-9a-f]{32})\.([0-9a-f]{64})$/u.exec(String(fragment ?? ''));

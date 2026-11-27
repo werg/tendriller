@@ -23,6 +23,12 @@ export interface HostApplication {
   /** The host's Ed25519 attestation public key (hex) pinned in `$permissions.admission.hostKey`. */
   readonly hostAttestationKey: string | null;
   readonly admissionAccounts: readonly string[];
+  /** Seeded v1 file manifest on browser-first pages prior to the first signed `$publications` op. */
+  readonly seededVersion?: {
+    readonly version: number;
+    readonly entry: string;
+    readonly files: readonly { readonly path: string; readonly hash: string; readonly size: number; readonly type: string }[];
+  } | null;
 }
 
 export interface HostControlSyncInput {
@@ -52,6 +58,28 @@ export interface HostAdmissions {
 export interface EnrollmentChallenge { readonly applicationId: string; readonly publicKey: string; readonly challenge: string; readonly expiresAt: number }
 export interface AuthorityRequestOptions { readonly signal?: AbortSignal }
 
+export interface HostMailboxCasNode { readonly hash: string; readonly partition: 'public' | 'private'; readonly bytes: string }
+
+export interface HostMailboxSyncInput {
+  readonly encryptedEnvelopes?: readonly AuthorityRecord[];
+  readonly publicOps?: readonly AuthorityRecord[];
+  readonly casNodes?: readonly HostMailboxCasNode[];
+  readonly knownEnvelopeDigests?: readonly string[];
+  readonly knownOpIds?: readonly string[];
+  readonly knownCasHashes?: readonly string[];
+}
+
+export interface HostMailboxSyncResponse {
+  readonly logId: string;
+  readonly privateLog: boolean;
+  readonly encryptedEnvelopes: readonly AuthorityRecord[];
+  readonly publicOps: readonly AuthorityRecord[];
+  readonly casNodes: readonly HostMailboxCasNode[];
+  readonly addedEnvelopes: number;
+  readonly addedOps: number;
+  readonly addedCasNodes: number;
+}
+
 export interface AuthorityClient {
   application(options?: AuthorityRequestOptions): Promise<HostApplication>;
   prepare(configuration: HostAppConfig): Promise<HostApplication>;
@@ -60,6 +88,7 @@ export interface AuthorityClient {
   enrollAgent(): Promise<HostEnrollment>;
   initialize(input: { readonly genesis: AuthorityRecord; readonly casNodes?: readonly PublicCasNodePayload[]; readonly publicOps?: readonly AuthorityRecord[] }): Promise<HostApplication>;
   syncControl(input?: HostControlSyncInput, options?: AuthorityRequestOptions): Promise<HostControlSyncResponse>;
+  syncMailbox?(input?: HostMailboxSyncInput, options?: AuthorityRequestOptions): Promise<HostMailboxSyncResponse>;
   admissions(options?: AuthorityRequestOptions): Promise<HostAdmissions>;
   publication(id?: string): Promise<{ readonly opId: string; readonly revision: number; readonly version: number; readonly release: unknown; readonly finalized: boolean } | null>;
   publish(op: AuthorityRecord, assets: readonly { readonly hash: string; readonly bytes: string }[]): Promise<unknown>;

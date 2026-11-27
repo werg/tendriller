@@ -19,6 +19,7 @@ const built = await build({
     setup(builder) {
       builder.onResolve({ filter: /^@tendriller\/core\/peers$/ }, () => ({ path: root + 'contract/peers.mjs' }));
       builder.onResolve({ filter: /^@tendriller\/core\/admission$/ }, () => ({ path: root + 'session/admission.mjs' }));
+      builder.onResolve({ filter: /^@tendriller\/core\/authority$/ }, () => ({ path: root + 'contract/authority.mjs' }));
     },
   }],
 });

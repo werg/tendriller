@@ -1,6 +1,6 @@
 import { createPeerIntroductions } from '../contract/introductions.mjs';
-import { authorityRecordBytes } from '../contract/authority.mjs';
-import { decodeRecord, hexToBytes } from '@chronolog/peer-session';
+import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
+import { bytesToHex, decodeRecord, decodeSignedOperation, encryptedEnvelopeDigest, hexToBytes, operationIdDigest } from '@chronolog/peer-session';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
 export { PEER_TRANSPORT_POLICY };
@@ -127,6 +127,109 @@ export function participateApplication(session, { peers, openDirectConnection,
     for (const peerId of work) promoted.set(peerId, now);
     return Promise.allSettled(work.map(peerId => connect({ identity: peerId, route: null }, undefined, true))).then(() => undefined);
   }
+  const uploadedDigests = new Set(), uploadedOpIds = new Set(), uploadedCasHashes = new Set();
+  let mailboxInFlight = null, mailboxDirty = false, mailboxTimer = undefined;
+
+  async function syncMailbox() {
+    if (signal.aborted || typeof peers.syncMailbox !== 'function' || typeof session.exportFacts !== 'function') return;
+    mailboxDirty = true;
+    if (mailboxInFlight) return mailboxInFlight;
+    mailboxInFlight = (async () => {
+      while (mailboxDirty && !signal.aborted) {
+        mailboxDirty = false;
+        try {
+          const facts = await session.exportFacts();
+          const isPrivate = session.genesis?.privateLog !== false;
+          const knownEnvelopeDigests = [];
+          const outgoingEnvelopes = [];
+          const knownOpIds = [];
+          const outgoingOps = [];
+          const knownCasHashes = [];
+          const outgoingCas = [];
+
+          if (isPrivate) {
+            for (const raw of facts.encryptedEnvelopes ?? []) {
+              const digest = bytesToHex(encryptedEnvelopeDigest(raw));
+              knownEnvelopeDigests.push(digest);
+              if (!uploadedDigests.has(digest) && outgoingEnvelopes.length < 128) {
+                outgoingEnvelopes.push({ digest, record: authorityRecord(raw) });
+              }
+            }
+          } else {
+            for (const raw of facts.publicOps ?? []) {
+              try {
+                const signed = decodeSignedOperation(raw);
+                const opId = bytesToHex(operationIdDigest(signed.coreBytes));
+                knownOpIds.push(opId);
+                // Control ops travel over syncControl; mailbox carries public app ops
+                if (!uploadedOpIds.has(opId) && outgoingOps.length < 128) {
+                  outgoingOps.push({ opId, record: authorityRecord(raw) });
+                }
+              } catch { /* skip */ }
+            }
+          }
+
+          for (const node of facts.casNodes ?? []) {
+            knownCasHashes.push(node.hash);
+            if (!uploadedCasHashes.has(node.hash) && outgoingCas.length < 128 && node.bytes.byteLength <= 512 * 1024) {
+              outgoingCas.push({ hash: node.hash, partition: node.partition, bytes: bytesToHex(node.bytes) });
+            }
+          }
+
+          const resp = await peers.syncMailbox({
+            ...(outgoingEnvelopes.length ? { encryptedEnvelopes: outgoingEnvelopes.map(e => e.record) } : {}),
+            ...(outgoingOps.length ? { publicOps: outgoingOps.map(o => o.record) } : {}),
+            ...(outgoingCas.length ? { casNodes: outgoingCas } : {}),
+            knownEnvelopeDigests,
+            knownOpIds,
+            knownCasHashes,
+          }, { signal }).catch(() => null);
+
+          if (!resp) continue;
+          for (const e of outgoingEnvelopes) uploadedDigests.add(e.digest);
+          for (const o of outgoingOps) uploadedOpIds.add(o.opId);
+          for (const c of outgoingCas) uploadedCasHashes.add(c.hash);
+
+          const incomingEnvelopes = (resp.encryptedEnvelopes ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
+          const incomingOps = (resp.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
+          const incomingCas = (resp.casNodes ?? []).map(n => ({
+            hash: n.hash,
+            bytes: hexToBytes(n.bytes),
+            partition: n.partition === 'private' ? 'private' : 'public',
+          }));
+          for (const raw of incomingEnvelopes) uploadedDigests.add(bytesToHex(encryptedEnvelopeDigest(raw)));
+          for (const raw of incomingOps) {
+            try { uploadedOpIds.add(bytesToHex(operationIdDigest(decodeSignedOperation(raw).coreBytes))); } catch {}
+          }
+          for (const c of incomingCas) uploadedCasHashes.add(c.hash);
+
+          if (incomingEnvelopes.length || incomingOps.length || incomingCas.length) {
+            await session.mergeFacts({
+              publicOps: incomingOps,
+              encryptedEnvelopes: incomingEnvelopes,
+              casNodes: incomingCas,
+              retentions: [],
+              checkpoints: [],
+            });
+          }
+        } catch {
+          // Best-effort async catch-up; direct WebRTC and local writes never depend on mailbox
+        }
+      }
+    })().finally(() => { mailboxInFlight = null; });
+    return mailboxInFlight;
+  }
+
+  function scheduleMailboxSync() {
+    if (signal.aborted || typeof peers.syncMailbox !== 'function') return;
+    if (mailboxTimer !== undefined) return;
+    mailboxTimer = setTimeout(() => {
+      mailboxTimer = undefined;
+      void syncMailbox();
+    }, 250);
+    mailboxTimer.unref?.();
+  }
+
   async function refresh() {
     dirty = true; if (refreshing) return refreshing;
     refreshing = (async () => {
@@ -146,6 +249,7 @@ export function participateApplication(session, { peers, openDirectConnection,
               });
             }
           }
+          await syncMailbox();
           const directory = await adapter.discovery.read({ signal });
           for (const peer of directory) if (session.isReader(peer.identity)) void connect(peer);
           if (error?.startsWith('discovery:')) error = null;
@@ -195,10 +299,11 @@ export function participateApplication(session, { peers, openDirectConnection,
   let annotated = false;
   try { Object.defineProperty(session, 'diagnostics', { value: diagnostics, configurable: true, writable: true }); annotated = true; } catch {}
   const stopAuthority = session.onChange(() => { void advertise(); void refresh(); });
+  const stopFacts = typeof session.onFacts === 'function' ? session.onFacts(() => { scheduleMailboxSync(); }) : () => {};
   const closed = new Promise(resolve => {
     let stopping = false;
     const shutdown = () => {
-      if (stopping) return; stopping = true; stopAuthority(); clearTimeout(retry);
+      if (stopping) return; stopping = true; stopAuthority(); stopFacts(); clearTimeout(retry); clearTimeout(mailboxTimer); mailboxTimer = undefined;
       if (annotated && session.diagnostics === diagnostics) { try { delete session.diagnostics; } catch {} }
       for (const timer of passiveFallbacks.values()) clearTimeout(timer);
       passiveFallbacks.clear();

@@ -7,6 +7,7 @@ There are **no separate events-only vs. SQL engine builds**, **no native C/C++ a
 | Requirement | Start with |
 | --- | --- |
 | Relational tables, FTS5 full-text search, `sqlite-vec` vectors, atomic preconditions + rollback, write RLS, user-owned dynamic tables | Built-in `chronolog/sql` standard reducer (`templates/inventory/domain.mjs`) |
+| Local-first encrypted AI memory & hybrid search (FTS5 BM25 + `sqlite-vec` k-NN + RRF) | Built-in `chronolog/sql` + `shared/helpers/hybrid-memory.mjs` (`templates/knowledge/domain.mjs`) |
 | Notes, messages, lightweight KV/document state, custom reducer logic | Pure JS/JSON ES Module reducer (`templates/notes/domain.mjs`) |
 | Multiple independent SQL databases in one app | Bind multiple topics to `{ module: 'chronolog/sql' }` — each gets its own hash-addressed `dbRoot` |
 | Custom governance / permissions (host-attested, M-of-N multisig, open public writers, custom capability reducer) | Override `$permissions` in genesis (`chronolog/permissions` or custom module answering `ctx.query('$permissions', ...)`) |
@@ -81,6 +82,10 @@ Every SQLite invocation inside `TopicKernel` is 100% deterministic across browse
 - **`datetime('now')`** and **`'localtime'`** are pinned to the operation's UTC `authorTimestampMs`.
 - **`random()` / `randomblob()`** are disabled.
 - **3-mode authorizer:** `readonly` (pure queries), `user` (DML under RLS triggers + optional scoped DDL `{ createTable, alterTable, dropTable, indexOn, createView, dropView }`), and `admin` (full DDL/DML + `applyRls()`).
+
+### Built-in FTS5 + `sqlite-vec` hybrid search (`chronolog-db`)
+
+`sqlite-cas.wasm` ships with both **FTS5** (`CREATE VIRTUAL TABLE ... USING fts5(...)`) and **`sqlite-vec`** (`CREATE VIRTUAL TABLE ... USING vec0(embedding float[D])`) deterministically over 4 KiB Merkle-paged CAS. Use `docs/tutorial/shared/helpers/hybrid-memory.mjs` (or `--template knowledge`) for turnkey local-first encrypted AI memory with deterministic offline feature-hashing embeddings (`embedTextLocal`), pluggable agent-supplied embeddings (`upsertEmbedding`), and Reciprocal Rank Fusion (RRF) combining lexical BM25 + vector nearest neighbors.
 
 ## Model 2: Custom ES Module reducers (JSON / KV or direct `chronolog:sqlite`)
 

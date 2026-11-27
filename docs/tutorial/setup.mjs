@@ -6,25 +6,39 @@ import {pathToFileURL} from 'node:url';
 import {parseArgs} from 'node:util';
 import {describeReadiness,requireCreationReady} from '@tendriller/core';
 import {requireEmptyPageFolder,requireSlug,workspace,workspaceRoot} from './shared/local.mjs';
-export const TEMPLATES=Object.freeze(['notes','inventory']);
+export const TEMPLATES=Object.freeze(['notes','inventory','knowledge']);
 const templateRoot=new URL('./templates/',import.meta.url);
 const pageModule=(slug,name)=>import(pathToFileURL(join(workspaceRoot,'pages',slug,name)).href);
+const DEFAULT_NAMES=Object.freeze({notes:'Shared notes',inventory:'Shared inventory',knowledge:'Knowledge & AI memory'});
 export async function createPage(slug,{template='notes',name}={}) {
- requireSlug(slug);if(!TEMPLATES.includes(template))throw Error('Choose --template notes or inventory');
+ requireSlug(slug);if(!TEMPLATES.includes(template))throw Error(`Choose --template ${TEMPLATES.join(', ')}`);
  const selected=await workspace();
  if(selected.config.pages?.[slug]){const page=await selected.page(slug);return{slug,id:page.id,page_url:page.page_url,resumed:true,next:`npm run init -- ${slug}`};}
  await requireEmptyPageFolder(slug);const origin=selected.config.service;
  requireCreationReady(await describeReadiness(origin),{service:origin});
  const source=new URL(template+'/',templateRoot);
  await requireEmptyPageFolder(slug);
- const page=await selected.createPage(slug,{name:name??(template==='inventory'?'Shared inventory':'Shared notes')}),target=join(workspaceRoot,'pages',slug);
+ const page=await selected.createPage(slug,{name:name??DEFAULT_NAMES[template]??'Shared page'}),target=join(workspaceRoot,'pages',slug);
  for(const entry of await readdir(source))await cp(new URL(entry,source),join(target,entry),{recursive:true,errorOnExist:true,force:false});
  return{slug,id:page.id,page_url:page.page_url,template,next:`npm run init -- ${slug} (this agent creates the page keys), then npm run deploy -- ${slug}.`};
+}
+function parseBoolOption(raw, defaultValue) {
+  if (raw === undefined) return defaultValue;
+  const s = String(raw).trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  throw Error(`Expected boolean (true|false), got "${raw}"`);
 }
 function parseAuthorityOption(values) {
   const mode = values.authority;
   if (!mode || mode === 'attested') return undefined;
-  if (mode === 'open') return { mode: 'open' };
+  if (mode === 'open') {
+    return {
+      mode: 'open',
+      openRead: parseBoolOption(values['open-read'], true),
+      openWrite: parseBoolOption(values['open-write'], true),
+    };
+  }
   if (mode === 'multisig') {
     const signers = values.signers ? String(values.signers).split(',').map(s => s.trim()).filter(Boolean) : [];
     const threshold = values.threshold === undefined ? undefined : Number(values.threshold);
@@ -33,7 +47,7 @@ function parseAuthorityOption(values) {
   throw Error('Choose --authority attested, multisig, or open');
 }
 export async function run(action,args) {
- const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'},authority:{type:'string'},signers:{type:'string'},threshold:{type:'string'}}});
+ const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'},authority:{type:'string'},'open-read':{type:'string'},'open-write':{type:'string'},signers:{type:'string'},threshold:{type:'string'}}});
  const[slug]=positionals;if(action==='new')return createPage(slug,values);
  const selected=await workspace(),context=await selected.pageContext(requireSlug(slug));
  if(action==='demo'){await pageModule(slug,'demo.mjs');return;}

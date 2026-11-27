@@ -1,7 +1,7 @@
 // Operational commands use the application's public session composition. This module
 // has no transport, signer, delivery queue, event checkpoint or data store.
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pack } from './pack.mjs';
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
@@ -180,7 +180,59 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       const parsed = decodeRecord(authorityRecordBytes(jsonInput(args[1], 'canonical hex finality checkpoint record')));
       return session.finality.submitCheckpoints(Array.isArray(parsed) ? parsed : [parsed]);
     }
-    throw Error('Use finality status, close, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
+    if (args[0] === 'schedule') {
+      const kind = required(options.kind, '--kind none|signed-frontier|fixed-validator');
+      let policy;
+      if (kind === 'none') {
+        policy = { kind: 'none' };
+      } else if (kind === 'signed-frontier') {
+        const signer = options.signer || session.identity?.publicKey || session.device?.identity?.publicKey;
+        if (!/^[0-9a-f]{64}$/u.test(signer ?? '')) throw Error('Supply --signer with a 64-hex Ed25519 public key');
+        policy = { kind: 'signed-frontier', signer };
+      } else if (kind === 'fixed-validator') {
+        const validators = String(options.validators ?? '').split(',').map(s => s.trim()).filter(Boolean);
+        if (!validators.length || validators.some(v => !/^[0-9a-f]{64}$/u.test(v))) {
+          throw Error('Supply --validators with comma-separated 64-hex Ed25519 public keys');
+        }
+        const threshold = options.threshold === undefined ? validators.length : Number(options.threshold);
+        if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > validators.length) {
+          throw Error(`--threshold must be between 1 and ${validators.length}`);
+        }
+        policy = { kind: 'fixed-validator', validators, threshold };
+      } else {
+        throw Error('Use --kind none, signed-frontier, or fixed-validator');
+      }
+      const effectiveAfterMs = options['effective-after'] !== undefined
+        ? Number(options['effective-after'])
+        : Date.now() + 5_000;
+      if (!Number.isSafeInteger(effectiveAfterMs) || effectiveAfterMs < 0) {
+        throw Error('--effective-after must be a nonnegative integer timestamp in ms');
+      }
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$finality', input: { action: 'schedulePolicy', effectiveAfterMs, policy } }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use finality status, schedule, close, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
+  }
+  if (command === 'blueprint') {
+    const sub = required(args[0], 'blueprint subcommand: export');
+    if (sub === 'export') {
+      const { exportPageBlueprint } = await import('@tendriller/core/blueprint');
+      const bp = await exportPageBlueprint(session, {
+        ...(options.title ? { title: options.title } : {}),
+        includeSchema: options['no-schema'] !== true,
+      });
+      if (args[1]) {
+        mkdirSync(dirname(args[1]), { recursive: true });
+        writeFileSync(args[1], JSON.stringify(bp, null, 2) + '\n');
+        return { format: bp.format, writtenTo: args[1], topics: Object.keys(bp.reducers.topics), schemas: bp.schemas.length };
+      }
+      return bp;
+    }
+    throw Error('Use blueprint export [out.json] [--title TEXT] [--no-schema]');
   }
   if (command === 'definition') return controlOf(owned).definition();
   if (command === 'publication') return controlOf(owned).publication();
@@ -273,6 +325,21 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       if (!input) throw Error('Supply a SQL string or JSON query object');
       return session.query(topic, input);
     }
+    if (sub === 'migrate-file') {
+      const filePath = required(args[1], 'a .sql migration file path');
+      const sqlText = readFileSync(filePath, 'utf8');
+      const statements = sqlText
+        .split(/;\s*(?:\r?\n|$)/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      if (!statements.length) throw Error(`Migration file ${filePath} contains no SQL statements`);
+      const policies = options.policies ? jsonInput(readFileSync(options.policies, 'utf8'), 'RLS policies JSON file') : undefined;
+      const op = await session.submit({
+        ...identity(options),
+        updates: [{ topic, input: { action: 'migrate', statements, ...(policies ? { policies } : {}) } }],
+      });
+      return observe(op, options, signal);
+    }
     if (['exec', 'migrate', 'rls'].includes(sub)) {
       const payload = jsonInput(args[1], `SQL ${sub} JSON payload`);
       const action = sub === 'rls' ? 'setRls' : sub;
@@ -282,7 +349,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    throw Error('Use sql query|exec|migrate|rls|schema|tables');
+    throw Error('Use sql query|exec|migrate|migrate-file|rls|schema|tables');
   }
   if (command === 'reducers') {
     const sub = args[0] ?? 'inspect';
@@ -296,18 +363,62 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    throw Error('Use reducers inspect or reducers set <json> --operation ID');
+    if (sub === 'publish') {
+      const specifier = required(args[1], 'a module specifier (e.g. @app/custom)');
+      const filePath = required(args[2], 'an ES Module reducer file path');
+      const source = readFileSync(filePath, 'utf8');
+      const bytes = new TextEncoder().encode(source);
+      const { computeCasHash } = await import('@chronolog/peer-session/kernel');
+      const hash = computeCasHash(bytes, []);
+      const casUri = `cas:sha256-${hash}`;
+      const topicBindings = {};
+      if (typeof options.bind === 'string' && options.bind.trim()) {
+        for (const entry of options.bind.split(',').map(s => s.trim()).filter(Boolean)) {
+          const [tName, target] = entry.split('=');
+          if (!tName) throw Error(`Invalid --bind entry "${entry}"; expected topic=specifier[:export]`);
+          const [modSpec, expName] = (target || specifier).split(':');
+          topicBindings[tName.trim()] = {
+            module: (modSpec || specifier).trim(),
+            ...(expName ? { export: expName.trim() } : {}),
+          };
+        }
+      }
+      await session.mergeFacts({
+        publicOps: [],
+        encryptedEnvelopes: [],
+        casNodes: [{ hash, bytes, partition: 'public' }],
+        retentions: [],
+        checkpoints: [],
+      });
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{
+          topic: '$reducers',
+          input: {
+            imports: { [specifier]: casUri },
+            ...(Object.keys(topicBindings).length ? { topics: topicBindings } : {}),
+          },
+        }],
+      });
+      return { specifier, hash, casUri, topics: topicBindings, operation: await observe(op, options, signal) };
+    }
+    throw Error('Use reducers inspect, reducers set <json> --operation ID, or reducers publish <specifier> <file.mjs> [--bind topic=spec[:export]] --operation ID');
   }
   if (command === 'permissions') {
     const sub = args[0] ?? 'inspect';
     if (sub === 'inspect') return session.query('$permissions', { summary: true });
-    if (['set-member', 'remove-member', 'invite', 'revoke-invite'].includes(sub)) {
+    if (['set-member', 'remove-member', 'invite', 'revoke-invite', 'set-open', 'set-admin', 'block-author', 'multisig-propose'].includes(sub)) {
       const payload = jsonInput(args[1], `permissions ${sub} JSON payload`);
       const actionMap = {
         'set-member': 'setMember',
         'remove-member': 'removeMember',
         'invite': 'createInvite',
         'revoke-invite': 'revokeInvite',
+        'set-open': 'setOpen',
+        'set-admin': 'setAdmin',
+        'block-author': 'blockAuthor',
+        'multisig-propose': 'propose',
       };
       const op = await session.submit({
         visibility: 'public',
@@ -316,7 +427,74 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       });
       return observe(op, options, signal);
     }
-    throw Error('Use permissions inspect|set-member|remove-member|invite|revoke-invite');
+    if (sub === 'unblock-author') {
+      const publicKey = required(args[1], 'a 64-hex author publicKey');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$permissions', input: { action: 'unblockAuthor', publicKey } }],
+      });
+      return observe(op, options, signal);
+    }
+    if (sub === 'multisig-approve' || sub === 'multisig-cancel') {
+      const proposalId = required(args[1], 'a multisig proposalId');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$permissions', input: { action: sub === 'multisig-approve' ? 'approve' : 'cancel', proposalId } }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use permissions inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|block-author|unblock-author|multisig-propose|multisig-approve|multisig-cancel');
+  }
+  if (command === 'publication-history') {
+    const res = await session.query('$publications', { history: true });
+    const history = Array.isArray(res?.value) ? res.value : [];
+    const current = (await session.query('$publications', {}))?.value?.current ?? null;
+    return {
+      currentRevision: current?.revision ?? 0,
+      currentOpId: current?.opId ?? null,
+      releases: history.map(rel => ({
+        revision: rel.revision,
+        opId: rel.opId,
+        author: rel.author,
+        timestampMs: rel.timestampMs,
+        entry: rel.entry,
+        fileCount: Array.isArray(rel.files) ? rel.files.length : 0,
+        totalBytes: Array.isArray(rel.files) ? rel.files.reduce((s, f) => s + Number(f.size ?? 0), 0) : 0,
+        ...(rel.rollbackOf !== undefined ? { rollbackOf: rel.rollbackOf } : {}),
+      })),
+    };
+  }
+  if (command === 'content') {
+    const sub = required(args[0], 'content subcommand: put or get');
+    if (sub === 'put') {
+      const filePath = required(args[1], 'a file path to store in session.content');
+      const bytes = new Uint8Array(readFileSync(filePath));
+      const visibility = options.visibility === 'public' ? 'public'
+        : options.visibility === 'private' ? 'private'
+          : (session.genesis?.privateLog === false ? 'public' : 'private');
+      const mediaType = typeof options.type === 'string' && options.type.trim() ? options.type.trim() : 'application/octet-stream';
+      const deduplicate = options['no-dedup'] !== true;
+      const ref = await session.content.put(bytes, { visibility, deduplicate, mediaType, ...(signal ? { signal } : {}) });
+      return { visibility, mediaType, bytes: bytes.byteLength, deduplicate, ref };
+    }
+    if (sub === 'get') {
+      const rawTarget = required(args[1], 'a SHA-256 hex hash or JSON ContentReference/BlobReference');
+      const target = rawTarget.trim().startsWith('{') ? jsonInput(rawTarget, 'content reference JSON') : rawTarget.trim();
+      const bytes = await session.content.get(target, { ...(signal ? { signal } : {}) });
+      if (bytes === null) {
+        throw Object.assign(Error('Content not found locally or on connected peers'), { code: 'content_not_found' });
+      }
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (args[2]) {
+        mkdirSync(dirname(args[2]), { recursive: true });
+        writeFileSync(args[2], bytes);
+        return { bytes: bytes.byteLength, sha256, writtenTo: args[2] };
+      }
+      return { bytes: bytes.byteLength, sha256, base64: Buffer.from(bytes).toString('base64') };
+    }
+    throw Error('Use content put <file> [--visibility public|private] [--no-dedup] [--type mime] or content get <hash|ref-json> [outPath]');
   }
   if (command === 'publication-recover') {
     const target = required(args[0], 'a revision number or publication opId');

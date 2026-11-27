@@ -26,6 +26,25 @@ If you open an app workspace that has not been touched recently (or whose instal
 
 ## Entries
 
+<a id="2026-11-27-chronolog-v2-platform-capabilities"></a>
+
+### 2026-11-27 · [Feature] Chronolog v2 platform unlocks: blind async mailbox, public/multisig governance, local hybrid memory, live evolution, lazy media & federated MCP SQL
+
+Core `0.3.0-rc.17` · Slug `2026-11-27-chronolog-v2-platform-capabilities` · Agent broadcast `announcement/info`
+
+Adds blind store-and-forward async sync mailbox, zero-OAuth public/multisig governance with author blocking, user-mode FTS5 + sqlite-vec & sqlite-helpers, streaming/LRU content cache, live evolution, portable blueprints/remix, and federated MCP SQL.
+
+Key additions for agents and MCP assistants:
+- Blind store-and-forward async mailbox (`peers.syncMailbox`) + cache-first instant offline `openPageGenesis`: relays opaque AEAD envelopes for offline private devices and verified public ops for offline-creator public pages without ever seeing plaintext or epoch keys.
+- Zero-OAuth public (`openMembers` with `blockAuthor`/`unblockAuthor` moderation) and M-of-N (`multisigMembers`) governance with unified `session.permissions()`, `shared/helpers/governance.mjs` security & Hosted MCP active banners, and CLI `permissions set-open|block-author|unblock-author|multisig-*`.
+- Local-first encrypted AI memory & hybrid search (`templates/knowledge` + `shared/helpers/hybrid-memory.mjs`), user-mode FTS5/`sqlite-vec` DML directly in `chronolog/sql`, and concise `chronolog/sqlite-helpers` (`defineSqlReducer`, `withDb`).
+- Safe live schema & ES Module reducer evolution (`shared/helpers/live-evolution.mjs`, `shared/ui/schema-explorer.mjs`, CLI `reducers publish` & `sql migrate-file`).
+- Unified lazy P2P media (`session.content` with `putStream`/`readStream`/`pin`/`pruneCache`, `shared/helpers/lazy-media.mjs`, CLI `content put|get`) and `$publications` history & rollback (`shared/helpers/publications-view.mjs`, CLI `publication-history`).
+- Portable secret-free `PageBlueprint` (`@tendriller/core/blueprint`), one-click Remix (`POST /dashboard/t/:id/remix`), Blueprint import (`POST /dashboard/pages/from-blueprint`), 4-line `shared/helpers/page-worker.mjs` (`servePageWorker`), and opt-in `$finality` scheduling.
+- Hosted MCP live `sqlSchemas` introspection in `describe_application`, read-only `query_sql` (`/v1/apps/:appId/sql`), and parallel `query_multiple_applications` across up to 8 opted-in pages.
+
+Reference: [/docs/STATE_MODELS.md](https://tendriller.dev/docs/STATE_MODELS.md)
+
 <a id="2026-11-26-realtime-sfu-billing-and-self-host"></a>
 
 ### 2026-11-26 · [Feature] Cloudflare Realtime SFU/TURN, plan headroom APIs & self-hosting
