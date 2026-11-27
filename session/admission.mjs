@@ -938,7 +938,19 @@ export function createAdmission(session, {
     },
   };
 
-  const stopChanges = session.onChange(() => { observeMembership(); emit(); });
+  let unlocking = null;
+  function maybeUnlockEpochs() {
+    if (closed || !wrapKey?.privateKey) return;
+    const epoch = session.keysState().currentEpoch;
+    if (epoch < 0 || session.hasEpochKey(epoch) || !session.isReader(identity.publicKey)) return;
+    if (unlocking) return;
+    unlocking = session.unlockEpochsFromKeysTopic(wrapKey.privateKey, wrapKey.publicKey)
+      .catch(() => {})
+      .finally(() => { unlocking = null; emit(); });
+  }
+
+  const stopChanges = session.onChange(() => { observeMembership(); maybeUnlockEpochs(); emit(); });
+  maybeUnlockEpochs();
   void refresh();
   return Object.freeze({
     get state() { return state; },

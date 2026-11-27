@@ -83,6 +83,7 @@ test('local signing/storage readiness permits Save without peers, SQL readiness 
   state.application({ canAuthor: true, phase: 'ready', database: 'opening', connectedPeers: 0, materializationError: 'query table missing' });
   assert.equal(state.snapshot.canSubmit, true);
   const finish = state.begin(); assert.equal(state.snapshot.canSubmit, false); finish(); assert.equal(state.snapshot.canSubmit, true);
+  state.application({ canAuthor: true, phase: 'awaiting-keys', database: 'ready', connectedPeers: 1 }); assert.equal(state.snapshot.canSubmit, false);
   state.application({ canAuthor: false, phase: 'ready', database: 'ready', connectedPeers: 8 }); assert.equal(state.snapshot.canSubmit, false);
 });
 
