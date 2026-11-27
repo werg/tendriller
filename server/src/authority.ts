@@ -2,7 +2,7 @@
  * Chronolog v2 Blind Host Control Engine inside the Tendril Durable Object.
  *
  * The host stores ONLY:
- * - canonical GenesisBlock (`v2_genesis`)
+ * - canonical LogGenesis (`v2_genesis`)
  * - verified public-control SignedOperations (`v2_public_ops`, strictly `$*` topics)
  * - verified public CAS nodes (`v2_public_cas`, e.g. `$reducers` ES Modules)
  * - verified finality checkpoints (`v2_checkpoints`)
@@ -18,9 +18,9 @@ import {
   type FinalityCheckpoint, type FinalityPolicyV2, type Signed,
 } from '@chronolog/authority';
 import {
-  computeCasHash, ContentAddressedStore, decodeCasNode, decodeGenesisBlock, decodeSignedOperation,
-  genesisChainId, hashCasNode, isControlTopic, MemoryBytesStore, seedStandardModules, TopicKernel,
-  verifySignedOperation, type GenesisBlock, type KernelOperationInput, type SignedOperation,
+  computeCasHash, ContentAddressedStore, decodeCasNode, decodeLogGenesis, decodeSignedOperation,
+  genesisLogId, hashCasNode, isControlTopic, MemoryBytesStore, seedStandardModules, TopicKernel,
+  verifySignedOperation, type LogGenesis, type KernelOperationInput, type SignedOperation,
 } from '@chronolog/peer-session/kernel';
 import {
   authorityRecord, authorityRecordBytes, type AuthorityRecord, type HostAppConfig, type HostApplication,
@@ -99,8 +99,8 @@ export interface ControlRelease {
 }
 
 export interface MaterializedControlState {
-  readonly chainId: string;
-  readonly genesis: GenesisBlock;
+  readonly logId: string;
+  readonly genesis: LogGenesis;
   readonly genesisBytes: Uint8Array;
   readonly stateRoot: string;
   readonly historyDigest: string;
@@ -209,10 +209,10 @@ export function readStoredGenesisBytes(t: Tendril): Uint8Array | null {
   return rec ? authorityRecordBytes(rec, 1024 * 1024) : null;
 }
 
-/** Active Chronolog v2 chainId once genesis is initialized, falling back to pre-genesis page application ID. */
-export function activeChainId(t: Tendril): string {
+/** Active Chronolog v2 logId once genesis is initialized, falling back to pre-genesis page application ID. */
+export function activeLogId(t: Tendril): string {
   const genesisBytes = readStoredGenesisBytes(t);
-  return genesisBytes ? bytesToHex(genesisChainId(genesisBytes)) : selectedApplication(t).id;
+  return genesisBytes ? bytesToHex(genesisLogId(genesisBytes)) : selectedApplication(t).id;
 }
 
 export function listPublicOpRows(t: Tendril): Array<{ op_id: string; author: string; author_ts: number; raw: Uint8Array }> {
@@ -233,15 +233,15 @@ export function listCheckpointRows(t: Tendril): Array<{ scope_id: string; closed
   ).map(row => ({ ...row, raw: asBytes(row.raw) }));
 }
 
-/** Verify and parse a single public-control SignedOperation for `chainId`. */
+/** Verify and parse a single public-control SignedOperation for `logId`. */
 export async function verifyPublicControlOp(
   rawBytes: Uint8Array,
-  expectedChainId: string,
+  expectedLogId: string,
 ): Promise<{ opId: string; author: string; authorTimestampMs: bigint; signed: SignedOperation; kernelInput: KernelOperationInput }> {
   const signed = decodeSignedOperation(rawBytes);
   const { core, opId } = await verifySignedOperation(signed);
-  const chainIdHex = bytesToHex(core.chainId);
-  if (chainIdHex !== expectedChainId) throw new HttpError(400, 'operation_chain_mismatch', 'Operation chainId does not match this page');
+  const logIdHex = bytesToHex(core.logId);
+  if (logIdHex !== expectedLogId) throw new HttpError(400, 'operation_chain_mismatch', 'Operation logId does not match this page');
   if (core.visibility !== 'public') throw new HttpError(400, 'public_control_required', 'Blind host only accepts public control operations');
   if (!core.updates.length || core.updates.some(u => !isControlTopic(u.topic))) {
     throw new HttpError(400, 'control_topic_required', 'Blind host only accepts operations targeting $* control topics');
@@ -267,8 +267,8 @@ export async function replayBlindHostControl(input: {
   publicOps: readonly KernelOperationInput[];
   checkpoints: readonly FinalityCheckpoint[];
 }): Promise<MaterializedControlState> {
-  const genesis = decodeGenesisBlock(input.genesisBytes);
-  const chainId = bytesToHex(genesisChainId(input.genesisBytes));
+  const genesis = decodeLogGenesis(input.genesisBytes);
+  const logId = bytesToHex(genesisLogId(input.genesisBytes));
   const cas = new ContentAddressedStore({ store: new MemoryBytesStore() });
   await seedStandardModules(cas);
   for (const node of input.publicCas) {
@@ -398,7 +398,7 @@ export async function replayBlindHostControl(input: {
   let finalizedPublications: MaterializedControlState['finalizedPublications'] = null;
   if (input.checkpoints.length > 0) {
     const verified = await verifyFinalityV2({
-      chainId,
+      logId,
       schedule,
       checkpoints: input.checkpoints,
       knownOps: input.publicOps.map(op => ({ opId: bytesToHex(op.opId), authorTimestampMs: op.core.authorTimestampMs })),
@@ -419,7 +419,7 @@ export async function replayBlindHostControl(input: {
   }
 
   return {
-    chainId,
+    logId,
     genesis,
     genesisBytes: input.genesisBytes,
     stateRoot: materialized.revision.stateRoot,
@@ -440,14 +440,14 @@ export async function readControlState(t: Tendril): Promise<MaterializedControlS
   return t.db.cachedAsync('v2:control-state', async () => {
     const genesisBytes = readStoredGenesisBytes(t);
     if (!genesisBytes) return null;
-    const chainId = bytesToHex(genesisChainId(genesisBytes));
+    const logId = bytesToHex(genesisLogId(genesisBytes));
     const publicCas = listPublicCasRows(t);
     const opRows = listPublicOpRows(t);
     const publicOps: KernelOperationInput[] = [];
     for (const row of opRows) {
       const signed = decodeSignedOperation(row.raw);
       const { core, opId } = await verifySignedOperation(signed);
-      if (bytesToHex(core.chainId) !== chainId || core.visibility !== 'public') continue;
+      if (bytesToHex(core.logId) !== logId || core.visibility !== 'public') continue;
       publicOps.push({ opId, core });
     }
     const checkpoints = listCheckpointRows(t).map(row => decodeRecord<FinalityCheckpoint>(row.raw));
@@ -613,7 +613,7 @@ export async function syncControlState(
 }> {
   const genesisBytes = readStoredGenesisBytes(t);
   if (!genesisBytes) throw new HttpError(409, 'application_uninitialized');
-  const chainId = bytesToHex(genesisChainId(genesisBytes));
+  const logId = bytesToHex(genesisLogId(genesisBytes));
 
   const incomingCas = parseCasNodesInput(input.casNodes);
   const incomingOpsRaw = Array.isArray(input.publicOps) ? input.publicOps : [];
@@ -621,7 +621,7 @@ export async function syncControlState(
   const verifiedOps: Array<{ opId: string; author: string; authorTimestampMs: bigint; raw: Uint8Array; kernelInput: KernelOperationInput }> = [];
   for (const item of incomingOpsRaw) {
     const raw = authorityRecordBytes(item, 256 * 1024);
-    const parsed = await verifyPublicControlOp(raw, chainId);
+    const parsed = await verifyPublicControlOp(raw, logId);
     verifiedOps.push({ opId: parsed.opId, author: parsed.author, authorTimestampMs: parsed.authorTimestampMs, raw, kernelInput: parsed.kernelInput });
   }
 
@@ -631,7 +631,7 @@ export async function syncControlState(
   for (const item of incomingCheckpointsRaw) {
     const raw = authorityRecordBytes(item, 256 * 1024);
     const cp = decodeRecord<FinalityCheckpoint>(raw);
-    if (!cp || typeof cp !== 'object' || !cp.payload || cp.payload.chainId !== chainId) {
+    if (!cp || typeof cp !== 'object' || !cp.payload || cp.payload.logId !== logId) {
       throw new HttpError(400, 'checkpoint_invalid');
     }
     decodedCheckpoints.push({ cp, raw });
@@ -687,7 +687,7 @@ export async function syncControlState(
   if (decodedCheckpoints.length > 0) {
     const schedule = parseFinalitySchedule(state.finality);
     const verified = await verifyFinalityV2({
-      chainId,
+      logId,
       schedule,
       checkpoints: candidateCps,
       knownOps: allKernelOps.map(op => ({ opId: bytesToHex(op.opId), authorTimestampMs: op.core.authorTimestampMs })),
@@ -765,7 +765,7 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
   try {
     return await withAuthorityMutation(t, async () => {
       await freshAuthorityAccess(t, principal);
-      const accountId = authorityAccount(t, principal), applicationId = activeChainId(t);
+      const accountId = authorityAccount(t, principal), applicationId = activeLogId(t);
       const browserOnly = () => { if (principal.kind !== 'page') throw new HttpError(403, 'browser_account_required'); };
       const fields = (...allowed: string[]) => {
         if (Object.keys(input).some(key => key !== 'action' && !allowed.includes(key))) throw new HttpError(400, 'bad_request');
@@ -848,7 +848,7 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
   }
 }
 
-/** Store a Chronolog v2 GenesisBlock once, verifying chainId, root admin, and host policy pins. */
+/** Store a Chronolog v2 LogGenesis once, verifying logId, root admin, and host policy pins. */
 async function initializeGenesis(
   t: Tendril,
   principal: Principal,
@@ -865,10 +865,10 @@ async function initializeGenesis(
     throw new HttpError(409, 'application_initialized');
   }
 
-  let genesis: GenesisBlock;
-  try { genesis = decodeGenesisBlock(genesisBytes); }
+  let genesis: LogGenesis;
+  try { genesis = decodeLogGenesis(genesisBytes); }
   catch { throw new HttpError(400, 'authority_genesis_invalid'); }
-  const chainId = bytesToHex(genesisChainId(genesisBytes));
+  const logId = bytesToHex(genesisLogId(genesisBytes));
 
   const casNodes = parseCasNodesInput(casNodesInput);
   const initialOpsRaw = Array.isArray(initialOpsInput) ? initialOpsInput : [];
@@ -876,7 +876,7 @@ async function initializeGenesis(
   const verifiedOps: Array<{ opId: string; author: string; authorTimestampMs: bigint; raw: Uint8Array; kernelInput: KernelOperationInput }> = [];
   for (const item of initialOpsRaw) {
     const raw = authorityRecordBytes(item, 256 * 1024);
-    const parsed = await verifyPublicControlOp(raw, chainId);
+    const parsed = await verifyPublicControlOp(raw, logId);
     verifiedOps.push({ opId: parsed.opId, author: parsed.author, authorTimestampMs: parsed.authorTimestampMs, raw, kernelInput: parsed.kernelInput });
   }
 

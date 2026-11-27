@@ -23,7 +23,7 @@ async function fixture(t, { publisher = false } = {}) {
   const devicePath = join(root, 'device.sqlite'), ownerDirectory = join(root, 'owner');
   const device = await native.openNativeDevice({ path: devicePath, create: true });
   const deviceId = device.identity.publicKey;
-  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices([device]);
+  const { logId, genesisBytes, casNodes, key } = await genesisForDevices([device]);
   await device.close();
   let opened = 0;
   const openOwner = async () => {
@@ -31,9 +31,9 @@ async function fixture(t, { publisher = false } = {}) {
     return openRetainedOwner({ devicePath, genesisBytes, casNodes, key });
   };
   const attach = (token, options = {}) => attachNativeSession({ directory: ownerDirectory, token,
-    applicationId: chainId,
+    applicationId: logId,
     connect: browser.connectApplicationOwner, timeoutMs: 1500, ...options });
-  return { root, ownerDirectory, devicePath, deviceId, applicationId: chainId, genesisBytes, casNodes, key, openOwner, attach, opened: () => opened };
+  return { root, ownerDirectory, devicePath, deviceId, applicationId: logId, genesisBytes, casNodes, key, openOwner, attach, opened: () => opened };
 }
 
 test('publication-only supervisor capability composes with Chronolog and bounds concurrent control calls', async t => {
@@ -403,7 +403,7 @@ async function publicationHarness(f, { grant = true } = {}) {
       if (metadata.selection?.id !== applicationId || !metadata.publisherKeys.includes(signer.publicKey)) throw Error('Independent publisher grant required');
       const signedOp = await p.signOperationCore({
         version: 1,
-        chainId: p.hexToBytes(applicationId),
+        logId: p.hexToBytes(applicationId),
         author: p.hexToBytes(signer.publicKey),
         operationId,
         authorTimestampMs: BigInt(Date.now()),
@@ -684,9 +684,9 @@ test('one workspace socket attaches to pages that share one managed signer but k
   for (const [page, dirName] of [['aaaaaaaaaaaa', 'p1'], ['bbbbbbbbbbbb', 'p2']]) {
     const device = await openPage(dirName, true);
     assert.equal(device.identity.publicKey, signer.publicKey);
-    const { chainId, genesisBytes, casNodes, key } = await genesisForDevices([device]);
+    const { logId, genesisBytes, casNodes, key } = await genesisForDevices([device]);
     await device.close();
-    pages[page] = { dirName, applicationId: chainId, genesisBytes, casNodes, key };
+    pages[page] = { dirName, applicationId: logId, genesisBytes, casNodes, key };
   }
   const token = createNativeAttachmentKey(), directory = join(root, 'owner');
   const supervisor = await createNativeWorkspaceSupervisor({ directory, workspaceId: 'workspace', bindings: [{ id: 'terminal', token }] });

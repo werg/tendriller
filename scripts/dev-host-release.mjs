@@ -6,6 +6,7 @@ import { unpackTarGz } from '../contract/archive.mjs';
 import { extractVerifiedTarGz, writeVerifiedFileAtomic } from '../contract/release-verify.mjs';
 import { readPublishedManifest, verifyPublishedRelease } from './check-published-release.mjs';
 import { isDeploymentPath } from './deployment-bundle.mjs';
+import { requiredStorageSchema } from './storage-schema.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -39,9 +40,10 @@ export async function prepareDevHostRelease({ release, directory, artifacts, man
   const files = unpackTarGz(archive);
   if ([...files.keys()].some(path => !isDeploymentPath(path)))
     throw Error('The deployment contains a path outside the public release graph.');
+  const expectedSchema = await requiredStorageSchema();
   const proof = JSON.parse(Buffer.from(files.get('dist/engine/provenance.json') ?? []).toString('utf8'));
-  if (proof.dirty !== false || proof.source !== release || proof.sourceTree !== manifest.source_tree || proof.storageSchemaRevision !== 15)
-    throw Error('Local hosting requires a clean matching engine with storage schema 15. Use a compatible dev-host version for other schemas.');
+  if (proof.dirty !== false || proof.source !== release || proof.sourceTree !== manifest.source_tree || proof.storageSchemaRevision !== expectedSchema)
+    throw Error(`Local hosting requires a clean matching engine with storage schema ${expectedSchema}. Use a compatible dev-host version for other schemas.`);
   for (const [path, sha256] of Object.entries(proof.files ?? {})) {
     const content = files.get('dist/engine/' + path);
     if (!content || digest(content) !== sha256) throw Error(`The packed engine failed verification: ${path}`);

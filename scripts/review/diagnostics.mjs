@@ -16,7 +16,7 @@ export const reviewError = error => ({ name: names.has(error?.name) ? error.name
   ...(Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599 ? { httpStatus: error.status } : {}),
   ...(error?.code === 'ERR_ASSERTION' ? { assertion: true } : {}) });
 export function createReviewDiagnostics({ origin, pageUrl, apiUrl, now = Date.now }) {
-  const startedAt = now(), history = [], responses = [], counts = { pageErrors: 0, consoleErrors: 0, consoleWarnings: 0, requestFailures: 0 };
+  const startedAt = now(), history = [], responses = [], requestFailureCodes = [], counts = { pageErrors: 0, consoleErrors: 0, consoleWarnings: 0, requestFailures: 0 };
   let current, surface;
   const pending = new Set();
   const bump = key => { counts[key] = Math.min(1000000, counts[key] + 1); };
@@ -61,7 +61,12 @@ export function createReviewDiagnostics({ origin, pageUrl, apiUrl, now = Date.no
         }).finally(() => { clearTimeout(timer); pending.delete(task); });
         pending.add(task);
       });
-      context.on('requestfailed', () => { bump('requestFailures'); });
+      context.on('requestfailed', req => {
+        bump('requestFailures');
+        const text = req?.failure?.()?.errorText ?? '';
+        const code = /^net::ERR_[A-Z0-9_]{1,64}$/.exec(text)?.[0];
+        if (code && requestFailureCodes.length < 16) requestFailureCodes.push({ route: route(req.url()), code });
+      });
       page.on('pageerror', () => { bump('pageErrors'); });
       page.on('console', value => { if (value.type() === 'error') bump('consoleErrors'); if (value.type() === 'warning') bump('consoleWarnings'); });
     },
@@ -75,6 +80,6 @@ export function createReviewDiagnostics({ origin, pageUrl, apiUrl, now = Date.no
         connectButtons: await count(page.getByRole('button', { name: 'Connect to this page', exact: true })),
         hostedConnections: await count(page.getByText('Connected as @', { exact: false })) };
     },
-    snapshot() { return structuredClone({ step: current, elapsedMs: Math.max(0, now() - startedAt), history, counts, responses, surface }); },
+    snapshot() { return structuredClone({ step: current, elapsedMs: Math.max(0, now() - startedAt), history, counts, responses, ...(requestFailureCodes.length ? { requestFailureCodes } : {}), surface }); },
   };
 }

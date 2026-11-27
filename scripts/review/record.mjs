@@ -18,7 +18,7 @@ export async function recordReview({ project, accessPath, output, composition, v
   assert.equal(handle.service, access.origin);
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
-  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { decodeGenesisBlock, decodeSignedOperation, verifySignedOperation } } = await importReviewPackages(project);
+  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { decodeLogGenesis, decodeSignedOperation, verifySignedOperation } } = await importReviewPackages(project);
   assert(browser && context && page && token, 'Provide the initialized browser owner profile and its linked-account token');
   const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
@@ -123,7 +123,7 @@ export async function recordReview({ project, accessPath, output, composition, v
     assert.deepEqual(await query(), unchanged);
     // The signed page is code, independent of data: it must remain the original verified publication.
     const metadata = await readWithAdmissionRetry(() => host.peers.application());
-    decodeGenesisBlock(authorityRecordBytes(metadata.genesis));
+    decodeLogGenesis(authorityRecordBytes(metadata.genesis));
     const publication = await readWithAdmissionRetry(() => host.peers.publication());
     assert.equal(publication.opId, originalPublication, 'Data commands must not require or change signed code');
     if (publication.op) await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication.op)));

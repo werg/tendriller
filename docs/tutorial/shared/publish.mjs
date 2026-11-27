@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
-import { bytesToHex, encodeSignedOperation, genesisChainId, hexToBytes } from '@chronolog/peer-session';
+import { bytesToHex, encodeSignedOperation, genesisLogId, hexToBytes } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -40,13 +40,13 @@ export async function publishPage(context, { root, session } = {}) {
     } else {
       const { signOperationCore } = await import('@chronolog/peer-session/kernel');
       const metadata = await context.host.peers.application();
-      const targetChainId = metadata.genesis
-        ? bytesToHex(genesisChainId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
+      const targetLogId = metadata.genesis
+        ? bytesToHex(genesisLogId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
         : metadata.selection.id;
       const previous = await context.host.peers.publication();
       const signed = await signOperationCore({
         version: 1,
-        chainId: hexToBytes(targetChainId),
+        logId: hexToBytes(targetLogId),
         author: hexToBytes(context.signer.publicKey),
         operationId: `publish-${graph}`,
         authorTimestampMs: BigInt(Date.now()),

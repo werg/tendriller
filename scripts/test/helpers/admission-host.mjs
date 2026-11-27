@@ -3,8 +3,8 @@
 // ops (`$permissions`, `$keys`, `$finality`, `$publications`) via `TopicKernel({ blindHostMode: true })`,
 // and never holds data keys or signs membership.
 import {
-  bytesToHex, createSigningIdentity, decodeGenesisBlock, decodeRecord, decodeSignedOperation,
-  encodeRecord, genesisChainId, hexToBytes, isControlTopic, recordDigest, signHostAttestationV2,
+  bytesToHex, createSigningIdentity, decodeLogGenesis, decodeRecord, decodeSignedOperation,
+  encodeRecord, genesisLogId, hexToBytes, isControlTopic, recordDigest, signHostAttestationV2,
   verifyRecord, verifySignedOperation,
 } from '@chronolog/peer-session';
 import {
@@ -161,8 +161,8 @@ export async function createAdmissionHost({
           if (bytesToHex(state.genesisBytes) === bytesToHex(genesisBytes)) return metadata();
           fail(409, 'application_initialized');
         }
-        const parsed = decodeGenesisBlock(genesisBytes);
-        const chainId = bytesToHex(genesisChainId(genesisBytes));
+        const parsed = decodeLogGenesis(genesisBytes);
+        const logId = bytesToHex(genesisLogId(genesisBytes));
         const p = parsed.initialTopics.$permissions;
         const admins = (p?.members ?? []).filter(m => m.administrator && m.reader && m.writer);
         if (!admins.length || p?.admission?.hostKey !== host.publicKey ||
@@ -177,7 +177,7 @@ export async function createAdmissionHost({
           if (hashCasNode(bytes) !== node.hash && computeCasHash(bytes) !== node.hash) fail(400, 'cas_hash_mismatch');
           state.publicCas.set(node.hash, bytes);
         }
-        state.applicationId = chainId;
+        state.applicationId = logId;
         state.genesisBytes = genesisBytes;
         state.genesis = genesis;
         await replay();
@@ -196,7 +196,7 @@ export async function createAdmissionHost({
           const raw = authorityRecordBytes(opRec, 256 * 1024);
           const signed = decodeSignedOperation(raw);
           const { core, opId } = await verifySignedOperation(signed);
-          if (bytesToHex(core.chainId) !== state.applicationId) fail(400, 'operation_chain_mismatch');
+          if (bytesToHex(core.logId) !== state.applicationId) fail(400, 'operation_chain_mismatch');
           if (core.visibility !== 'public' || core.updates.some(u => !isControlTopic(u.topic))) fail(400, 'control_topic_required');
           const opIdHex = bytesToHex(opId);
           if (!state.publicOps.has(opIdHex)) {

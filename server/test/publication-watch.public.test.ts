@@ -1,8 +1,8 @@
 import { evictDurableObject } from 'cloudflare:test';
 import { expect, it } from 'vitest';
 import {
-  bytesToHex, createChainGenesis, createSigningIdentity, encodeGenesisBlock, encodeSignedOperation,
-  genesisChainId, hexToBytes, signOperationCore,
+  bytesToHex, createLogGenesis, createSigningIdentity, encodeLogGenesis, encodeSignedOperation,
+  genesisLogId, hexToBytes, signOperationCore,
 } from '@chronolog/peer-session';
 import { authorityRecord } from '../../contract/authority.mjs';
 import { advance, api, create, inDO, req, stub, type Handle } from './helpers';
@@ -68,7 +68,7 @@ async function publisher(h: Handle) {
     hostAttestationKey: string;
     admissionAccounts: string[];
   };
-  const created = await createChainGenesis({
+  const created = await createLogGenesis({
     creator: {
       publicKey: author.publicKey,
       wrapKey: '11'.repeat(32),
@@ -78,7 +78,7 @@ async function publisher(h: Handle) {
       publisher: true,
       finalizer: true,
     },
-    privateChain: true,
+    privateLog: true,
     hostPublicKey: appMeta.hostAttestationKey,
   });
   const genesis = structuredClone(created.genesis) as any;
@@ -92,8 +92,8 @@ async function publisher(h: Handle) {
       invites: [],
     },
   };
-  const genesisBytes = encodeGenesisBlock(genesis);
-  const chainIdBytes = genesisChainId(genesisBytes);
+  const genesisBytes = encodeLogGenesis(genesis);
+  const logIdBytes = genesisLogId(genesisBytes);
   const initResp = await req(`${h.page_url}_tendril/peers/enrollment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -111,7 +111,7 @@ async function publisher(h: Handle) {
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('');
     const signed = await signOperationCore({
       version: 1,
-      chainId: chainIdBytes,
+      logId: logIdBytes,
       author: hexToBytes(author.publicKey),
       operationId: text,
       authorTimestampMs: BigInt(Date.now() + seq++),

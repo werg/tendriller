@@ -102,7 +102,7 @@ export async function openPage(context) {
   let casNodes = [];
   let key = await device.store.get('fixture/epoch-key');
   if (!retained) {
-    const created = await p.createChainGenesis({
+    const created = await p.createLogGenesis({
       creator: { publicKey: signer, wrapKey: context.wrapKey.publicKey, reader: true, writer: true, administrator: true, publisher: true, finalizer: true },
       imports: { 'app/notes': NOTES_REDUCER },
       topics: { notes: { module: 'app/notes', initialState: { notes: [] } } },

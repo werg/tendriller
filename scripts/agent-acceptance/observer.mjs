@@ -67,19 +67,19 @@ export async function browserIdentity(owner, config) {
   }
   return { runtime, address, url: page.url(), at: now(), actionIndex: owner.actions?.length ?? 0 };
 }
-async function decodePublicationOp(record, sdk, expectedChainId) {
+async function decodePublicationOp(record, sdk, expectedLogId) {
   const raw = record instanceof Uint8Array ? record : sdk.hexToBytes(record?.record ?? '');
   const signed = sdk.decodeSignedOperation(raw);
   const { core, opId } = await sdk.verifySignedOperation(signed);
-  const chainId = sdk.bytesToHex(core.chainId);
-  if (expectedChainId) same(chainId, expectedChainId, 'publication-application');
+  const logId = sdk.bytesToHex(core.logId);
+  if (expectedLogId) same(logId, expectedLogId, 'publication-application');
   const update = core.updates.find(u => u.topic === '$publications');
   if (!update || !update.input || typeof update.input !== 'object' || Array.isArray(update.input)) {
     throw new MeasurementError('publication-topic-missing', 'failed');
   }
   return {
     id: sdk.bytesToHex(opId),
-    chainId,
+    logId,
     author: sdk.bytesToHex(core.author),
     operationId: core.operationId,
     payload: update.input,
@@ -95,8 +95,8 @@ export function verifyBrowserPublication(browser, receipt) {
   if (!files.some(file => file.path === path && file.type === 'text/html')) throw new MeasurementError('browser-unsigned-document', 'failed');
 }
 
-export async function verifyPublicationLineage(current, claimed, receipts, sdk, expectedChainId) {
-  const decode = async r => ({ receipt: r, decoded: await decodePublicationOp(r.op ?? r.publication, sdk, expectedChainId) });
+export async function verifyPublicationLineage(current, claimed, receipts, sdk, expectedLogId) {
+  const decode = async r => ({ receipt: r, decoded: await decodePublicationOp(r.op ?? r.publication, sdk, expectedLogId) });
   const currentEntry = await decode(current);
   const claimedEntry = await decode(claimed);
   const byId = new Map();

@@ -13,7 +13,7 @@ export async function decodeFirstAppPublication(record) {
   }
   return {
     opId: bytesToHex(opId),
-    chainId: bytesToHex(core.chainId),
+    logId: bytesToHex(core.logId),
     author: bytesToHex(core.author),
     operationId: core.operationId,
     ...update.input,

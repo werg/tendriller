@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import quickJsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import {
-  bytesToHex, createChainGenesis, createSigningIdentity, decodeRecord, encodeGenesisBlock, encodeRecord,
-  encodeSignedOperation, genesisChainId, hexToBytes, signFinalityCheckpoint, signOperationCore, signRecord,
+  bytesToHex, createLogGenesis, createSigningIdentity, decodeRecord, encodeLogGenesis, encodeRecord,
+  encodeSignedOperation, genesisLogId, hexToBytes, signFinalityCheckpoint, signOperationCore, signRecord,
   verifyHostAttestationV2, policyScopeId, computeIncludedSetDigest,
   type FinalityCheckpoint, type FinalityPolicyV2, type ScheduledFinalityEntry, type SigningIdentity,
   type TopicUpdate,
@@ -23,8 +23,8 @@ type Send = (method: string, path: string, input?: unknown) => Promise<Response>
 type Page = Awaited<ReturnType<typeof createTestPage>>;
 interface Device { identity: SigningIdentity; wrapKey: string }
 interface ChainFixture {
-  chainId: string;
-  chainIdBytes: Uint8Array;
+  logId: string;
+  logIdBytes: Uint8Array;
   genesisBytes: Uint8Array;
   casNodes: Array<{ hash: string; bytes: Uint8Array }>;
 }
@@ -72,7 +72,7 @@ async function buildGenesis(
     salt?: Uint8Array;
   },
 ): Promise<ChainFixture> {
-  const created = await createChainGenesis({
+  const created = await createLogGenesis({
     creator: {
       publicKey: root.identity.publicKey,
       wrapKey: root.wrapKey,
@@ -82,7 +82,7 @@ async function buildGenesis(
       publisher: options.publisher ?? true,
       finalizer: options.finalizer ?? false,
     },
-    privateChain: true,
+    privateLog: true,
     hostPublicKey: options.hostKey ?? hostKey,
     ...(options.finalitySchedule ? { finalitySchedule: options.finalitySchedule } : {}),
     ...(options.salt ? { salt: options.salt } : {}),
@@ -99,25 +99,25 @@ async function buildGenesis(
     grant: { reader: true, writer: true, administrator: true },
     invites: [],
   };
-  const genesisBytes = encodeGenesisBlock(genesis);
-  const chainIdBytes = genesisChainId(genesisBytes);
+  const genesisBytes = encodeLogGenesis(genesis);
+  const logIdBytes = genesisLogId(genesisBytes);
   return {
-    chainId: bytesToHex(chainIdBytes),
-    chainIdBytes,
+    logId: bytesToHex(logIdBytes),
+    logIdBytes,
     genesisBytes,
     casNodes: created.casNodes.map(n => ({ hash: n.hash, bytes: n.bytes })),
   };
 }
 
 async function signControlOp(
-  chainIdBytes: Uint8Array,
+  logIdBytes: Uint8Array,
   signer: SigningIdentity,
   updates: readonly TopicUpdate[],
   options: { operationId?: string; authorTimestampMs?: bigint } = {},
 ) {
   const signed = await signOperationCore({
     version: 1,
-    chainId: chainIdBytes,
+    logId: logIdBytes,
     author: hexToBytes(signer.publicKey),
     operationId: options.operationId ?? crypto.randomUUID(),
     authorTimestampMs: options.authorTimestampMs ?? BigInt(Date.now()),
@@ -205,14 +205,14 @@ describe('browser device enrollment', () => {
     const page = await createTestPage();
     const { fixture } = await ownerRooted(page);
     const member = await device();
-    const signed = await enroll(page.ownerApi, fixture.chainId, member);
+    const signed = await enroll(page.ownerApi, fixture.logId, member);
     const pageId = (await body(await page.api('GET', ''))).id as string;
     const owner = await inDO(pageId, t => t.db.get<string>('owner_account', ''));
     expect(await verifyHostAttestationV2(signed, hostKey)).toBe(true);
     expect(signed.payload).toMatchObject({
       subject: 'device',
       pageId,
-      applicationId: fixture.chainId,
+      applicationId: fixture.logId,
       accountId: owner,
       publicKey: member.identity.publicKey,
       wrapKey: member.wrapKey,
@@ -261,14 +261,14 @@ describe('browser device enrollment', () => {
     const displayed = await req(`${display.url}_tendril/peers/enrollment`, { method: 'POST', anonymous: true, headers: { ...jsonHdr, Origin: new URL(display.url).origin }, body: JSON.stringify(challenge) });
     expect(displayed.status).toBe(403);
     expect((await api(handle, 'POST', 'peers/enrollment', challenge)).status).toBe(403);
-    expect(await failure(await enrollRaw(send, fixture.chainId, member, undefined, value => value + 'x'))).toEqual({ status: 403, code: 'enrollment_challenge_invalid' });
+    expect(await failure(await enrollRaw(send, fixture.logId, member, undefined, value => value + 'x'))).toEqual({ status: 403, code: 'enrollment_challenge_invalid' });
     const other = await device();
     const otherChallenge = await body(await send('POST', 'peers/enrollment', { action: 'challenge', publicKey: other.identity.publicKey }));
     const crossed = await signRecord(ENROLLMENT_REQUEST_DOMAIN, {
-      applicationId: fixture.chainId, publicKey: member.identity.publicKey, wrapKey: member.wrapKey, challenge: otherChallenge.challenge,
+      applicationId: fixture.logId, publicKey: member.identity.publicKey, wrapKey: member.wrapKey, challenge: otherChallenge.challenge,
     }, member.identity);
     expect(await failure(await send('POST', 'peers/enrollment', { action: 'enroll', proof: rec(crossed) }))).toEqual({ status: 403, code: 'enrollment_challenge_invalid' });
-    expect((await enrollRaw(send, fixture.chainId, member)).status).toBe(200);
+    expect((await enrollRaw(send, fixture.logId, member)).status).toBe(200);
   });
 });
 
@@ -292,7 +292,7 @@ describe('v2 genesis initialization', () => {
 
     const valid = await buildGenesis(root, { accounts: [...accounts, 'email:extra@example.com'] });
     const stored = await body(await init(valid));
-    expect(bytesToHex(genesisChainId(authorityRecordBytes(stored.genesis)))).toBe(valid.chainId);
+    expect(bytesToHex(genesisLogId(authorityRecordBytes(stored.genesis)))).toBe(valid.logId);
     expect(stored.genesis).toEqual(authorityRecord(valid.genesisBytes));
     // Exact retry is idempotent.
     expect((await body(await init(valid))).genesis).toEqual(stored.genesis);
@@ -322,7 +322,7 @@ describe('v2 genesis initialization', () => {
       genesis: authorityRecord(goodFixture.genesisBytes),
       casNodes: goodFixture.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
     }));
-    expect(bytesToHex(genesisChainId(authorityRecordBytes(initialized.genesis)))).toBe(goodFixture.chainId);
+    expect(bytesToHex(genesisLogId(authorityRecordBytes(initialized.genesis)))).toBe(goodFixture.logId);
   });
 });
 
@@ -364,9 +364,9 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const page = await createTestPage();
     const { root, fixture } = await ownerRooted(page);
     const laptop = await device();
-    const laptopAtt = await enroll(page.ownerApi, fixture.chainId, laptop);
+    const laptopAtt = await enroll(page.ownerApi, fixture.logId, laptop);
 
-    const admitOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+    const admitOp = await signControlOp(fixture.logIdBytes, root.identity, [{
       topic: '$permissions',
       input: {
         action: 'setMember',
@@ -395,7 +395,7 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const revokedInv = await makeInvite({ kind: 'open' }, { revoked: true });
     const expiredInv = await makeInvite({ kind: 'open' }, { expiresAt: Date.now() - 1000 });
     const meta = await body(await page.ownerApi('GET', 'application'));
-    const invOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+    const invOp = await signControlOp(fixture.logIdBytes, root.identity, [{
       topic: '$permissions',
       input: {
         action: 'setAdmission',
@@ -412,18 +412,18 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
 
     const guest = await page.participant();
     const other = await page.participant();
-    const guestAtt = await enroll(guest.api, fixture.chainId, await device(), openInv.redemption);
+    const guestAtt = await enroll(guest.api, fixture.logId, await device(), openInv.redemption);
     expect(guestAtt.payload).toMatchObject({ accountId: guest.account, inviteId: openInv.redemption.inviteId });
-    expect((await enroll(guest.api, fixture.chainId, await device(), openInv.redemption)).payload.inviteId).toBe(openInv.redemption.inviteId);
-    expect(await failure(await enrollRaw(other.api, fixture.chainId, await device(), openInv.redemption))).toEqual({ status: 409, code: 'invite_redeemed' });
+    expect((await enroll(guest.api, fixture.logId, await device(), openInv.redemption)).payload.inviteId).toBe(openInv.redemption.inviteId);
+    expect(await failure(await enrollRaw(other.api, fixture.logId, await device(), openInv.redemption))).toEqual({ status: 409, code: 'invite_redeemed' });
 
-    expect(await failure(await enrollRaw(guest.api, fixture.chainId, await device(), { ...emailInv.redemption, secret: 'ff'.repeat(32) }))).toEqual({ status: 403, code: 'invite_secret_invalid' });
-    expect(await failure(await enrollRaw(guest.api, fixture.chainId, await device(), emailInv.redemption))).toEqual({ status: 403, code: 'invite_email_mismatch' });
-    expect(await failure(await enrollRaw(guest.api, fixture.chainId, await device(), { inviteId: 'ab'.repeat(16), secret: 'ab'.repeat(32) }))).toEqual({ status: 404, code: 'invite_unknown' });
-    for (let i = 0; i < 2; i++) await enroll((await page.participant()).api, fixture.chainId, await device(), pubInv.redemption);
-    expect(await failure(await enrollRaw((await page.participant()).api, fixture.chainId, await device(), pubInv.redemption))).toEqual({ status: 409, code: 'invite_exhausted' });
-    expect(await failure(await enrollRaw((await page.participant()).api, fixture.chainId, await device(), expiredInv.redemption))).toEqual({ status: 410, code: 'invite_expired' });
-    expect(await failure(await enrollRaw((await page.participant()).api, fixture.chainId, await device(), revokedInv.redemption))).toEqual({ status: 410, code: 'invite_revoked' });
+    expect(await failure(await enrollRaw(guest.api, fixture.logId, await device(), { ...emailInv.redemption, secret: 'ff'.repeat(32) }))).toEqual({ status: 403, code: 'invite_secret_invalid' });
+    expect(await failure(await enrollRaw(guest.api, fixture.logId, await device(), emailInv.redemption))).toEqual({ status: 403, code: 'invite_email_mismatch' });
+    expect(await failure(await enrollRaw(guest.api, fixture.logId, await device(), { inviteId: 'ab'.repeat(16), secret: 'ab'.repeat(32) }))).toEqual({ status: 404, code: 'invite_unknown' });
+    for (let i = 0; i < 2; i++) await enroll((await page.participant()).api, fixture.logId, await device(), pubInv.redemption);
+    expect(await failure(await enrollRaw((await page.participant()).api, fixture.logId, await device(), pubInv.redemption))).toEqual({ status: 409, code: 'invite_exhausted' });
+    expect(await failure(await enrollRaw((await page.participant()).api, fixture.logId, await device(), expiredInv.redemption))).toEqual({ status: 410, code: 'invite_expired' });
+    expect(await failure(await enrollRaw((await page.participant()).api, fixture.logId, await device(), revokedInv.redemption))).toEqual({ status: 410, code: 'invite_revoked' });
   });
 
   it('publishes signed $publications releases and rolls back a provisional release on late earlier revocation', async () => {
@@ -445,7 +445,7 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const publishHtml = async (signer: SigningIdentity, html: string, tsMs: bigint) => {
       const bytes = new TextEncoder().encode(html);
       const hash = await sha256Hex(bytes);
-      const op = await signControlOp(fixture.chainIdBytes, signer, [{
+      const op = await signControlOp(fixture.logIdBytes, signer, [{
         topic: '$publications',
         input: {
           action: 'publish',
@@ -471,7 +471,7 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     expect(await (await page.asset()).text()).toContain('From pub2');
 
     // Now a LATE-ARRIVING earlier revocation signed by root at t0 + 200 arrives (before pub2's release at t0 + 300)!
-    const revokeOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+    const revokeOp = await signControlOp(fixture.logIdBytes, root.identity, [{
       topic: '$permissions',
       input: { action: 'removeMember', publicKey: pub2.identity.publicKey },
     }], { authorTimestampMs: t0 + 200n });
@@ -491,16 +491,16 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const page = await createTestPage();
     const { root, fixture } = await ownerRooted(page);
     const syncReq = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
-      applicationId: fixture.chainId,
+      applicationId: fixture.logId,
       requestId: 'sync-1',
       action: 'control.sync',
     }, root.identity);
     const reply = dec(await body(await page.ownerApi('POST', 'peers/participant', rec(syncReq))));
-    expect(reply.applicationId).toBe(fixture.chainId);
+    expect(reply.applicationId).toBe(fixture.logId);
     expect(reply.genesis).toEqual(authorityRecord(fixture.genesisBytes));
 
     const outsider = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
-      applicationId: fixture.chainId,
+      applicationId: fixture.logId,
       requestId: 'outsider',
       action: 'control.sync',
     }, await createSigningIdentity());
@@ -510,7 +510,7 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     // Blind host refuses non-control application topic updates.
     const appOp = await signOperationCore({
       version: 1,
-      chainId: fixture.chainIdBytes,
+      logId: fixture.logIdBytes,
       author: hexToBytes(root.identity.publicKey),
       operationId: 'forbidden-app-topic',
       authorTimestampMs: BigInt(Date.now()),
@@ -544,7 +544,7 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const html = new TextEncoder().encode('<!doctype html><html><title>Finalized</title><body>Finalized UI</body></html>');
     const hash = await sha256Hex(html);
     const pubTs = BigInt(Date.now());
-    const pubOp = await signControlOp(fixture.chainIdBytes, root.identity, [{
+    const pubOp = await signControlOp(fixture.logIdBytes, root.identity, [{
       topic: '$publications',
       input: { action: 'publish', entry: 'index.html', files: [{ path: 'index.html', hash, size: html.length, type: 'text/html' }] },
     }], { authorTimestampMs: pubTs });
@@ -564,9 +564,9 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     const kernel = new TopicKernel({ genesis: fixture.genesisBytes, cas, blindHostMode: true, wasmModule: quickJsWasm });
     await kernel.materialize([{ opId: operationIdDigest(pubOp.signed.coreBytes), core: (await import('@chronolog/peer-session/kernel')).decodeOperationCore(pubOp.signed.coreBytes) }]);
     const snap = kernel.snapshot();
-    const scopeId = await policyScopeId(fixture.chainId, { effectiveAfterMs: -1n, policy });
+    const scopeId = await policyScopeId(fixture.logId, { effectiveAfterMs: -1n, policy });
     const checkpointPayload = {
-      chainId: fixture.chainId,
+      logId: fixture.logId,
       policyScopeId: scopeId,
       closedThroughMs: pubTs + 10n,
       includedSetDigest: computeIncludedSetDigest([pubOp.opId]),
@@ -618,9 +618,9 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
 
     // 1. Multisig 2-of-3 governance with ZERO host attestation and map-shaped members state!
     const msPage = await createTestPage();
-    const msCreated = await createChainGenesis({
+    const msCreated = await createLogGenesis({
       creator: { publicKey: s1.identity.publicKey, wrapKey: s1.wrapKey, reader: true, writer: true, administrator: true },
-      privateChain: true,
+      privateLog: true,
       topics: {
         $permissions: {
           module: 'chronolog/permissions',
@@ -643,19 +643,19 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     }));
 
     // Newcomer is NOT yet a reader -> participant sync rejected!
-    const makeParticipantSync = async (signer: Device, chainId: string) => {
+    const makeParticipantSync = async (signer: Device, logId: string) => {
       const signed = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
-        applicationId: chainId,
+        applicationId: logId,
         requestId: crypto.randomUUID(),
         action: 'control.sync',
       }, signer.identity);
       return msPage.ownerApi('POST', 'peers/participant', rec(signed));
     };
-    expect(await failure(await makeParticipantSync(newcomer, msCreated.chainId))).toEqual({ status: 403, code: 'participant_member_required' });
+    expect(await failure(await makeParticipantSync(newcomer, msCreated.logId))).toEqual({ status: 403, code: 'participant_member_required' });
 
     // Signer 1 proposes admitting newcomer (1/2 approvals — still not admitted)
-    const chainIdBytes = hexToBytes(msCreated.chainId);
-    const propOp = await signControlOp(chainIdBytes, s1.identity, [{
+    const logIdBytes = hexToBytes(msCreated.logId);
+    const propOp = await signControlOp(logIdBytes, s1.identity, [{
       topic: '$permissions',
       input: {
         action: 'propose',
@@ -665,21 +665,21 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
       },
     }], { authorTimestampMs: 1000n });
     await body(await syncOps(msPage.ownerApi, [propOp]));
-    expect(await failure(await makeParticipantSync(newcomer, msCreated.chainId))).toEqual({ status: 403, code: 'participant_member_required' });
+    expect(await failure(await makeParticipantSync(newcomer, msCreated.logId))).toEqual({ status: 403, code: 'participant_member_required' });
 
     // Signer 2 approves -> 2/2 quorum executes atomically; blind host recognizes newcomer via $permissions.query()!
-    const approveOp = await signControlOp(chainIdBytes, s2.identity, [{
+    const approveOp = await signControlOp(logIdBytes, s2.identity, [{
       topic: '$permissions',
       input: { action: 'approve', proposalId: 'add-newcomer' },
     }], { authorTimestampMs: 2000n });
     await body(await syncOps(msPage.ownerApi, [approveOp]));
-    expect((await makeParticipantSync(newcomer, msCreated.chainId)).status).toBe(200);
+    expect((await makeParticipantSync(newcomer, msCreated.logId)).status).toBe(200);
 
     // 2. Open-read / open-write chain (zero host attestation): stranger can sync immediately!
     const openPage = await createTestPage();
-    const openCreated = await createChainGenesis({
+    const openCreated = await createLogGenesis({
       creator: { publicKey: s1.identity.publicKey, wrapKey: s1.wrapKey, reader: true, writer: true, administrator: true },
-      privateChain: false,
+      privateLog: false,
       topics: {
         $permissions: {
           module: 'chronolog/permissions',
@@ -701,7 +701,7 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
       casNodes: openCreated.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
     }));
     const strangerSync = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
-      applicationId: openCreated.chainId,
+      applicationId: openCreated.logId,
       requestId: crypto.randomUUID(),
       action: 'control.sync',
     }, newcomer.identity);

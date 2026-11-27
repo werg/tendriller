@@ -288,7 +288,7 @@ export default {
 
 /**
  * Chronolog v2 collaboration application definition + ES Module reducer config.
- * Register `imports` and `topics` in `createChainGenesis(...)`, and pass `definition`
+ * Register `imports` and `topics` in `createLogGenesis(...)`, and pass `definition`
  * to `createApplicationSession(...)`.
  */
 export function createCollaborationDefinition({

@@ -133,8 +133,8 @@ export const definition = defineApplication({
   await access(context.devicePath);
   const configuration = await context.readPrivate('host-configuration.json');
   assert.deepEqual(configuration.publisherKeys, [context.signer.publicKey], 'the shared agent key is the independent publisher');
-  const { decodeGenesisBlock } = await import('@chronolog/peer-session'), { authorityRecordBytes } = await import(pathToFileURL(join(root, 'contract/authority.mjs')).href);
-  const stored = (await peers.application()).genesis, genesis = decodeGenesisBlock(authorityRecordBytes(stored));
+  const { decodeLogGenesis } = await import('@chronolog/peer-session'), { authorityRecordBytes } = await import(pathToFileURL(join(root, 'contract/authority.mjs')).href);
+  const stored = (await peers.application()).genesis, genesis = decodeLogGenesis(authorityRecordBytes(stored));
   const perms = genesis.initialTopics.$permissions;
   assert.equal(perms.admission.hostKey, peers.host().host.publicKey, 'genesis pins the host attestation key');
   assert(perms.admission.accounts.includes('acct_owner'), 'genesis authorizes the owner account for attested admission');

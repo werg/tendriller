@@ -320,7 +320,7 @@ test('the host cannot admit: it has no membership key, and its attestation of an
     // reducer rejects non-administrator authors!
     const forged = await signOperationCore({
       version: 1,
-      chainId: hexToBytes(admin.session.applicationId),
+      logId: hexToBytes(admin.session.applicationId),
       author: hexToBytes(w.host.host.publicKey),
       authorTimestampMs: BigInt(Date.now() + 1000),
       operationId: 'forged-host-admit',
@@ -428,7 +428,7 @@ test('createPageGenesis supports pluggable multisig and open authority modes wit
     wrapKey: wrap.publicKey,
     authority: { mode: 'multisig', signers: [peer2.publicKey], threshold: 2 },
   });
-  assert.equal(ms.genesis.privateChain, true);
+  assert.equal(ms.genesis.privateLog, true);
   assert.equal(ms.genesis.initialTopics.$reducers.topics.$permissions.export, 'multisigMembers');
   assert.equal(ms.genesis.initialTopics.$permissions.threshold, 2);
   assert.deepEqual(ms.genesis.initialTopics.$permissions.signers, [creator.publicKey, peer2.publicKey]);
@@ -439,7 +439,7 @@ test('createPageGenesis supports pluggable multisig and open authority modes wit
     wrapKey: wrap.publicKey,
     authority: { mode: 'open' },
   });
-  assert.equal(open.genesis.privateChain, false);
+  assert.equal(open.genesis.privateLog, false);
   assert.equal(open.genesis.initialTopics.$reducers.topics.$permissions.export, 'openMembers');
   assert.equal(open.genesis.initialTopics.$permissions.openWrite, true);
   assert.equal(open.genesis.initialTopics.$permissions.admission, null);
@@ -453,7 +453,7 @@ test('admission surfaces a rejected notice when a pending attestation fails host
     const rogueAtt = await (await import('@chronolog/authority')).signHostAttestationV2({
       subject: 'device',
       pageId: 'test',
-      applicationId: admin.session.chainId,
+      applicationId: admin.session.logId,
       accountId: 'acct_owner',
       email: 'owner@example.test',
       publicKey: rogue.publicKey,

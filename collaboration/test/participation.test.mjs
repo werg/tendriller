@@ -181,10 +181,10 @@ async function eventually(predicate, ms = 15_000) { const end = Date.now() + ms;
 
 test('a peer whose path died silently accepts the replacement its remote dials, instead of keeping the dead link', async () => {
   const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
-  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
+  const { logId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
   const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]),
     definition: p.defineApplication({ id: 'dead-path', version: '1', commands: {}, queries: {} }) })));
-  const host = sharedHost(chainId);
+  const host = sharedHost(logId);
   const controllers = sessions.map(session => participateApplication(session, { peers: host.peersFor(session.identity.publicKey), directTimeoutMs: 500,
     openDirectConnection: host.openDirectConnection }));
   // Exactly one side dials: the lower signing identity.
@@ -216,10 +216,10 @@ test('a peer whose path died silently accepts the replacement its remote dials, 
 
 test('a relay link is promoted to direct after a network change, and a failed promotion keeps the relay', async () => {
   const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
-  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
+  const { logId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
   const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]),
     definition: p.defineApplication({ id: 'relay-promotion', version: '1', commands: {}, queries: {} }) })));
-  const host = sharedHost(chainId, { relays: true });
+  const host = sharedHost(logId, { relays: true });
   host.state.udpBlocked = true;
   const controllers = sessions.map(session => participateApplication(session, { peers: host.peersFor(session.identity.publicKey), directTimeoutMs: 300,
     upgradeCooldownMs: 0, openDirectConnection: host.openDirectConnection }));
@@ -271,10 +271,10 @@ test('a relay link is promoted to direct after a network change, and a failed pr
 
 test('a reloaded passive peer breaks the dialer zombie-link deadlock via its bounded one-shot fallback', async () => {
   const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
-  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
+  const { logId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
   const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]),
     definition: p.defineApplication({ id: 'passive-reload', version: '1', commands: {}, queries: {} }) })));
-  const host = sharedHost(chainId);
+  const host = sharedHost(logId);
   const dialer = sessions[0].identity.publicKey < sessions[1].identity.publicKey ? 0 : 1, passive = 1 - dialer;
   const dialerController = participateApplication(sessions[dialer], { peers: host.peersFor(sessions[dialer].identity.publicKey), directTimeoutMs: 500,
     passiveDialDelayMs: 120, openDirectConnection: host.openDirectConnection });

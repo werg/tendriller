@@ -1,6 +1,6 @@
 import type {
   ApplicationSession, ApplicationDevice, SigningIdentity, ApplicationOwnerExtensions,
-  GenesisBlock, SessionCasNode, ScheduledFinalityEntry, ChainTopicSeed,
+  LogGenesis, SessionCasNode, ScheduledFinalityEntry, LogTopicSeed,
 } from '@chronolog/peer-session';
 import type { AuthorityClient } from '../contract/authority.mjs';
 
@@ -11,8 +11,8 @@ export interface OwnerGrant { readonly reader: boolean; readonly writer: boolean
 export declare const DEFAULT_OWNER_GRANT: OwnerGrant;
 
 export interface CreatedPageGenesis {
-  readonly chainId: string;
-  readonly genesis: GenesisBlock;
+  readonly logId: string;
+  readonly genesis: LogGenesis;
   readonly genesisBytes: Uint8Array;
   readonly casNodes: readonly SessionCasNode[];
   readonly epoch0Key?: Uint8Array;
@@ -32,9 +32,9 @@ export declare function createPageGenesis(options: {
   readonly ownerGrant?: OwnerGrant | 'reader' | 'writer' | 'admin';
   readonly authority?: PageAuthorityConfig;
   readonly admission?: null;
-  readonly privateChain?: boolean;
+  readonly privateLog?: boolean;
   readonly imports?: Readonly<Record<string, string>>;
-  readonly topics?: Readonly<Record<string, ChainTopicSeed>>;
+  readonly topics?: Readonly<Record<string, LogTopicSeed>>;
   readonly finalitySchedule?: readonly ScheduledFinalityEntry[];
   readonly frozenReducers?: boolean;
   readonly salt?: Uint8Array;
@@ -50,8 +50,8 @@ export declare function openPageGenesis(options: {
   readonly ownerGrant?: OwnerGrant | 'reader' | 'writer' | 'admin';
   readonly authority?: PageAuthorityConfig;
   readonly imports?: Readonly<Record<string, string>>;
-  readonly topics?: Readonly<Record<string, ChainTopicSeed>>;
-  readonly privateChain?: boolean;
+  readonly topics?: Readonly<Record<string, LogTopicSeed>>;
+  readonly privateLog?: boolean;
   readonly finalitySchedule?: readonly ScheduledFinalityEntry[];
   readonly signal?: AbortSignal;
 }): Promise<CreatedPageGenesis & { readonly publicOps: readonly Uint8Array[]; readonly created: boolean }>;

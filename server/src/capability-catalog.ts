@@ -62,7 +62,7 @@ const capabilities = [
     keywords: ['database', 'persistence', 'CRUD', 'SQLite', 'REST', 'FastAPI', 'shared state', 'checklist', 'reducer', 'CAS'],
     owner: 'Chronolog v2 Merkle-DAG application session', availability: 'provided',
     imports: ['@chronolog/peer-session', '@chronolog/peer-session/native', '@chronolog/peer-session/worker'],
-    api: ['createChainGenesis', 'createApplicationSession', 'session.command', 'session.query', 'session.topic'],
+    api: ['createLogGenesis', 'createApplicationSession', 'session.command', 'session.query', 'session.topic'],
     guide: '/docs/STATE_MODELS.md', example: 'pages/<slug>/reducer.mjs; setup.mjs; pages/<slug>/agent.mjs; pages/<slug>/worker.mjs',
     boundary: 'Hash-pinned QuickJS-NG ES Module reducers in $reducers execute deterministically on every peer with zero native builds. Local durable submission works offline; the host is a blind public-control participant, never an application database.' },
   { id: 'sql-transactions', title: 'Deterministic SQLite-CAS with Postgres-style write RLS',

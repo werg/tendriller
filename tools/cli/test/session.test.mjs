@@ -183,11 +183,11 @@ test('publication sends a complete signed graph through the owned control partic
   await writeFile(join(root, 'index.html'), '<main>authored</main>');
   await writeFile(join(root, 'page.mjs'), 'export const revision = 1;');
   await writeFile(join(root, 'same.mjs'), 'export const revision = 1;');
-  const signed = { id: 'signed-publication' }, calls = [];
+  const signed = { opId: 'signed-publication', record: '00' }, calls = [];
   const control = { preparePublication: async input => { calls.push(input); return signed; },
-    publish: async (publication, assets) => { calls.push({ publication, assets }); return { publication, version: 1 }; } };
+    publish: async (publication, assets) => { calls.push({ publication, assets }); return { opId: publication.opId, revision: 0, version: 1, release: { revision: 0, opId: publication.opId }, finalized: false }; } };
   const result = await runSessionCommand({ session: {}, control }, 'publish', [root], { operation: 'release-1' });
-  assert.deepEqual(result, { publication: signed, version: 1 });
+  assert.deepEqual(result, { opId: 'signed-publication', revision: 0, version: 1, release: { revision: 0, opId: 'signed-publication' }, finalized: false });
   assert.equal(calls[0].operationId, 'release-1'); assert.equal(calls[0].entry, 'index.html');
   assert.deepEqual(calls[0].files.map(file => file.path), ['index.html', 'page.mjs', 'same.mjs']);
   assert.equal(calls[1].assets.length, 2, 'Content addressed bytes are uploaded once');
@@ -198,10 +198,10 @@ test('publication sends a complete signed graph through the owned control partic
 test('publication failure retains known receipt or unknown outcome and the original stable identity', async t => {
   const root = await directory(t);
   await writeFile(join(root, 'index.html'), '<main>exact bytes</main>');
-  const signed = { id: 'signed-publication', payload: { operationId: 'release-1' } };
+  const signed = { opId: 'signed-publication', operationId: 'release-1', record: '00' };
   for (const committed of [true, false]) {
     const cause = Object.assign(Error(committed ? 'head read unavailable' : 'upload reply lost'), { outcome: committed ? 'committed' : 'unknown',
-      phase: committed ? 'selection' : 'submission', receipt: committed ? { publication: signed, version: 1 } : null });
+      phase: committed ? 'selection' : 'submission', receipt: committed ? { opId: signed.opId, revision: 0, version: 1, finalized: false } : null });
     const control = { preparePublication: async () => signed, publish: async () => { throw cause; } };
     await assert.rejects(runSessionCommand({ session: {}, control }, 'publish', [root], { operation: 'release-1' }), error => error === cause
       && error.publication.operationId === 'release-1' && error.publication.outcome === (committed ? 'committed' : 'unknown')
@@ -210,7 +210,7 @@ test('publication failure retains known receipt or unknown outcome and the origi
 });
 
 test('publication operation inspection reads the existing journal without preparing or sending work', async () => {
-  const saved = { publication: { id: 'signed' }, receipt: null }, calls = [];
+  const saved = { op: { record: '00' }, opId: 'signed', operationId: 'original', receipt: null }, calls = [];
   const control = { publicationOperation: async id => { calls.push(id); return saved; } };
   assert.equal(await runSessionCommand({ session: {}, control }, 'publication-operation', ['original']), saved);
   assert.deepEqual(calls, ['original']);

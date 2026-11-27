@@ -318,15 +318,15 @@ test('generated replies fit the actual public session signed signal encoder', as
   try {
     // Browser-owned root and epoch key; this device is only a granted member. Nothing here bootstraps a native root.
     const root = await peer.createSigningIdentity();
-    const created = await peer.createChainGenesis({
+    const created = await peer.createLogGenesis({
       creator: { publicKey: root.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false },
-      privateChain: true,
+      privateLog: true,
     });
     const genesis = structuredClone(created.genesis);
     genesis.initialTopics.$permissions.members.push({
       publicKey: device.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false,
     });
-    const genesisBytes = peer.encodeGenesisBlock(genesis);
+    const genesisBytes = peer.encodeLogGenesis(genesis);
     session = await peer.createApplicationSession({
       device,
       definition,

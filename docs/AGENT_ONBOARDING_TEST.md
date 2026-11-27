@@ -481,7 +481,7 @@ authority or opens a replacement native store. Native probes run in bounded chil
 processes with raw stdout/stderr discarded. They use `identity.publicKey`,
 `readAuthority()` (or an existing public authority provider's `bundle()`),
 `operations.get(id).inspect()` and handle `materialized()`/`operations.retry(id)`.
-`decodeGenesisBlock` and `genesisChainId` verify the genesis block directly; the observer derives
+`decodeLogGenesis` and `genesisLogId` verify the genesis block directly; the observer derives
 read-only membership indexes from `$permissions`, not another owned authority store.
 
 When genuinely exposed and authorized, public `exportFacts()` supplies the signed

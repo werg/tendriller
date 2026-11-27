@@ -42,7 +42,7 @@ export async function publishPage(context, { root = new URL('./dist/', import.me
     const { signOperationCore } = await import('@chronolog/peer-session/kernel');
     const signed = await signOperationCore({
       version: 1,
-      chainId: hexToBytes(context.page.applicationId),
+      logId: hexToBytes(context.page.applicationId),
       author: hexToBytes(context.signer.publicKey),
       operationId: `publish-${graph}`,
       authorTimestampMs: BigInt(Date.now()),

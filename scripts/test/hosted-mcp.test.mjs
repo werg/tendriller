@@ -93,7 +93,7 @@ async function openFixture(t) {
   });
   const channel = new MessageChannel();
   owner.attach(channel.port1);
-  const page = await connectApplicationOwner(channel.port2, { applicationId: opened.chainId });
+  const page = await connectApplicationOwner(channel.port2, { applicationId: opened.logId });
   t.after(async () => {
     await page.detach().catch(() => {});
     admission.close();
@@ -101,7 +101,7 @@ async function openFixture(t) {
     channel.port1.close();
     channel.port2.close();
   });
-  return { appId: opened.chainId, opened, session, page, peers, host, admission, epochKey: opened.epoch0Key };
+  return { appId: opened.logId, opened, session, page, peers, host, admission, epochKey: opened.epoch0Key };
 }
 
 test('connectHostedMcpGrant adds a revocable identity through the owner and X25519-seals epoch keys; the page never sees them', async t => {

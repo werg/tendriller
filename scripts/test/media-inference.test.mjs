@@ -244,15 +244,15 @@ test('recorder MIME parameters cross actual public-session content and signal AP
   const store = () => { const values = new Map(); return { async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, value) { values.set(key, value.slice()); } }; };
   const definition = peer.defineApplication({ id: 'audio-inference-content-check', version: '1', commands: {}, queries: {} });
   const [pageDevice, workerDevice] = await Promise.all([0, 1].map(() => peer.openApplicationDevice({ store: store(), create: true })));
-  const created = await peer.createChainGenesis({
+  const created = await peer.createLogGenesis({
     creator: { publicKey: workerDevice.identity.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false },
-    privateChain: true,
+    privateLog: true,
   });
   const genesis = structuredClone(created.genesis);
   genesis.initialTopics.$permissions.members.push({
     publicKey: pageDevice.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false,
   });
-  const genesisBytes = peer.encodeGenesisBlock(genesis);
+  const genesisBytes = peer.encodeLogGenesis(genesis);
   const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.createApplicationSession({
     device,
     definition,

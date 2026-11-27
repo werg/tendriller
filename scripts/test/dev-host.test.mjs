@@ -14,6 +14,9 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { getGlobalDispatcher } from 'undici';
 import { packTarGz } from '../../contract/archive.mjs';
 import { prepareDevHostRelease } from '../dev-host-release.mjs';
+import { requiredStorageSchema } from '../storage-schema.mjs';
+
+const expectedStorageSchema = await requiredStorageSchema();
 import { localNetworkSource, startDevHost } from '../dev-host.mjs';
 
 import { FIRST_APP_PROFILES } from '../release-composition.mjs';
@@ -46,7 +49,7 @@ async function fixture(t) {
     .map(role => artifact(role, `${role}-${version}.tgz`));
   const body = { format: 'tendriller-release-composition-v1', version, contract: 3,
     core: { repository: 'werg/tendriller', source, sourceTree: tree, dirty: false }, runtime, profiles:FIRST_APP_PROFILES,
-    chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog-db',source:'d'.repeat(40),sourceTree:'e'.repeat(40),dirty:false}])),
+    chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog',source:'d'.repeat(40),sourceTree:'e'.repeat(40),dirty:false}])),
     components: components.map(({ role, file, sha256, size }) => ({ role, file, sha256, size })) };
   const composition = { ...body, id: hash(JSON.stringify(body)) };
   const kit = packTarGz([{ path: 'package.json', bytes: json({ name: 'local-app', private: true }) },
@@ -68,7 +71,7 @@ async function fixture(t) {
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
     ['server/src/runtime-release.json', json({ id: 'a'.repeat(64) })],
   ]);
-  const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 15,
+  const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: expectedStorageSchema,
     files: Object.fromEntries([...files].filter(([path]) => path.startsWith('dist/engine/'))
       .map(([path, content]) => [path.slice('dist/engine/'.length), hash(content)])) };
   const save = () => bytes.set('manifest.json', json(manifest));
@@ -147,7 +150,7 @@ test('engine provenance must retain the selected clean source, tree and supporte
   for (const [key, value] of [['source', 'e'.repeat(40)], ['sourceTree', 'e'.repeat(40)], ['dirty', true], ['storageSchemaRevision', 10]])
     await t.test(key, async t => {
       const f = await fixture(t); f.proof[key] = value; f.seal();
-      await assert.rejects(f.prepare(), /clean matching engine with storage schema 15/);
+      await assert.rejects(f.prepare(), new RegExp(`clean matching engine with storage schema ${expectedStorageSchema}`));
     });
 });
 

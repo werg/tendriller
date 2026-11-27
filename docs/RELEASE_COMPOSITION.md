@@ -4,7 +4,7 @@ Tendriller hosts the page and its controls. Chronolog owns the application sessi
 
 ## Choose exact source
 
-Choose one full 40-character commit SHA from each repository: [core](https://github.com/werg/tendriller), [Chronolog](https://github.com/werg/chronolog-db), and [cookbooks](https://github.com/werg/tendriller-contrib). Record all three before building. Use a clean checkout; local edits cannot be reproduced by a commit SHA.
+Choose one full 40-character commit SHA from each repository: [core](https://github.com/werg/tendriller), [Chronolog](https://github.com/werg/chronolog), and [cookbooks](https://github.com/werg/tendriller-contrib). Record all three before building. Use a clean checkout; local edits cannot be reproduced by a commit SHA.
 
 ## Run local checks
 

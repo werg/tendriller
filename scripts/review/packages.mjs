@@ -30,7 +30,7 @@ export function verifyInstalledReviewPackages(project, composition) {
   const identities = {};
   for (const name of ['authority', 'peer-session']) {
     const proof = read(name);
-    assert.equal(proof.repository, 'werg/chronolog-db', name + ' must come from the Chronolog repository');
+    assert.equal(proof.repository, 'werg/chronolog', name + ' must come from the Chronolog repository');
     assert.equal(proof.dirty, false, name + ' must come from a clean checkpoint');
     assert.equal(proof.source, composition.session.sourceCommit, name + ' source differs from the qualified composition');
     assert.equal(proof.sourceTree, composition.session.sourceTree, name + ' source tree differs from the qualified composition');

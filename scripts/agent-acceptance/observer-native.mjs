@@ -8,7 +8,7 @@ import { at, need, same, MeasurementError } from './observer-data.mjs';
 import { hash } from './evidence.mjs';
 
 export function requireAuthoredProofSDK(sdk) {
-  if (['decodeGenesisBlock', 'genesisChainId', 'decodeEncryptedEnvelope', 'encryptedEnvelopeDigest',
+  if (['decodeLogGenesis', 'genesisLogId', 'decodeEncryptedEnvelope', 'encryptedEnvelopeDigest',
     'decodeSignedOperation', 'verifySignedOperation', 'verifyRecord', 'recordDigest', 'encodeRecord', 'decodeRecord',
     'bytesToHex', 'hexToBytes'].some(name => typeof sdk?.[name] !== 'function')) {
     throw new MeasurementError('authored-public-proof-sdk-unavailable');
@@ -21,22 +21,22 @@ function toBytes(value, sdk) {
   throw new MeasurementError('genesis-record-format', 'failed');
 }
 
-/** Verify a Chronolog v2 GenesisBlock without opening a device/store or holding keys. */
+/** Verify a Chronolog v2 LogGenesis without opening a device/store or holding keys. */
 export async function verifiedAuthority(genesisRecord, pinned, sdk, permissionsOverride = null) {
   requireAuthoredProofSDK(sdk);
   const raw = toBytes(genesisRecord, sdk);
-  const genesis = sdk.decodeGenesisBlock(raw);
-  const chainId = sdk.bytesToHex(sdk.genesisChainId(raw));
+  const genesis = sdk.decodeLogGenesis(raw);
+  const logId = sdk.bytesToHex(sdk.genesisLogId(raw));
   if (pinned !== undefined && pinned !== null) {
     const pinnedBytes = toBytes(pinned, sdk);
-    const pinnedChainId = sdk.bytesToHex(sdk.genesisChainId(pinnedBytes));
-    same(chainId, pinnedChainId, 'pinned-genesis-mismatch');
+    const pinnedChainId = sdk.bytesToHex(sdk.genesisLogId(pinnedBytes));
+    same(logId, pinnedChainId, 'pinned-genesis-mismatch');
   }
   const permissions = permissionsOverride ?? genesis.initialTopics.$permissions ?? { members: [] };
   const finality = genesis.initialTopics.$finality ?? { schedule: [{ effectiveAfterMs: -1, policy: { kind: 'none' } }] };
   return {
-    chainId,
-    applicationId: chainId,
+    logId,
+    applicationId: logId,
     genesis,
     genesisBytes: raw,
     permissions,
@@ -47,13 +47,13 @@ export async function verifiedAuthority(genesisRecord, pinned, sdk, permissionsO
 
 /**
  * Verify a Chronolog v2 signed encrypted outer envelope against verified genesis/permissions.
- * Does not decrypt the inner core; binds chainId, opId, author, epoch, and writer grant.
+ * Does not decrypt the inner core; binds logId, opId, author, epoch, and writer grant.
  */
 export async function verifySignedOperation(rawEnvelope, authority, sdk) {
   const raw = toBytes(rawEnvelope, sdk);
   const env = sdk.decodeEncryptedEnvelope(raw);
   same(env.version, 1, 'operation-envelope-version');
-  same(sdk.bytesToHex(env.chainId), authority.chainId, 'operation-authority-application');
+  same(sdk.bytesToHex(env.logId), authority.logId, 'operation-authority-application');
   const opId = sdk.bytesToHex(env.opId);
   const author = sdk.bytesToHex(env.author);
   if (!/^[a-f0-9]{64}$/.test(opId) || !/^[a-f0-9]{64}$/.test(author) || !Number.isSafeInteger(env.epoch) || env.epoch < 0) {

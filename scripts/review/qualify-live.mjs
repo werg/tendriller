@@ -50,6 +50,8 @@ try {
   browser = await chromium.launch();
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, ...(!values['no-video'] ? { recordVideo: { dir: join(output, 'video'), size: { width: 1440, height: 1000 } } } : {}) });
   const authorized = await authorizeReview(context, access); page = authorized.page;
+  await page.unrouteAll({ behavior: 'wait' });
+  await page.goto('about:blank');
   phase = 'create fixture';
   creationAttempted = true;
   run(['setup', access.origin, 'Qualification checklist'], { REVIEW_ACCESS_TOKEN: authorized.token });

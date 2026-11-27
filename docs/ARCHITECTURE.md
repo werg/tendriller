@@ -31,7 +31,7 @@ Tendriller is built around **Chronolog v2 (`chronolog-db`) as the central pipe**
 
 ## Strict two-way public / encrypted control partition
 
-On private chains (`privateChain: true`), operations are partitioned strictly by visibility:
+On private chains (`privateLog: true`), operations are partitioned strictly by visibility:
 - **Public control operations (`visibility: 'public'`)** may update *only* `$*` control topics (`$reducers`, `$permissions`, `$keys`, `$finality`, `$publications`, `$signal_policy`), and their reducers may read *only* public `$*` topics and public CAS nodes.
 - **Encrypted application operations (`visibility: 'encrypted'`)** are AES-256-GCM encrypted under the active epoch key and may update *only* non-`$` application topics.
 - Idempotency (`seenOpsRoot`) is scoped to `(visibility, author, operationId)`, so an encrypted operation can never collide with or influence a public control operation.

@@ -57,7 +57,7 @@ function fixture(t) {
   writeFileSync(join(root, 'bin/package.json'), '{"type":"module"}');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
   writeFileSync(join(root, '.gitignore'), 'bin/\ndist/\nremote/\n');
-  const chronolog = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
+  const chronolog = { repository: 'werg/chronolog', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
   const sql = browserSqlArchive(root,chronolog);
   writeFileSync(join(root,'scripts/sql-browser-session.json'), JSON.stringify({archive:'sql-browser.tgz',sha256:sql.sha256}));
   execFileSync('git', ['init', '-q'], { cwd: root });

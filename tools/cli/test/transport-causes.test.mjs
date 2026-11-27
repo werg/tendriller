@@ -23,7 +23,7 @@ async function fixture(t, stage, shape = 'aggregate') {
 import { writeFile } from 'node:fs/promises';
 import { transportCauseSummary } from ${JSON.stringify(diagnostics)};
 const stage = ${JSON.stringify(stage)}, shape = ${JSON.stringify(shape)};
-const signed = { id:${JSON.stringify(publicationId)}, payload:{ operationId:${JSON.stringify(operationId)} } };
+const signed = { opId:${JSON.stringify(publicationId)}, operationId:${JSON.stringify(operationId)}, record:'00' };
 function failure(attached) {
   const secret = 'private-transport-fixture';
   const leaf = code => Object.assign(new Error(secret + ' message'), {
@@ -41,10 +41,10 @@ function failure(attached) {
   const code = stage === 'preparation' ? 'APPLICATION_CONTROL_TIMEOUT'
     : stage === 'submission' ? 'APPLICATION_PUBLICATION_OUTCOME_UNKNOWN' : 'APPLICATION_PUBLICATION_SELECTION_UNAVAILABLE';
   const error = Object.assign(new Error(code + ': fetch failed', { cause }), {
-    code, phase:stage, operationId:signed.payload.operationId,
-    publicationId:stage === 'preparation' ? null : signed.id,
+    code, phase:stage, operationId:signed.operationId,
+    publicationId:stage === 'preparation' ? null : signed.opId,
     outcome:stage === 'selection' ? 'committed' : stage === 'submission' ? 'unknown' : 'not_submitted',
-    receipt:stage === 'selection' ? { publication:signed, version:7 } : null,
+    receipt:stage === 'selection' ? { opId:signed.opId, revision:6, version:7, finalized:false } : null,
   });
   if (!attached) return error;
   // Model the serialized native-owner boundary here. The native integration
@@ -66,7 +66,7 @@ function open(attached) {
       return signed;
     },
     async publish(publication, assets) {
-      calls.push({ publish:publication.id, operation:publication.payload.operationId, assets:assets.length });
+      calls.push({ publish:publication.opId, operation:publication.operationId, assets:assets.length });
       throw failure(attached);
     },
   };
