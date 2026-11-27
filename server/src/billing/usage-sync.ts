@@ -50,7 +50,9 @@ export async function reconcileBillingAndUsage(env: Env, now = Date.now()): Prom
     const { period } = currentUsagePeriod(now);
     const meters = parsePolarMeters(env);
 
-    const rows = await env.ACCOUNTS.prepare(`SELECT u.account_id, u.mcp_calls, u.media_bytes,
+    const rows = await env.ACCOUNTS.prepare(`SELECT u.account_id,
+      MAX(0, u.mcp_calls - u.complimentary_mcp_calls) AS mcp_calls,
+      MAX(0, u.media_bytes - u.complimentary_media_bytes) AS media_bytes,
       u.reported_media_overage_mb, u.reported_mcp_overage_calls,
       a.plan, a.payg_enabled, a.payg_spend_cap_cents, a.media_bytes_cap, a.mcp_call_cap
       FROM usage_periods u

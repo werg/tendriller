@@ -514,7 +514,7 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
   const checkoutLive = Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON);
   const { body, script, extraCss } = renderPricingPage({
     signedIn: Boolean(session),
-    currentPlan: ent?.plan ?? null,
+    currentPlan: ent?.billingPlan ?? null,
     checkoutLive,
   });
   const response = servicePage("Pricing", body, script, 200, {
@@ -591,6 +591,8 @@ export interface BillingDashboardView {
   mcpPagesUsed: number;
   subdomainsUsed?: number;
   storageUsed: number;
+  /** Saved account preference, even when complimentary access pauses overage. */
+  paygOptedIn?: boolean;
   checkoutLive: boolean;
   portalLive: boolean;
   checkoutSuccess?: boolean;
@@ -632,21 +634,36 @@ export function renderBillingDashboardContent(view: BillingDashboardView): { bod
 
   const resetDate = ent.usage.resetsAt.slice(0, 10);
   const ratio = (used: number, cap: number | null) => (cap === null || cap === 0 ? null : used / cap);
+  const effectiveMcpCalls = ent.premiumGrant ? ent.usage.mcpCalls : Math.max(0, ent.usage.mcpCalls - ent.usage.complimentaryMcpCalls);
+  const effectiveMediaBytes = ent.premiumGrant ? ent.usage.mediaBytes : Math.max(0, ent.usage.mediaBytes - ent.usage.complimentaryMediaBytes);
+  const mcpCompNote = !ent.premiumGrant && ent.usage.complimentaryMcpCalls > 0
+    ? ` · ${ent.usage.complimentaryMcpCalls.toLocaleString("en-US")} complimentary calls excluded`
+    : "";
+  const mediaCompNote = !ent.premiumGrant && ent.usage.complimentaryMediaBytes > 0
+    ? ` · ${fmtBytes(ent.usage.complimentaryMediaBytes)} complimentary excluded`
+    : "";
   const metersHtml = [
     meterRow("Pages", String(pagesUsed), ent.quotas.pages === null ? "Unlimited" : String(ent.quotas.pages), ratio(pagesUsed, ent.quotas.pages)),
     meterRow("App & file storage", fmtBytes(storageUsed), ent.quotas.storageBytes === null ? "Unlimited" : fmtBytes(ent.quotas.storageBytes), ratio(storageUsed, ent.quotas.storageBytes)),
     meterRow("Agents", String(agentsUsed), ent.quotas.agents === null ? "Unlimited" : String(ent.quotas.agents), ratio(agentsUsed, ent.quotas.agents)),
     meterRow("Named page subdomains", String(subdomainsUsed), ent.quotas.customSubdomains === null ? "Unlimited" : ent.quotas.customSubdomains === 0 ? "Pro & Team" : String(ent.quotas.customSubdomains), ent.quotas.customSubdomains === 0 ? null : ratio(subdomainsUsed, ent.quotas.customSubdomains), `Replace generated page subdomains with memorable names in <a href="/dashboard/domains#subdomains">Domains</a>.`),
     meterRow("Hosted MCP opted-in pages", String(mcpPagesUsed), ent.quotas.mcpPages === null ? "Unlimited" : String(ent.quotas.mcpPages), ratio(mcpPagesUsed, ent.quotas.mcpPages)),
-    meterRow("Hosted MCP calls (this month)", ent.usage.mcpCalls.toLocaleString("en-US"), ent.quotas.mcpCallsPerMonth === null ? "Unlimited" : ent.quotas.mcpCallsPerMonth.toLocaleString("en-US"), ratio(ent.usage.mcpCalls, ent.quotas.mcpCallsPerMonth), `Resets ${resetDate} UTC · local <code>tendril agent run</code> is always unlimited.`),
+    meterRow("Hosted MCP calls (this month)", effectiveMcpCalls.toLocaleString("en-US"), ent.quotas.mcpCallsPerMonth === null ? "Unlimited" : ent.quotas.mcpCallsPerMonth.toLocaleString("en-US"), ratio(effectiveMcpCalls, ent.quotas.mcpCallsPerMonth), `Resets ${resetDate} UTC${mcpCompNote} · local <code>tendril agent run</code> is always unlimited.`),
     meterRow("Host relay active time (this month)", fmtHours(ent.usage.relayMs), ent.quotas.relayMsPerMonth === null ? "Unlimited" : fmtHours(ent.quotas.relayMsPerMonth), ratio(ent.usage.relayMs, ent.quotas.relayMsPerMonth), `Resets ${resetDate} UTC · direct peer-to-peer sync uses 0 host relay time.`),
-    meterRow("Group video & call relay (this month)", fmtBytes(ent.usage.mediaBytes), ent.quotas.mediaBytesPerMonth === null ? "Unlimited" : fmtBytes(ent.quotas.mediaBytesPerMonth), ratio(ent.usage.mediaBytes, ent.quotas.mediaBytesPerMonth), `Resets ${resetDate} UTC · ${ent.quotas.sfuEnabled ? `Group video up to ${ent.quotas.sfuMaxPeers} peers (${ent.quotas.sfuMaxHeight}p)` : "TURN trial only; upgrade for multi-party video"}.`),
+    meterRow("Group video & call relay (this month)", fmtBytes(effectiveMediaBytes), ent.quotas.mediaBytesPerMonth === null ? "Unlimited" : fmtBytes(ent.quotas.mediaBytesPerMonth), ratio(effectiveMediaBytes, ent.quotas.mediaBytesPerMonth), `Resets ${resetDate} UTC${mediaCompNote} · ${ent.quotas.sfuEnabled ? `Group video up to ${ent.quotas.sfuMaxPeers} peers (${ent.quotas.sfuMaxHeight}p)` : "TURN trial only; upgrade for multi-party video"}.`),
   ].join("");
 
   const spendCapDollars = ent.paygSpendCapCents === null ? "" : String(Math.round(ent.paygSpendCapCents / 100));
+  const paygOptedIn = view.paygOptedIn ?? ent.paygEnabled;
   const paygCard = ent.unlimitedHost
     ? ""
-    : ent.quotas.paygAllowed
+    : ent.premiumGrant
+      ? `<section class="card stack-sm" id="payg">
+          <div class="card-head"><div><span class="eyebrow"${c("billing.payg.eyebrow", b.payg.eyebrow)}>${txt(b.payg.eyebrow)}</span><h2${c("billing.payg.title", b.payg.title)}>${txt(b.payg.title)}</h2><p>Pay-as-you-go overage is paused while complimentary premium access is active.</p></div><span class="badge">Paused</span></div>
+          ${paygOptedIn ? `<p>Your saved opt-in will resume when complimentary access ends if your paid plan allows overage. You can turn it off now.</p>
+          <form method="post" action="/dashboard/billing/payg"><input type="hidden" name="payg_enabled" value="0"><button type="submit" class="secondary sm">Turn off saved pay-as-you-go</button></form>` : `<p>Pay-as-you-go is off. You can enable it after complimentary access ends if your paid plan allows overage.</p>`}
+        </section>`
+      : ent.quotas.paygAllowed
       ? `<section class="card stack-sm" id="payg">
           <div class="card-head"><div><span class="eyebrow"${c("billing.payg.eyebrow", b.payg.eyebrow)}>${txt(b.payg.eyebrow)}</span><h2${c("billing.payg.title", b.payg.title)}>${txt(b.payg.title)}</h2><p>Stay connected smoothly if you exceed your included ${fmtBytes(ent.quotas.mediaBytesPerMonth ?? 0)} media or ${(ent.quotas.mcpCallsPerMonth ?? 0).toLocaleString("en-US")} hosted MCP calls (${fmtDollars(ent.quotas.paygMediaCentsPerGb)}/GB media · ${fmtDollars(ent.quotas.paygMcpCentsPer10k)}/10k MCP calls).</p></div><span class="badge ${ent.paygEnabled ? "ok" : ""}">${ent.paygEnabled ? "Enabled" : "Off"}</span></div>
           <form method="post" action="/dashboard/billing/payg" class="stack-sm">
@@ -664,10 +681,10 @@ export function renderBillingDashboardContent(view: BillingDashboardView): { bod
         </section>`;
 
   const curInterval = sub?.billingInterval ?? "month";
-  const isProMonth = ent.plan === "pro" && curInterval === "month";
-  const isProYear = ent.plan === "pro" && curInterval === "year";
-  const isTeamMonth = ent.plan === "team" && curInterval === "month";
-  const isTeamYear = ent.plan === "team" && curInterval === "year";
+  const isProMonth = ent.billingPlan === "pro" && curInterval === "month";
+  const isProYear = ent.billingPlan === "pro" && curInterval === "year";
+  const isTeamMonth = ent.billingPlan === "team" && curInterval === "month";
+  const isTeamYear = ent.billingPlan === "team" && curInterval === "year";
   const upgradeSection = ent.unlimitedHost ? "" : `<section class="card stack-sm">
     <div class="card-head"><div><span class="eyebrow"${c("billing.plans.eyebrow", b.plans.eyebrow)}>${txt(b.plans.eyebrow)}</span><h2${c("billing.plans.title", b.plans.title)}>${txt(b.plans.title)}</h2><p${c("billing.plans.lead", b.plans.lead)}>${txt(b.plans.lead)}</p></div><a class="button ghost sm" href="/pricing">Compare all plans</a></div>
     ${checkoutLive ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
@@ -736,8 +753,8 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
       .bind(accountId).first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM page_subdomains WHERE account_id = ?")
       .bind(accountId).first<{ n: number }>().catch(() => null),
-    db.prepare("SELECT reserved FROM accounts WHERE id = ?")
-      .bind(accountId).first<{ reserved: number }>(),
+    db.prepare("SELECT reserved, payg_enabled FROM accounts WHERE id = ?")
+      .bind(accountId).first<{ reserved: number; payg_enabled: number }>(),
   ]);
 
   const { body, script } = renderBillingDashboardContent({
@@ -750,6 +767,7 @@ async function renderBillingDashboard(req: Request, env: Env, url: URL, accountI
     mcpPagesUsed: mcpPageStats?.n ?? 0,
     subdomainsUsed: subdomainStats?.n ?? 0,
     storageUsed: storageStats?.reserved ?? 0,
+    paygOptedIn: Boolean(storageStats?.payg_enabled),
     checkoutLive: Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON),
     portalLive: Boolean(env.POLAR_ACCESS_TOKEN && (ent.subscription?.customerId || ent.subscription?.subscriptionId)),
     checkoutSuccess: url.searchParams.get("checkout") === "success",
@@ -832,14 +850,17 @@ export async function routeBillingDashboard(req: Request, env: Env, url: URL): P
     if (url.pathname === "/dashboard/billing/payg" && req.method === "POST") {
       sameOrigin(req, env);
       await requireWritesOpen(env);
-      const ent = await getAccountEntitlements(env, session.accountId);
-      if (!ent.quotas.paygAllowed) {
-        throw new HttpError(402, "plan_required", "Pay-as-you-go overage requires Pro or Team.");
-      }
       const raw = new TextDecoder().decode(await readBody(req, 4096));
       const { isJson, params } = parseFormOrJson(req, raw);
       const enabled = params.payg_enabled === true || params.payg_enabled === "1" || params.payg_enabled === "true" || params.payg_enabled === "on";
+      if (enabled) {
+        const ent = await getAccountEntitlements(env, session.accountId);
+        if (!ent.quotas.paygAllowed) {
+          throw new HttpError(402, "plan_required", "Pay-as-you-go overage requires a paid Pro or Team plan without an active complimentary grant.");
+        }
+      }
       const uncapped = params.uncapped === true || params.uncapped === "1" || params.uncapped === "true" || params.uncapped === "on" || params.spend_cap_cents === null;
+      let capSpecified = true;
       let capCents: number | null = DEFAULT_PAYG_SPEND_CAP_CENTS;
       if (uncapped) {
         capCents = null;
@@ -856,12 +877,21 @@ export async function routeBillingDashboard(req: Request, env: Env, url: URL): P
         }
         capCents = Math.round(usd * 100);
       } else {
-        capCents = ent.paygSpendCapCents ?? DEFAULT_PAYG_SPEND_CAP_CENTS;
+        capSpecified = false;
       }
-      await env.ACCOUNTS.prepare("UPDATE accounts SET payg_enabled = ?, payg_spend_cap_cents = ? WHERE id = ?")
-        .bind(enabled ? 1 : 0, capCents, session.accountId).run();
+      let storedCapCents: number | null = capCents;
+      if (capSpecified) {
+        await env.ACCOUNTS.prepare("UPDATE accounts SET payg_enabled = ?, payg_spend_cap_cents = ? WHERE id = ?")
+          .bind(enabled ? 1 : 0, capCents, session.accountId).run();
+      } else {
+        // Leave payg_spend_cap_cents untouched so an omitted cap never clobbers a concurrent update.
+        const updated = await env.ACCOUNTS.prepare(
+          "UPDATE accounts SET payg_enabled = ? WHERE id = ? RETURNING payg_spend_cap_cents",
+        ).bind(enabled ? 1 : 0, session.accountId).first<{ payg_spend_cap_cents: number | null }>();
+        storedCapCents = updated ? updated.payg_spend_cap_cents : DEFAULT_PAYG_SPEND_CAP_CENTS;
+      }
       if (isJson || (req.headers.get("Accept") ?? "").includes("application/json")) {
-        return json({ ok: true, payg_enabled: enabled, payg_spend_cap_cents: capCents });
+        return json({ ok: true, payg_enabled: enabled, payg_spend_cap_cents: storedCapCents });
       }
       return redirect("/dashboard/billing?saved=1", 303);
     }

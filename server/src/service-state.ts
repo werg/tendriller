@@ -22,14 +22,13 @@ export async function accountLimits(env: Env, accountId?: string | null): Promis
       .first<{ account_page_cap: number | null; account_resident_cap: number | null; account_storage_cap: number | null }>();
     if (!row) return { pages: PAGE_LIMIT, residents: RESIDENT_LIMIT, storage: ACCOUNT_STORAGE_LIMIT };
     if (accountId && (row.account_page_cap !== null || row.account_resident_cap !== null || row.account_storage_cap !== null)) {
-      const acc = await env.ACCOUNTS.prepare("SELECT plan, page_cap, resident_cap, storage_cap FROM accounts WHERE id = ?")
-        .bind(accountId).first<{ plan: string | null; page_cap: number | null; resident_cap: number | null; storage_cap: number | null }>().catch(() => null);
+      const acc = await env.ACCOUNTS.prepare("SELECT page_cap, resident_cap, storage_cap FROM effective_account_limits WHERE account_id = ?")
+        .bind(accountId).first<{ page_cap: number | null; resident_cap: number | null; storage_cap: number | null }>().catch(() => null);
       if (acc) {
-        if (acc.plan === "unlimited") return { pages: null, residents: null, storage: null };
         return {
-          pages: row.account_page_cap === null ? null : (acc.page_cap ?? row.account_page_cap),
-          residents: row.account_resident_cap === null ? null : (acc.resident_cap ?? row.account_resident_cap),
-          storage: row.account_storage_cap === null ? null : (acc.storage_cap ?? row.account_storage_cap),
+          pages: acc.page_cap,
+          residents: acc.resident_cap,
+          storage: acc.storage_cap,
         };
       }
     }

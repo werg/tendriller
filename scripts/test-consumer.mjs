@@ -86,6 +86,8 @@ accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/billi
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/oauth-groups-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/custom-domains-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/custom-subdomains-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/premium-grants-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/analytics-schema')), 'utf8'));
 for (const table of ['subscriptions', 'billing_events', 'usage_periods', 'active_relay_leases', 'custom_domains', 'page_subdomains'])
   assert.equal(accounts.prepare('SELECT name FROM sqlite_master WHERE name=?').get(table)?.name, table);
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='system_broadcasts'").get().name, 'system_broadcasts');

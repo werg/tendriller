@@ -13,6 +13,8 @@ import {
 import { authorityRecord } from '../../contract/authority.mjs';
 import { sealHostedKeys } from '../src/mcp-crypto';
 import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
+import { createPremiumGrant } from '../src/billing/premium-grants';
+import { currentUsagePeriod } from '../src/billing/plans';
 import { create, inDO, ownerHeaders } from './helpers';
 
 const ISSUER = 'https://tendriller.dev', RESOURCE = ISSUER + '/mcp';
@@ -498,6 +500,73 @@ it('register_agent over /mcp registers a handle + bio and rotates on repeat hand
   const missingWrap = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'nowrap', publicKey: pub2 });
   expect(missingWrap.result.isError).toBe(true);
   expect(invalid.result.isError).toBe(true);
+});
+
+it('meters hosted MCP calls in the execution month while preserving admission-time complimentary coverage', async () => {
+  const f = await hostFixture(), issued = await tokens(f);
+  const restore = await inDO(f.page.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
+  await inDO(f.page.id, t => {
+    t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+    t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
+  });
+  try {
+    const pageOwner = ownerHeaders(f.page.page_url);
+    const grants = await (await request(f.page.page_url + '_tendril/mcp/grants', f.settings, { headers: pageOwner })).json() as {
+      grants: Array<{ id: string; wrap_public_key: string }>;
+    };
+    const hostedIdentity = await exportSigningIdentity(await createSigningIdentity());
+    const { epoch0Key } = await seedPageGenesisV2(f.page, [hostedIdentity.publicKey], {
+      'app/metering': `export default {
+        reduce(state) { return { ok: true, state }; },
+        query(state) { return state; },
+        describe() { return { queries: [{ name: 'sample', input: { type: 'null' } }], commands: [] }; },
+      };`,
+    }, { sample: { module: 'app/metering', initialState: { ready: true } } });
+    const wrapped = await sealHostedKeys(grants.grants.find(g => g.id === issued.grantId)!.wrap_public_key, {
+      signingSeedHex: hostedIdentity.privateKey,
+      signingPublicKey: hostedIdentity.publicKey,
+      epochKeys: { '0': bytesToHex(epoch0Key) },
+    }, `${f.page.id}:${f.page.application.id}:${issued.grantId}`);
+    const connected = await request(f.page.page_url + '_tendril/mcp/connect', f.settings, {
+      method: 'POST', headers: { ...pageOwner, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grantId: issued.grantId, handle: 'metering', publicKey: hostedIdentity.publicKey, wrappedKeysBase64: base64url(wrapped) }),
+    });
+    expect(connected.status).toBe(201);
+    await connected.json();
+
+    const boundary = Date.parse(currentUsagePeriod().resetsAt);
+    const grantedAt = boundary - 1_000, admittedAt = boundary - 1, expiresAt = boundary;
+    const meteredAt = boundary + 1, executionPeriod = currentUsagePeriod(meteredAt).period;
+    await createPremiumGrant(env, 'operator:metering-test', {
+      id: crypto.randomUUID(), accountId: f.subject, plan: 'pro', expiresAt, reason: 'MCP expiry regression',
+    }, grantedAt);
+    const usage = async () => (await env.ACCOUNTS.prepare(`SELECT period, mcp_calls AS calls, complimentary_mcp_calls AS complimentary
+      FROM usage_periods WHERE account_id = ? ORDER BY period`).bind(f.subject).all()).results;
+
+    // Advance the trusted DO clock across UTC month-end and expiry after admission. Exercise
+    // metadata, roster, and actual serialized QuickJS execution through OAuth.
+    for (const name of ['agents_list', 'describe_application', 'query_application']) {
+      await inDO(f.page.id, t => {
+        let first = true;
+        t.now = () => { if (first) { first = false; return admittedAt; } return meteredAt; };
+      });
+      const result = await mcpCall(f.settings, issued.access_token, name, {
+        applicationId: f.page.application.id,
+        ...(name === 'query_application' ? { query: 'sample', input: null } : {}),
+      });
+      expect(result.result.isError, JSON.stringify(result.result)).not.toBe(true);
+      if (name === 'query_application') expect(result.value.value).toEqual({ ready: true });
+    }
+    await expect.poll(usage).toEqual([{ period: executionPeriod, calls: 3, complimentary: 3 }]);
+
+    // Requests first admitted after expiry resume ordinary usage accounting.
+    await inDO(f.page.id, t => { t.now = () => meteredAt; });
+    const afterExpiry = await mcpCall(f.settings, issued.access_token, 'agents_list', { applicationId: f.page.application.id });
+    expect(afterExpiry.result.isError).not.toBe(true);
+    await expect.poll(usage).toEqual([{ period: executionPeriod, calls: 4, complimentary: 3 }]);
+  } finally {
+    await inDO(f.page.id, t => { Reflect.deleteProperty(t, 'now'); Object.assign(t.env, restore); });
+  }
 });
 
 it('executes hosted MCP v2 ES Module reducer in QuickJS-WASM with OAuth-wrapped keys, zero domain.js, zero plaintext at rest, multi-agent messaging, HTTP gateway, and revocation', async () => {

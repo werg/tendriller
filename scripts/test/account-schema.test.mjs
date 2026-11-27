@@ -25,12 +25,13 @@ test('the fresh account baseline enforces reservations and account limits atomic
 test('the account schema holds OAuth, assistant and agent tables, and agent rows cascade with their account and page', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
   db.exec('PRAGMA foreign_keys = ON');
-  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql', '0008_custom_subdomains.sql'])
+  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql', '0008_custom_subdomains.sql', '0009_premium_grants.sql', '0010_operational_analytics.sql'])
     db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   for (const table of ['integration_oauth_access', 'integration_oauth_codes', 'integration_oauth_refresh',
     'integration_oauth_grants', 'integration_oauth_intents', 'mcp_connections', 'agents', 'agent_grants', 'agent_join_codes',
     'system_broadcasts', 'broadcast_keys', 'agent_versions', 'page_versions',
     'subscriptions', 'billing_events', 'usage_periods', 'active_relay_leases',
+    'premium_grants', 'service_usage_daily', 'service_inventory_daily',
     'oauth_custom_providers', 'outbound_oauth_states', 'outbound_connections', 'outbound_page_grants', 'identity_groups', 'page_group_rules']) {
     assert.equal(db.prepare('SELECT name FROM sqlite_master WHERE type=? AND name=?').get('table', table)?.name, table);
   }
@@ -52,7 +53,7 @@ test('the account schema holds OAuth, assistant and agent tables, and agent rows
 test('configurable account limits default to production caps and allow unlimited NULL caps for localhost', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
   db.exec('PRAGMA foreign_keys = ON');
-  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql', '0008_custom_subdomains.sql'])
+  for (const file of ['0001_accounts.sql', '0002_agents.sql', '0003_broadcasts.sql', '0004_account_limits.sql', '0005_billing_and_tiers.sql', '0006_oauth_connections_and_groups.sql', '0007_custom_domains.sql', '0008_custom_subdomains.sql', '0009_premium_grants.sql', '0010_operational_analytics.sql'])
     db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
   // Default unified page & resident cap is 20.

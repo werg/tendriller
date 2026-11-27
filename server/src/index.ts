@@ -4,6 +4,7 @@ import { route } from "./router";
 import { reconcileSuspensions } from "./abuse/reconcile";
 import { reconcileBillingAndUsage } from "./billing/usage-sync";
 import { syncReleaseBroadcasts } from "./broadcasts";
+import { maintainServiceAnalytics } from "./admin/analytics";
 
 import { Tendril } from "./tendril";
 export { Tendril };
@@ -26,6 +27,6 @@ export default {
     return route(req, env, ctx);
   },
   scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(Promise.all([reconcileSuspensions(env), reconcileBillingAndUsage(env), syncReleaseBroadcasts(env, { force: true })]));
+    ctx.waitUntil(Promise.all([reconcileSuspensions(env), reconcileBillingAndUsage(env), syncReleaseBroadcasts(env, { force: true }), maintainServiceAnalytics(env)]));
   },
 } satisfies ExportedHandler<Env>;

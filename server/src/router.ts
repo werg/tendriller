@@ -13,6 +13,7 @@ import { dashboard } from "./accounts/keys";
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
 import { adminAccount, adminPage, appealPage } from "./abuse/admin";
+import { ADMIN_API_PREFIX, routeAdministration } from "./admin/routes";
 import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, getChangelog, listActiveBroadcasts, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast, validAudienceParam } from "./broadcasts";
 import { budgetWebhook } from "./budget";
 import { polarWebhookRoute, pricingPage, routeBillingDashboard, selfHostPage } from "./billing/routes";
@@ -123,6 +124,11 @@ async function routeInner(
     pageHost = { id: label, customHost: null, hostKind: "id" };
   }
   if (!onPagesDomain && url.origin !== new URL(publicBase(env)).origin) return errorResponse(404, "not_found", "Not found");
+
+  if (path === ADMIN_API_PREFIX || path.startsWith(`${ADMIN_API_PREFIX}/`)) {
+    if (onPagesDomain) return errorResponse(404, "not_found");
+    return routeAdministration(req, env, url);
+  }
 
   if (publicRead && rootRuntime) return runtimeAsset(env, req, rootRuntime[1], rootRuntime[2], context);
   if (publicRead && rootBrand) {
