@@ -39,15 +39,16 @@ function usesPlainHttpLoopback(env: Env): boolean {
   return base.startsWith("http://") && isLoopbackOrigin(base);
 }
 
-/** CSP `form-action` for sign-in pages so Chromium allows the post-login redirect to the page subdomain. */
-export function authFormAction(env: Env): string {
+/** CSP `form-action` for sign-in pages so Chromium allows the post-login redirect to the page subdomain or verified custom domain. */
+export function authFormAction(env: Env, customOrigin?: string | null): string {
+  const extra = customOrigin ? ` ${customOrigin}` : "";
   const domain = (env.PAGE_BASE_DOMAIN ?? "").trim().toLowerCase();
-  if (!domain || /[^a-z0-9.-]/.test(domain)) return "'self'";
+  if (!domain || /[^a-z0-9.-]/.test(domain)) return `'self'${extra}`;
   if (usesPlainHttpLoopback(env)) {
     const port = new URL(publicBase(env)).port;
-    return `'self' http://*.${domain}${port ? `:${port}` : ""}`;
+    return `'self' http://*.${domain}${port ? `:${port}` : ""}${extra}`;
   }
-  return `'self' https://*.${domain}`;
+  return `'self' https://*.${domain}${extra}`;
 }
 
 export function sessionCookieHeader(value: string, maxAgeSeconds: number, env: Env): string {

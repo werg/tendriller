@@ -9,6 +9,8 @@ import { planSpec } from "../billing/plans";
 import { emojiIconSvg, iconSvg } from "../inject";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "../pwa";
 import { avatar, icon, servicePage } from "./ui";
+import { brandBase, brandMark } from "../brand";
+import { cleanupPageCustomDomain } from "../custom-domains";
 import { accountGrants, createJoinCode, listAccountAgents, revokeAgent, setAgentGrant, setPagePrimaryAgent } from "../agents";
 import { listActiveBroadcasts } from "../broadcasts";
 
@@ -63,6 +65,7 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
     if (form.get("confirm") !== id) return errorResponse(400, "confirmation_required", "Confirm deleting this page");
     if (!await owned(id)) return errorResponse(404, "not_found");
+    await cleanupPageCustomDomain(env, id);
     const response = await pageFetch(id, "delete", { method: "POST" });
     if (!response.ok) return errorResponse(502, "unavailable", "The page could not be deleted. Try again.");
     return new Response(null, { status: 303, headers: { Location: "/dashboard?deleted=1", "Cache-Control": "no-store" } });
@@ -220,9 +223,60 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     const planName = ent ? planSpec(ent.plan).name : "Free";
     const nearResident = limits.residents !== null && residents >= Math.ceil(limits.residents * 0.8) && residents < limits.residents;
     const atResident = limits.residents !== null && residents >= limits.residents;
+    const atPages = limits.pages !== null && tendrils.results.length >= limits.pages;
+    const nearPages = limits.pages !== null && tendrils.results.length >= Math.ceil(limits.pages * 0.8) && !atPages;
     const nearMcp = ent && ent.quotas.mcpCallsPerMonth !== null && ent.usage.mcpCalls >= Math.ceil(ent.quotas.mcpCallsPerMonth * 0.8);
-    const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace · ${escape(planName)}</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/dashboard/billing">${icon("sliders")} Plan &amp; usage</a><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="#agents">${icon("bot")} Agents</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
-      <div class="stats"><div class="stat"><strong>${tendrils.results.length}${limits.pages !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.pages}</small>` : ""}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}${limits.residents !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.residents}</small>` : ""}</strong><span>resident pages</span></div><div class="stat"><strong>${agents.length}${ent?.quotas.agents !== null && ent?.quotas.agents !== undefined ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${ent.quotas.agents}</small>` : ""}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
+    const canUpgrade = !ent?.unlimitedHost && (ent?.plan === "free" || ent?.plan === "pro" || !ent);
+    const isPro = ent?.plan === "pro";
+    const upgradeWarn = atResident || atPages || nearResident || nearPages;
+    const pagePct = limits.pages ? Math.min(100, Math.round((tendrils.results.length / limits.pages) * 100)) : 0;
+    const upgradeTitle = isPro ? "Need room for a bigger team?" : "Want more tendrils?";
+    const upgradeCopy = isPro
+      ? `Upgrade to Team for 1,000 pages, 100 GB storage, team sign-in, and custom page domains.`
+      : `Upgrade to Pro for 100 pages, 20 GB storage, group video calls, and 15,000 hosted MCP calls/mo.`;
+    const upgradeCta = isPro ? "Upgrade to Team — $39/mo" : "Upgrade to Pro — $12/mo";
+    const upgradeMeter = limits.pages !== null
+      ? `<div class="upgrade-meter"><div class="upgrade-meter-row"><span><strong>${tendrils.results.length}</strong> / ${limits.pages} pages</span><span>${escape(planName)} plan</span></div><div class="upgrade-bar" aria-hidden="true"><span style="width:${pagePct}%"></span></div></div>`
+      : "";
+    const upgradeCard = canUpgrade
+      ? (cards.length > 0
+          ? `<article class="card upgrade-card${upgradeWarn ? " warn" : ""}"><div class="stack-sm"><div class="upgrade-card-head"><span class="upgrade-card-ico">${icon("sparkles")}</span><div><h3>${upgradeTitle}</h3><p>${upgradeCopy}</p></div></div>${upgradeMeter}</div><div class="actions tight"><a class="button sm" href="/dashboard/billing">${icon("sparkles")} ${upgradeCta}</a><a class="button ghost sm" href="/pricing">Compare plans</a></div></article>`
+          : `<article class="card upgrade-card inline-strip${upgradeWarn ? " warn" : ""}"><div class="upgrade-card-head"><span class="upgrade-card-ico">${icon("sparkles")}</span><div><h3>${upgradeTitle}</h3><p>${upgradeCopy}</p></div></div><div class="actions tight"><a class="button sm" href="/dashboard/billing">${icon("sparkles")} ${upgradeCta}</a><a class="button ghost sm" href="/pricing">Compare plans</a></div></article>`)
+      : "";
+    const dashboardCss = `
+.upgrade-card{
+  display:flex;flex-direction:column;justify-content:space-between;gap:.95rem;
+  border:1.5px dashed color-mix(in srgb,var(--green) 48%,var(--line));
+  background:linear-gradient(155deg,color-mix(in srgb,var(--green-soft) 55%,var(--surface)) 0%,var(--surface) 72%);
+  box-shadow:var(--shadow-sm);
+}
+.upgrade-card.warn{
+  border-color:color-mix(in srgb,var(--orange) 58%,var(--line));
+  background:linear-gradient(155deg,color-mix(in srgb,var(--orange-soft) 55%,var(--surface)) 0%,var(--surface) 72%);
+}
+.upgrade-card-head{display:flex;align-items:flex-start;gap:.8rem}
+.upgrade-card-ico{
+  display:grid;place-items:center;flex:none;width:2.55rem;height:2.55rem;border-radius:12px;
+  background:var(--green-soft);color:var(--green);
+}
+.upgrade-card.warn .upgrade-card-ico{background:var(--orange-soft);color:var(--orange)}
+.upgrade-card h3{font-size:1.05rem;margin:0 0 .2rem}
+.upgrade-card p{font-size:.86rem;line-height:1.48;color:var(--muted);margin:0}
+.upgrade-meter{display:grid;gap:.35rem}
+.upgrade-meter-row{display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap;font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.upgrade-meter-row strong{color:var(--ink)}
+.upgrade-bar{height:.38rem;border-radius:999px;background:var(--line);overflow:hidden}
+.upgrade-bar>span{display:block;height:100%;border-radius:999px;background:var(--green)}
+.upgrade-card.warn .upgrade-bar>span{background:var(--orange)}
+.upgrade-card.inline-strip{
+  grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem 1.5rem;
+  padding:1.15rem 1.35rem;
+}
+.upgrade-card.inline-strip .upgrade-card-head{flex:1 1 20rem;align-items:center}
+.upgrade-card.inline-strip .actions{margin-top:0}
+`;
+    const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace · ${escape(planName)}</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/dashboard/billing">${icon("sliders")} Plan &amp; usage</a><a class="button secondary sm" href="/dashboard/domains">${icon("link")} Domains</a><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="#agents">${icon("bot")} Agents</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
+      <div class="stats"><div class="stat"><strong>${tendrils.results.length}${limits.pages !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.pages}</small>` : ""}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${agents.length}${ent?.quotas.agents !== null && ent?.quotas.agents !== undefined ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${ent.quotas.agents}</small>` : ""}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.published}</strong><span>published</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
       ${url.searchParams.get("agent_revoked") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Agent revoked. Its credential stopped working and its page connections were closed.</span></p>` : ""}
       ${url.searchParams.get("deleted") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Page deleted. Its files, links and agent access were removed.</span></p>` : ""}
       ${ent?.inGracePeriod ? `<p class="notice warn">${icon("shield")}<span>Your subscription renewal failed; your ${escape(planName)} plan remains active during your 7-day grace period. <a href="/dashboard/billing">Update payment method</a>.</span></p>` : ""}
@@ -232,8 +286,8 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
       ${noticeList}
       <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Bring in an agent</span><h2 id="new-title">Build a new page with any agent</h2><p>Paste this into Claude Code, Codex, Meta Muse, OpenClaw, Hermes, or any other agent, then describe what you want.</p></div><a class="button secondary sm" href="/agents">Platform guides</a></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("terminal")} Agent instructions</a></div></div><p class="fine" style="margin-top:.75rem">To let one of your agents maintain an <em>existing</em> page, add it under <a href="#agents">Your agents</a>, then check it in that page’s <strong>Add people &amp; devices → An agent</strong>.</p></section>
       ${agentsSection}
-      <div class="section-title"><h2>Your pages</h2><span class="badge">${tendrils.results.length}</span><span class="rule"></span></div>
-      <div class="grid">${cards.join("") || empty}</div>
+      <div class="section-title"><h2>Your pages</h2><span class="badge">${tendrils.results.length}${limits.pages !== null ? ` / ${limits.pages}` : ""}</span><span class="rule"></span>${canUpgrade ? `<a class="button ghost sm" href="/dashboard/billing">${icon("sparkles")} Upgrade plan</a>` : ""}</div>
+      <div class="grid">${cards.join("") || empty}${upgradeCard}</div>
       <details class="disclosure"><summary>Account settings</summary><div class="disclosure-body stack"><div class="actions tight"><a class="button secondary sm" href="/dashboard/export">Download account data</a><a class="button secondary sm" href="/auth/link/github">Link GitHub</a><a class="button secondary sm" href="/auth/link/google">Link Google</a><a class="button secondary sm" href="/oauth/connections">OAuth clients</a></div><div class="card danger"><h3>Delete account</h3><p class="muted" style="font-size:.88rem">Permanently deletes your pages and stored files.</p><form method="post" action="/dashboard/delete"><div class="field"><label class="field-label" for="delete-confirm">Type DELETE to confirm</label><input id="delete-confirm" name="confirm" required></div><div class="actions"><button class="danger sm">Delete account</button></div></form></div></div></details>
       ${dialog}
       <dialog class="sheet" id="delete-dialog" aria-labelledby="delete-title" style="width:min(30rem,calc(100vw - 1.5rem))"><form method="post" id="delete-form"><div class="sheet-head"><div><span class="eyebrow" style="color:var(--danger)">${icon("trash")} Delete page</span><h2 id="delete-title">…</h2></div><button class="ghost sm icon-button" type="button" data-close aria-label="Close">${icon("x")}</button></div><div class="sheet-body"><p>This permanently deletes the page, its published files, invite links and agent credentials. People and devices lose access immediately. This cannot be undone.</p>${limits.residents !== null ? `<p class="fine" id="delete-resident" hidden>This frees one of your ${limits.residents} resident page slots.</p>` : `<p class="fine" id="delete-resident" hidden></p>`}<input type="hidden" name="confirm" id="delete-confirm-id"><div class="actions"><button class="danger" type="submit">${icon("trash")} Delete permanently</button><button class="secondary" type="button" data-close>Cancel</button></div></div></form></dialog>`;
@@ -270,7 +324,12 @@ dialog.addEventListener('change',async e=>{const box=e.target.closest('[data-gra
   const opener=document.querySelector('[data-add="'+current+'"]'),set=new Set((opener?.dataset.agents||'').split(' ').filter(Boolean));want?set.add(box.value):set.delete(box.value);if(opener)opener.dataset.agents=[...set].join(' ')}
  catch(err){box.checked=!want;status.textContent=err.message}finally{box.disabled=false}});
 })()</script>`;
-    const response = servicePage("Dashboard", body, script, 200, { wide: true, remoteImages: true });
+    const response = servicePage("Dashboard", body, script, 200, {
+      wide: true,
+      remoteImages: true,
+      brand: brandMark(brandBase, "/?home=1"),
+      extraCss: dashboardCss,
+    });
     response.headers.set("Server-Timing", `session;dur=${sessionMs.toFixed(1)}, account-db;dur=${dbMs.toFixed(1)}, page-summaries;dur=${(performance.now() - started - sessionMs - dbMs).toFixed(1)}, total;dur=${(performance.now() - started).toFixed(1)}`);
     return response;
   }

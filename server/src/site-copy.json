@@ -249,11 +249,11 @@
     },
     "pricing": {
       "eyebrow": "Pricing & zero lock-in",
-      "title": "Free to start. Pay only for cloud media & scale.",
-      "lead": "Local offline writes, direct peer-to-peer WebRTC, and running `tendril agent run` on your own machine stay free and unlimited. Upgrade when you want multi-party SFU video, TURN across strict firewalls, Team OAuth tie-ins, or hosted MCP at scale — or self-host free forever.",
+      "title": "Room to grow",
+      "lead": "Give your agent a live page, work offline, and share with friends at no cost. Step up only when you want group video calls, team sign-in, or hosted MCP at scale — or self-host anytime.",
       "ctaPricing": "Full pricing & limits",
       "ctaSelfHost": "5-minute self-host guide",
-      "guarantee": "**No surprise bills or data lock-in:** hitting a quota never locks or deletes your data, pay-as-you-go is off by default with an editable (or removable) monthly spend cap, and you can move workspaces to your own Cloudflare account anytime.",
+      "guarantee": "**No surprise bills or data lock-in:** hitting a limit never locks or deletes your data, pay-as-you-go is off by default with an editable monthly spend cap, and you can move your workspace to your own Cloudflare account anytime.",
       "tiers": [
         {
           "eyebrow": "Hobby",
@@ -264,9 +264,9 @@
           "cta": "Get started free",
           "href": "/auth",
           "points": [
-            "**20** active pages · **5** resident pages · **5** agents",
-            "**Unlimited** direct P2P sync & local `tendril agent run`",
-            "**2 GB/mo** TURN trial + **5 hrs/mo** relay fallback",
+            "**20** pages · **1 GB** storage · **5** agents",
+            "**Unlimited** direct peer-to-peer sync & offline work",
+            "**2 GB/mo** firewall-friendly calls + **5 hrs/mo** cloud relay",
             "Hosted MCP: **1** page · **250** calls/mo"
           ]
         },
@@ -279,10 +279,10 @@
           "cta": "See Pro details",
           "href": "/pricing",
           "points": [
-            "**100** pages · **25** residents · **2 GB** R2 · **15** agents",
-            "**100 GB/mo** Cloudflare SFU video & TURN (up to 12 peers, 720p)",
+            "**100** pages · **20 GB** storage · **25** agents",
+            "**100 GB/mo** group video calls (up to 12 people, 720p)",
             "**15,000** hosted MCP calls/mo across **25** pages",
-            "**Host-brokered personal OAuth** & opt-in PAYG"
+            "**Cloud-connected accounts** & optional pay-as-you-go"
           ]
         },
         {
@@ -294,10 +294,10 @@
           "cta": "See Team details",
           "href": "/pricing",
           "points": [
-            "**500** pages · **100** residents · **20 GB** R2 · **50** agents",
-            "**500 GB/mo** SFU & TURN (up to 50 peers, 1080p + screen)",
-            "**Team OAuth tie-ins:** GitHub Org & Google Workspace admission + auto-offboarding",
-            "**100k** MCP calls/mo · custom page domain"
+            "**1,000** pages · **100 GB** storage · **100** agents",
+            "**500 GB/mo** group video calls (up to 50 people, 1080p + screen)",
+            "**Team sign-in:** GitHub Org & Google Workspace groups + auto-offboarding",
+            "**100k** hosted MCP calls/mo · custom page domains"
           ]
         },
         {
@@ -309,10 +309,10 @@
           "cta": "Self-host in 5 min",
           "href": "/self-host",
           "points": [
-            "**Unlimited** pages, residents, agents, guests & hosted MCP",
-            "Single Cloudflare Worker + D1 + R2 + Durable Objects",
-            "Plug in your own CF Realtime keys (**1 TB/mo** free from CF)",
-            "Export & migrate existing workspaces cleanly anytime"
+            "**Unlimited** pages, storage, agents & guests",
+            "One-command deploy to your own Cloudflare account",
+            "Bring your own Cloudflare video keys (**1 TB/mo** free)",
+            "Export & move existing workspaces cleanly anytime"
           ]
         }
       ]

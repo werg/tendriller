@@ -9,6 +9,7 @@ import { listVersions, pointers } from './files';
 import { escapeHtml } from './inject';
 import { HttpError, readBody } from './http';
 import { avatar, icon, renderShell } from './accounts/ui';
+import { cleanupPageCustomDomain } from './custom-domains';
 import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy } from './owner-review';
 import { listAccountAgents, type AccountAgent } from './agents';
 import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from './agent-grants';
@@ -71,6 +72,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
       if ((form.get('confirm') ?? '').trim() !== 'DELETE') throw new HttpError(400, 'confirmation_required', 'Type DELETE to confirm deleting this page.');
       await commit(() => {});
       const dashboardUrl = text(t.env.PUBLIC_BASE + '/dashboard?deleted=1');
+      await cleanupPageCustomDomain(t.env, t.tid);
       await t.destroy();
       const deletedHtml = renderShell({
         title: 'Page deleted',
@@ -78,6 +80,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
         brandBase: base + '_tendril/brand/',
         nav: `<a class="nav-link" href="${dashboardUrl}">Dashboard</a>`,
         footer: '',
+        themeToggle: false,
         body: `<section class="card"><span class="eyebrow">Deleted</span><h1>This page was deleted</h1><p class="lead">Its files, invite links and agent credentials were removed.</p><div class="actions"><a class="button" href="${dashboardUrl}">Back to dashboard</a></div></section>`,
       });
       return new Response(deletedHtml,
@@ -229,6 +232,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     brand: brandMark(brandPrefix, base),
     brandBase: brandPrefix,
     nav: `<nav>${owner ? `<a class="nav-link" href="#add">${icon('user-plus')} Add people</a>` : ''}<a class="nav-link" href="${text(base)}">Return to page</a></nav>`,
+    themeToggle: false,
     body: `<div class="page-head"><div class="page-head-row"><div style="display:flex;gap:.9rem;align-items:center">${avatar(rawName, t.tid)}<div><span class="eyebrow">Page settings</span><h1 style="margin:0">${pageName}</h1>${facts}</div></div><span class="badge${owner ? ' ok' : ''}">${text(principal.role)} access</span></div></div>${message ? `<p class="notice" role="status">${icon('check')}<span>${text(message)}</span></p>` : ''}${owner ? ownerSections : '<section class="card"><p>Only the signed-in owner can manage agent connections, guest access, and publications.</p></section>'}`,
     footer: `<span>Tendriller</span><span class="foot-links"><a href="${text(t.env.PUBLIC_BASE + '/dashboard')}">Account dashboard</a><a href="${text(base + '_tendril/report')}">Report this page</a></span>`,
   });

@@ -61,6 +61,10 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
   if (path === '/auth/test') return routeTestAccess(req, env);
   if (path === "/auth" && req.method === "GET") {
     const returnTo = safeReturn(url.searchParams.get("return_to"));
+    if (!url.searchParams.get("error")) {
+      const existing = await serviceSession(req, env, true);
+      if (existing) return redirect(existing.suspendedAt ? "/dashboard" : returnTo);
+    }
     return servicePage("Sign in", signInBody(returnTo, false, env, url.searchParams.get("error")), "", 200, { formAction: authFormAction(env) });
   }
   const localResp = await routeLocalAuth(req, env, path, {

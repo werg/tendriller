@@ -147,6 +147,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       brandBase: base + "_tendril/brand/",
       nav: `<a class="nav-link" href="${base}">Return to page</a>`,
       footer: "",
+      themeToggle: false,
       body: `<section class="card"><span class="eyebrow">Safety</span><h1>Report this page</h1><p class="lead">Tell us what is wrong with this page.</p><form method="post"><div class="field"><label class="field-label" for="report-reason">Details</label><textarea id="report-reason" name="reason" required maxlength="2000" placeholder="Describe the issue…"></textarea></div><div class="actions"><button type="submit">Send report</button></div></form></section>`,
     });
     return new Response(html,

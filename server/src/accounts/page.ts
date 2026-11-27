@@ -4,6 +4,7 @@ import type { Env } from "../env";
 import { errorResponse } from "../http";
 import { PAGE_KEY_RE, sha256Hex, TENDRIL_ID_RE } from "../ids";
 import { pageUrl } from "../urls";
+import { isActiveCustomDomainForPage } from "../custom-domains";
 import { serviceSession } from "./auth";
 import { authFormAction, pageSessionCookieHeader, renderAuthControls } from "./local-auth";
 import { servicePage } from "./ui";
@@ -23,8 +24,8 @@ function redirect(location: string, cookie?: string): Response {
   if (cookie) headers.set("Set-Cookie", cookie);
   return new Response(null, { status: 303, headers });
 }
-function html(body: string, status = 200, script = "", env?: Env): Response {
-  const response = servicePage("Open page", body, script, status, env ? { formAction: authFormAction(env) } : undefined);
+function html(body: string, status = 200, script = "", env?: Env, customOrigin?: string | null): Response {
+  const response = servicePage("Open page", body, script, status, env ? { formAction: authFormAction(env, customOrigin) } : undefined);
   return response;
 }
 
@@ -45,11 +46,12 @@ async function claimFailure(req: Request, env: Env, response: Response, accountI
   return html(`<section class="card stack-sm"><span class="eyebrow">Account quota</span><h1>Your account is at its page limit</h1><p>${explanation} <strong>Your local app and device data stay safe and untouched</strong> — this prepared page simply hasn't been claimed yet.</p><p class="muted">Choose whichever path fits best: free up a slot in your dashboard, upgrade for higher limits, or run your own unlimited Tendriller host on Cloudflare.</p><div class="actions"><a class="button" href="/dashboard">Manage pages</a><a class="button secondary" href="/dashboard/billing">Upgrade plan</a><a class="button ghost" href="/self-host">Self-host on Cloudflare</a></div></section>`, response.status);
 }
 
-async function issuePageCode(env: Env, id: string, key: string, accountId: string, role: "owner" | "guest" = "owner"): Promise<Response> {
+async function issuePageCode(env: Env, id: string, key: string, accountId: string, role: "owner" | "guest" = "owner", customHost?: string | null): Promise<Response> {
   const code = randomToken();
   await env.ACCOUNTS!.prepare("INSERT INTO page_codes (hash, tendril_id, account_id, role, key_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(await sha256Hex(code), id, accountId, role, await sha256Hex(key), Date.now() + 60_000).run();
-  return redirect(`${pageUrl(env, id, key)}_tendril/auth/session?code=${encodeURIComponent(code)}`);
+  const baseUrl = customHost ? `https://${customHost}/s/${key}/` : pageUrl(env, id, key);
+  return redirect(`${baseUrl}_tendril/auth/session?code=${encodeURIComponent(code)}`);
 }
 
 async function verifiedIdentities(env: Env, accountId: string): Promise<{ provider: string; login: string; emails: string[] }[]> {
@@ -75,20 +77,22 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   const info = await infoRes.json() as { claimed: boolean; expected: string | null; role: string };
   if (info.role !== "owner" && info.role !== "guest") return errorResponse(403, "forbidden", "This link cannot be opened");
   const session = await serviceSession(req, env);
-  const returnTo = `/auth/page?tendril=${id}&key=${key}`;
+  const customHost = await isActiveCustomDomainForPage(env, url.searchParams.get("host"), id);
+  const customOrigin = customHost ? `https://${customHost}` : null;
+  const returnTo = `/auth/page?tendril=${id}&key=${key}${customHost ? `&host=${encodeURIComponent(customHost)}` : ""}`;
   if (!session) {
     if (req.method !== "GET") return errorResponse(401, "unauthorized", "Sign in first");
     const expectedLine = info.expected
       ? `${info.role === "guest" ? "Invited email" : "Intended owner"}: ${escape(info.expected)}`
       : "Keep this invitation link private.";
-    return html(`<section class="card"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p class="lead">Sign in to open it.</p><p class="muted">${expectedLine}</p>${renderAuthControls(env, returnTo, { expectedEmail: info.expected })}</section><p class="muted" style="margin-top:1rem;font-size:.86rem">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials. By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`, 200, "", env);
+    return html(`<section class="card"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p class="lead">Sign in to open it.</p><p class="muted">${expectedLine}</p>${renderAuthControls(env, returnTo, { expectedEmail: info.expected })}</section><p class="muted" style="margin-top:1rem;font-size:.86rem">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials. By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`, 200, "", env, customOrigin);
   }
   const deleting = await env.ACCOUNTS.prepare("SELECT deleting_at FROM accounts WHERE id = ?").bind(session.accountId)
     .first<{ deleting_at: number | null }>();
   if (deleting?.deleting_at) return errorResponse(403, "account_deleting", "Account deletion is in progress");
   const owner = await env.ACCOUNTS.prepare("SELECT owner_account FROM tendrils WHERE id = ?").bind(id).first<{ owner_account: string | null }>();
   if (!owner) return errorResponse(404, "not_found", "No such tendril");
-  if (info.role === "owner" && owner.owner_account === session.accountId) return issuePageCode(env, id, key, session.accountId);
+  if (info.role === "owner" && owner.owner_account === session.accountId) return issuePageCode(env, id, key, session.accountId, "owner", customHost);
   if (info.role === "owner" && owner.owner_account) {
     const orgClaim = await stub(env, id).fetch(claimRequest(id, key, "org", {
       method: "POST",
@@ -97,7 +101,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     }));
     if (orgClaim.ok) {
       await orgClaim.body?.cancel();
-      return issuePageCode(env, id, key, session.accountId, "guest");
+      return issuePageCode(env, id, key, session.accountId, "guest", customHost);
     }
     await orgClaim.body?.cancel();
     return html("<section class=\"card\"><h1>This page belongs to another account</h1></section>", 403);
@@ -111,7 +115,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
       body: JSON.stringify({ account_id: session.accountId, identities }),
     }));
     if (!claim.ok) return claimFailure(req, env, claim, session.accountId);
-    return issuePageCode(env, id, key, session.accountId);
+    return issuePageCode(env, id, key, session.accountId, "owner", customHost);
   }
   const identities = await verifiedIdentities(env, session.accountId);
   const claim = await stub(env, id).fetch(claimRequest(id, key, "guest", {
@@ -121,7 +125,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     if (claim.status === 403) {
       const err = await claim.clone().json().catch(() => null) as { error?: { code?: string } } | null;
       if (err?.error?.code === "wrong_guest_email") {
-        return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>This invitation is for another email address</h1><p class="lead">${info.expected ? `This link is restricted to <code>${escape(info.expected)}</code>.` : "Your signed-in account does not match the invited email address."} Sign in with a matching account to join.</p>${renderAuthControls(env, returnTo, { expectedEmail: info.expected, compact: true })}</section>`, 403, "", env);
+        return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>This invitation is for another email address</h1><p class="lead">${info.expected ? `This link is restricted to <code>${escape(info.expected)}</code>.` : "Your signed-in account does not match the invited email address."} Sign in with a matching account to join.</p>${renderAuthControls(env, returnTo, { expectedEmail: info.expected, compact: true })}</section>`, 403, "", env, customOrigin);
       }
       if (err?.error?.code === "declined") {
         return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>Invitation unavailable</h1><p class="lead">This invitation was revoked.</p></section>`, 403);
@@ -129,10 +133,10 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     }
     return claim;
   }
-  return issuePageCode(env, id, key, session.accountId, "guest");
+  return issuePageCode(env, id, key, session.accountId, "guest", customHost);
 }
 
-export async function redeemPageCode(env: Env, id: string, key: string, code: string): Promise<Response> {
+export async function redeemPageCode(env: Env, id: string, key: string, code: string, customHost?: string | null): Promise<Response> {
   if (!env.ACCOUNTS) return errorResponse(503, "unavailable", "Accounts database is not configured");
   const row = await env.ACCOUNTS.prepare(`DELETE FROM page_codes WHERE hash = ? AND tendril_id = ? AND key_hash = ? AND expires_at > ?
     RETURNING account_id, role`).bind(await sha256Hex(code), id, await sha256Hex(key), Date.now())
@@ -144,5 +148,6 @@ export async function redeemPageCode(env: Env, id: string, key: string, code: st
     body: JSON.stringify({ account_id: row.account_id, role: row.role, hash: await sha256Hex(token) }),
   }));
   if (!res.ok) return res;
-  return redirect(pageUrl(env, id, key), pageSessionCookieHeader(token, env));
+  const target = customHost ? `https://${customHost}/s/${key}/` : pageUrl(env, id, key);
+  return redirect(target, pageSessionCookieHeader(token, env));
 }
