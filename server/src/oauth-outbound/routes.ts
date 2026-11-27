@@ -18,6 +18,7 @@ import { publicBase } from '../urls';
 import { base64url } from '../accounts/oauth-support';
 import { escapeHtml } from '../inject';
 import { servicePage } from '../accounts/ui';
+import { copyAttrs, renderCopyText, SITE_COPY } from '../site-copy';
 import {
   assertSafeExternalHost,
   assertSafeExternalUrl,
@@ -1061,6 +1062,90 @@ export async function handlePageConnections(t: Tendril, req: Request, sub: strin
   throw new HttpError(404, 'not_found');
 }
 
+export interface ExternalConnectionsView {
+  baseOrigin: string;
+  connections: Array<{ id: string; provider: string; label: string; tier: OutboundTier; custody: OutboundCustody; scopes: string[]; external_label: string | null }>;
+  groups: Array<{ provider: string; group_id: string; display_name: string | null }>;
+  customProviders: Array<{ slug: string; name: string; allowed_hosts: string[] }>;
+  builtinProviders: Array<{ id: string; name: string; configured: boolean }>;
+  editable?: boolean;
+}
+
+export function renderExternalConnectionsSectionHtml(view: ExternalConnectionsView): { html: string; script: string } {
+  const editable = Boolean(view.editable);
+  const ext = SITE_COPY.connections.external;
+  const orgs = SITE_COPY.connections.orgs;
+  const vars = { base: view.baseOrigin };
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const txt = (t: string) => renderCopyText(t, vars);
+
+  const connHtml = view.connections.length
+    ? `<ul class="list" id="ext-conn-list">${view.connections.map(conn => {
+        const scopes = conn.scopes.slice(0, 6).join(', ');
+        const tierLabel = conn.tier === 'agent-held' ? 'Zero-trust (agent-held)' : `Wrapped proxy (${conn.custody})`;
+        const who = conn.external_label ? ` · ${escapeHtml(conn.external_label)}` : '';
+        return `<li class="list-item" data-conn-id="${escapeHtml(conn.id)}"><div class="list-item-main"><div class="list-item-title">${escapeHtml(conn.label || conn.provider)} <span class="badge">${escapeHtml(conn.provider)}</span> <span class="badge ok">${escapeHtml(tierLabel)}</span></div><p class="list-item-sub">${scopes ? `Scopes: ${escapeHtml(scopes)}` : 'Default scopes'}${who}</p></div><button class="button sm danger" type="button" data-revoke-conn="${escapeHtml(conn.id)}">Revoke</button></li>`;
+      }).join('')}</ul>`
+    : `<p class="empty"${c('connections.external.empty', ext.empty)}>${txt(ext.empty)}</p>`;
+
+  const groupHtml = view.groups.length
+    ? `<ul class="list">${view.groups.map(g =>
+        `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><code>${escapeHtml(g.group_id)}</code> <span class="badge">${escapeHtml(g.provider)}</span></div><p class="list-item-sub">${escapeHtml(g.display_name || g.group_id)}</p></div></li>`,
+      ).join('')}</ul>`
+    : `<p class="empty"${c('connections.orgs.empty', orgs.empty)}>${txt(orgs.empty)}</p>`;
+
+  const providerPills = view.builtinProviders.map(p =>
+    `<span class="badge${p.configured ? ' ok' : ''}" title="${escapeHtml(p.configured ? `${p.name} ready on this host` : `${p.name} not configured on host — use BYO custom:<slug>`)}">${escapeHtml(p.id)}${p.configured ? ' ✓' : ''}</span>`,
+  ).join(' ');
+
+  const customHtml = `<div style="margin-top:1.25rem">
+    <h3 style="margin:.25rem 0 .5rem"${c('connections.external.builtinTitle', ext.builtinTitle)}>${txt(ext.builtinTitle)}</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.9rem">${providerPills}</div>
+    ${view.customProviders.length
+      ? `<h3 style="margin:.5rem 0 .5rem">Custom BYO OAuth 2.1 providers</h3><ul class="list" id="byo-provider-list">${view.customProviders.map(p =>
+          `<li class="list-item" data-byo-slug="${escapeHtml(p.slug)}"><div class="list-item-main"><div class="list-item-title">${escapeHtml(p.name)} <code>custom:${escapeHtml(p.slug)}</code></div><p class="list-item-sub">Allowed hosts: ${escapeHtml(p.allowed_hosts.join(', '))}</p></div><button class="button sm danger" type="button" data-delete-byo="${escapeHtml(p.slug)}">Remove</button></li>`,
+        ).join('')}</ul>`
+      : ''}
+    <details style="margin-top:.9rem">
+      <summary style="cursor:pointer;font-weight:600"><span${c('connections.external.byoSummary', ext.byoSummary)}>${txt(ext.byoSummary)}</span></summary>
+      <p class="muted" style="margin:.5rem 0 .75rem"${c('connections.external.byoLead', ext.byoLead)}>${txt(ext.byoLead)}</p>
+      <form id="byo-provider-form" style="display:grid;gap:.6rem;max-width:34rem">
+        <label style="display:grid;gap:.2rem"><span class="muted">Slug (lowercase, e.g. <code>my-linear</code>)</span><input name="slug" required pattern="[a-z0-9][a-z0-9_-]{1,31}" placeholder="my-linear"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Display name</span><input name="name" required placeholder="My Linear"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Authorize URL (HTTPS)</span><input name="authorize_url" type="url" required placeholder="https://linear.app/oauth/authorize"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Token URL (HTTPS)</span><input name="token_url" type="url" required placeholder="https://api.linear.app/oauth/token"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Client ID</span><input name="client_id" required></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Client Secret (optional for PKCE public clients; encrypted at rest)</span><input name="client_secret" type="password" autocomplete="new-password"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Allowed API hosts (comma-separated HTTPS hostnames)</span><input name="allowed_hosts" required placeholder="api.linear.app"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Default scopes (comma-separated, optional)</span><input name="default_scopes" placeholder="read,write"></label>
+        <div class="actions tight"><button class="button sm" type="submit">Save custom provider</button><span class="muted" id="byo-status" aria-live="polite"></span></div>
+      </form>
+    </details>
+  </div>`;
+
+  const html = `
+<section class="card" style="margin-top:1.5rem">
+  <span class="eyebrow"${c('connections.external.eyebrow', ext.eyebrow)}>${txt(ext.eyebrow)}</span>
+  <h2${c('connections.external.title', ext.title)}>${txt(ext.title)}</h2>
+  <p class="lead"${c('connections.external.lead', ext.lead)}>${txt(ext.lead)}</p>
+  ${connHtml}
+  ${customHtml}
+</section>
+<section class="card" style="margin-top:1.5rem">
+  <span class="eyebrow"${c('connections.orgs.eyebrow', orgs.eyebrow)}>${txt(orgs.eyebrow)}</span>
+  <h2${c('connections.orgs.title', orgs.title)}>${txt(orgs.title)}</h2>
+  <p class="lead"${c('connections.orgs.lead', orgs.lead)}>${txt(orgs.lead)}</p>
+  ${groupHtml}
+  <div class="actions" style="margin-top:1rem">
+    <a class="button secondary sm" href="/auth/github?org_sync=1&return_to=%2Fconnections">Sync GitHub Orgs &amp; Teams</a>
+  </div>
+</section>`;
+
+  const script = `(function(){document.querySelectorAll('[data-revoke-conn]').forEach(function(btn){btn.addEventListener('click',function(){var id=btn.getAttribute('data-revoke-conn');if(!id)return;btn.disabled=true;btn.textContent='Revoking...';fetch('/api/account/connections/'+encodeURIComponent(id)+'/revoke',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-conn-id]');if(li)li.remove();}).catch(function(){btn.disabled=false;btn.textContent='Revoke';});});});document.querySelectorAll('[data-delete-byo]').forEach(function(btn){btn.addEventListener('click',function(){var slug=btn.getAttribute('data-delete-byo');if(!slug)return;btn.disabled=true;fetch('/api/account/oauth/providers/'+encodeURIComponent(slug),{method:'DELETE',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-byo-slug]');if(li)li.remove();}).catch(function(){btn.disabled=false;});});});var form=document.getElementById('byo-provider-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var st=document.getElementById('byo-status');var fd=new FormData(form);var split=function(v){return String(v||'').split(',').map(function(s){return s.trim();}).filter(Boolean);};var body={slug:fd.get('slug'),name:fd.get('name'),authorize_url:fd.get('authorize_url'),token_url:fd.get('token_url'),client_id:fd.get('client_id'),allowed_hosts:split(fd.get('allowed_hosts')),default_scopes:split(fd.get('default_scopes'))};var sec=String(fd.get('client_secret')||'').trim();if(sec)body.client_secret=sec;if(st)st.textContent='Saving...';fetch('/api/account/oauth/providers',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error((d&&d.error&&d.error.message)||'Save failed');return d;});}).then(function(){if(st)st.textContent='Saved! Reloading...';location.reload();}).catch(function(err){if(st)st.textContent=err.message||'Save failed';});});}})();`;
+
+  return { html, script };
+}
+
 /**
  * Render the account-level External OAuth Connections, BYO Providers, and Verified Org/Team Groups
  * section embedded in `/connections` (Item 9).
@@ -1080,72 +1165,25 @@ export async function renderAccountExternalConnectionsSection(
       .bind(accountId).all<{ slug: string; name: string; allowed_hosts: string }>().catch(() => ({ results: [] })),
   ]);
 
-  const connHtml = conns.results.length
-    ? `<ul class="list" id="ext-conn-list">${conns.results.map(c => {
-        const scopes = (JSON.parse(c.scopes || '[]') as string[]).slice(0, 6).join(', ');
-        const tierLabel = c.tier === 'agent-held' ? 'Zero-trust (agent-held)' : `Wrapped proxy (${c.custody})`;
-        const who = c.external_label ? ` · ${escapeHtml(c.external_label)}` : '';
-        return `<li class="list-item" data-conn-id="${escapeHtml(c.id)}"><div class="list-item-main"><div class="list-item-title">${escapeHtml(c.label || c.provider)} <span class="badge">${escapeHtml(c.provider)}</span> <span class="badge ok">${escapeHtml(tierLabel)}</span></div><p class="list-item-sub">${scopes ? `Scopes: ${escapeHtml(scopes)}` : 'Default scopes'}${who}</p></div><button class="button sm danger" type="button" data-revoke-conn="${escapeHtml(c.id)}">Revoke</button></li>`;
-      }).join('')}</ul>`
-    : '<p class="empty">No external OAuth connections yet. Ask your agent in chat to connect GitHub, Google, Linear, Notion, Slack, Spotify, or any custom OAuth 2.1 provider.</p>';
-
-  const groupHtml = groups.results.length
-    ? `<ul class="list">${groups.results.map(g =>
-        `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><code>${escapeHtml(g.group_id)}</code> <span class="badge">${escapeHtml(g.provider)}</span></div><p class="list-item-sub">${escapeHtml(g.display_name || g.group_id)}</p></div></li>`,
-      ).join('')}</ul>`
-    : '<p class="empty">No verified organization or team memberships cached yet. Sign in with a Google Workspace account or sync your GitHub orgs & teams below.</p>';
-
-  const builtinViews = listBuiltinProviderViews(env);
-  const providerPills = builtinViews.map(p =>
-    `<span class="badge${p.configured ? ' ok' : ''}" title="${escapeHtml(p.configured ? `${p.name} ready on this host` : `${p.name} not configured on host — use BYO custom:<slug>`)}">${escapeHtml(p.id)}${p.configured ? ' ✓' : ''}</span>`,
-  ).join(' ');
-
-  const customHtml = `<div style="margin-top:1.25rem">
-    <h3 style="margin:.25rem 0 .5rem">Built-in provider availability</h3>
-    <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.9rem">${providerPills}</div>
-    ${customProviders.results.length
-      ? `<h3 style="margin:.5rem 0 .5rem">Custom BYO OAuth 2.1 providers</h3><ul class="list" id="byo-provider-list">${customProviders.results.map(p =>
-          `<li class="list-item" data-byo-slug="${escapeHtml(p.slug)}"><div class="list-item-main"><div class="list-item-title">${escapeHtml(p.name)} <code>custom:${escapeHtml(p.slug)}</code></div><p class="list-item-sub">Allowed hosts: ${escapeHtml((JSON.parse(p.allowed_hosts || '[]') as string[]).join(', '))}</p></div><button class="button sm danger" type="button" data-delete-byo="${escapeHtml(p.slug)}">Remove</button></li>`,
-        ).join('')}</ul>`
-      : ''}
-    <details style="margin-top:.9rem">
-      <summary style="cursor:pointer;font-weight:600">Register a custom OAuth 2.1 provider (BYO)</summary>
-      <p class="muted" style="margin:.5rem 0 .75rem">Use your own OAuth app for any provider not enabled on this host. Set its redirect URI to <code>${escapeHtml(publicBase(env))}/auth/outbound/callback/custom%3A&lt;slug&gt;</code>.</p>
-      <form id="byo-provider-form" style="display:grid;gap:.6rem;max-width:34rem">
-        <label style="display:grid;gap:.2rem"><span class="muted">Slug (lowercase, e.g. <code>my-linear</code>)</span><input name="slug" required pattern="[a-z0-9][a-z0-9_-]{1,31}" placeholder="my-linear"></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Display name</span><input name="name" required placeholder="My Linear"></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Authorize URL (HTTPS)</span><input name="authorize_url" type="url" required placeholder="https://linear.app/oauth/authorize"></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Token URL (HTTPS)</span><input name="token_url" type="url" required placeholder="https://api.linear.app/oauth/token"></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Client ID</span><input name="client_id" required></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Client Secret (optional for PKCE public clients; encrypted at rest)</span><input name="client_secret" type="password" autocomplete="new-password"></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Allowed API hosts (comma-separated HTTPS hostnames)</span><input name="allowed_hosts" required placeholder="api.linear.app"></label>
-        <label style="display:grid;gap:.2rem"><span class="muted">Default scopes (comma-separated, optional)</span><input name="default_scopes" placeholder="read,write"></label>
-        <div class="actions tight"><button class="button sm" type="submit">Save custom provider</button><span class="muted" id="byo-status" aria-live="polite"></span></div>
-      </form>
-    </details>
-  </div>`;
-
-  const html = `
-<section class="card" style="margin-top:1.5rem">
-  <span class="eyebrow">External OAuth</span>
-  <h2>External app &amp; agent connections</h2>
-  <p class="lead">Third-party connections never store plaintext OAuth tokens on Tendriller (X25519 sealed to your agent or AES-256-GCM wrapped under your key).</p>
-  ${connHtml}
-  ${customHtml}
-</section>
-<section class="card" style="margin-top:1.5rem">
-  <span class="eyebrow">Org &amp; Team Access</span>
-  <h2>Verified organizations &amp; teams</h2>
-  <p class="lead">Used to admit you seamlessly to team pages configured with GitHub Organization/Team or Google Workspace domain rules.</p>
-  ${groupHtml}
-  <div class="actions" style="margin-top:1rem">
-    <a class="button secondary sm" href="/auth/github?org_sync=1&return_to=%2Fconnections">Sync GitHub Orgs &amp; Teams</a>
-  </div>
-</section>`;
-
-  const script = `(function(){document.querySelectorAll('[data-revoke-conn]').forEach(function(btn){btn.addEventListener('click',function(){var id=btn.getAttribute('data-revoke-conn');if(!id)return;btn.disabled=true;btn.textContent='Revoking...';fetch('/api/account/connections/'+encodeURIComponent(id)+'/revoke',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-conn-id]');if(li)li.remove();}).catch(function(){btn.disabled=false;btn.textContent='Revoke';});});});document.querySelectorAll('[data-delete-byo]').forEach(function(btn){btn.addEventListener('click',function(){var slug=btn.getAttribute('data-delete-byo');if(!slug)return;btn.disabled=true;fetch('/api/account/oauth/providers/'+encodeURIComponent(slug),{method:'DELETE',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-byo-slug]');if(li)li.remove();}).catch(function(){btn.disabled=false;});});});var form=document.getElementById('byo-provider-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var st=document.getElementById('byo-status');var fd=new FormData(form);var split=function(v){return String(v||'').split(',').map(function(s){return s.trim();}).filter(Boolean);};var body={slug:fd.get('slug'),name:fd.get('name'),authorize_url:fd.get('authorize_url'),token_url:fd.get('token_url'),client_id:fd.get('client_id'),allowed_hosts:split(fd.get('allowed_hosts')),default_scopes:split(fd.get('default_scopes'))};var sec=String(fd.get('client_secret')||'').trim();if(sec)body.client_secret=sec;if(st)st.textContent='Saving...';fetch('/api/account/oauth/providers',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error((d&&d.error&&d.error.message)||'Save failed');return d;});}).then(function(){if(st)st.textContent='Saved! Reloading...';location.reload();}).catch(function(err){if(st)st.textContent=err.message||'Save failed';});});}})();`;
-
-  return { html, script };
+  return renderExternalConnectionsSectionHtml({
+    baseOrigin: publicBase(env),
+    connections: conns.results.map(r => ({
+      id: r.id,
+      provider: r.provider,
+      label: r.label,
+      tier: r.tier,
+      custody: r.custody,
+      scopes: JSON.parse(r.scopes || '[]') as string[],
+      external_label: r.external_label,
+    })),
+    groups: groups.results,
+    customProviders: customProviders.results.map(p => ({
+      slug: p.slug,
+      name: p.name,
+      allowed_hosts: JSON.parse(p.allowed_hosts || '[]') as string[],
+    })),
+    builtinProviders: listBuiltinProviderViews(env).map(p => ({ id: p.id, name: p.name, configured: p.configured })),
+  });
 }
 
 /** Hosted MCP helper: list live OAuth providers + account's active external connections. */
