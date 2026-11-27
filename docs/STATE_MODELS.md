@@ -6,10 +6,14 @@ Every browser tab, Node 22.15+ agent, and opt-in Hosted MCP Worker runs the exac
 
 | Requirement | Start with |
 | --- | --- |
-| Relational tables, FTS5 full-text search, `sqlite-vec` vectors, atomic preconditions + rollback, write RLS, user-owned dynamic tables | Built-in `chronolog/sql` standard reducer (`templates/inventory/domain.mjs`) |
+| Relational tables, FTS5 full-text search, `sqlite-vec` vectors, atomic preconditions + rollback, write RLS, row stamping & audit logs, zero-copy branching (`forkSql`) | Built-in `chronolog/sql` standard reducer (`templates/inventory/domain.mjs`) + `shared/helpers/proposals.mjs` |
 | Local-first encrypted AI memory & hybrid search (FTS5 BM25 + `sqlite-vec` k-NN + RRF) | Built-in `chronolog/sql` + `shared/helpers/hybrid-memory.mjs` (`templates/knowledge/domain.mjs`) |
+| Collaborative prose/code co-editing, Kanban ordering, maps, sets, counters | Built-in `chronolog/text` (`collaborativeText`) and `chronolog/crdt` (`lwwMap`, `orSet`, `pnCounter`, `orderedList`) |
+| Double-entry accounting, expiring holds & offline agent spending quotas (Escrow CRDTs) | Built-in `chronolog/ledger` (`doubleEntryLedger`) + `shared/helpers/allowances.mjs` |
+| State machines, separation of duties, M-of-N approvals & AI Data PR queues | Built-in `chronolog/workflow` (`stateMachine`) + `shared/helpers/proposals.mjs` |
+| Content-addressed virtual filesystem with non-destructive conflict forks | Built-in `chronolog/fs` (`virtualFs`) backed by lazy `session.content` blobs |
 | Notes, messages, lightweight KV/document state, custom reducer logic | Pure JS/JSON ES Module reducer (`templates/notes/domain.mjs`) |
-| Multiple independent SQL databases in one app | Bind multiple topics to `{ module: 'chronolog/sql' }` — each gets its own hash-addressed `dbRoot` |
+| Multiple independent SQL databases or zero-trust cross-page SQL `JOIN`s | Bind multiple topics to `{ module: 'chronolog/sql' }`; join across separately encrypted local pages with `queryFederatedSql` |
 | Custom governance / permissions (host-attested, M-of-N multisig, open public writers, custom capability reducer) | Override `$permissions` in genesis (`chronolog/permissions` or custom module answering `ctx.query('$permissions', ...)`) |
 | Multi-participant tasks, claims, fan-in | Built-in collaboration reducer (`@tendriller/core/collaboration`) |
 | Disposable presence, typing, telemetry | Ephemeral [signals](APPLICATION_SIGNALS.md) (anchored to `stateRoot`) |

@@ -13,9 +13,9 @@
  */
 import quickJsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import {
-  bytesToHex, decodeRecord, encodeRecord, parseFinalitySchedule, recordDigest,
-  validateApplicationDescription, applicationDescriptionDigest, verifyFinalityV2, verifyRecord,
-  type FinalityCheckpoint, type FinalityPolicyV2, type Signed,
+  bytesToHex, computeIncludedSetDigest, decodeRecord, encodeRecord, parseFinalitySchedule, policyScopeId, recordDigest,
+  signFinalityCheckpoint, validateApplicationDescription, applicationDescriptionDigest, verifyFinalityV2, verifyRecord,
+  type FinalityCheckpoint, type FinalityInclusionV2, type FinalityPolicyV2, type Signed,
 } from '@chronolog/authority';
 import {
   computeCasHash, ContentAddressedStore, decodeCasNode, decodeEncryptedEnvelope, decodeLogGenesis, decodeSignedOperation,
@@ -1375,4 +1375,130 @@ async function initializeGenesis(
     notifyDiscoveryWatchers(t);
   });
   return applicationMetadata(t);
+}
+
+/**
+ * Opt-in Blind Host Notary: when a page's $finality schedule explicitly selects this host's
+ * Ed25519 attestation key as a `signed-frontier` signer, sign a strictly monotonic closed-time
+ * frontier checkpoint over opaque (opId, authorTimestampMs, author) metadata without ever
+ * inspecting encrypted payloads.
+ */
+export async function notarizeBlindFrontier(
+  t: Tendril,
+  principal: Principal,
+  options: {
+    readonly extraInclusions?: readonly { readonly opId: string; readonly authorTimestampMs: number | string; readonly author: string }[];
+  } = {},
+): Promise<{
+  readonly checkpoint: AuthorityRecord;
+  readonly closedThroughMs: string;
+  readonly includedCount: number;
+}> {
+  const state = await readControlState(t);
+  if (!state) throw new HttpError(409, 'application_uninitialized');
+  const hostIdentity = await loadHostAttestationIdentity(t.env);
+  if (!hostIdentity) throw new HttpError(503, 'notary_unconfigured');
+
+  const schedule = parseFinalitySchedule(state.finality);
+  let activeEntry: (typeof schedule)[number] | null = null;
+  for (const entry of schedule) {
+    if (entry.policy.kind === 'signed-frontier' && entry.policy.signer === hostIdentity.publicKey) {
+      activeEntry = entry;
+    }
+  }
+  if (!activeEntry) {
+    throw new HttpError(403, 'notary_not_scheduled', 'This page has not opted into the host signed-frontier notary in $finality');
+  }
+
+  const scopeId = await policyScopeId(state.logId, activeEntry);
+  const existingRows = listCheckpointRows(t);
+  const existingCps = existingRows.map(r => decodeRecord<FinalityCheckpoint>(r.raw));
+  const priorClosed = existingCps.reduce((max, cp) => (cp.payload.closedThroughMs > max ? cp.payload.closedThroughMs : max), -1n);
+
+  const nowMs = BigInt(Date.now());
+  let closedThroughMs = nowMs > activeEntry.effectiveAfterMs ? nowMs : activeEntry.effectiveAfterMs;
+  if (priorClosed >= closedThroughMs) closedThroughMs = priorClosed + 1n;
+
+  const inclusionsByOpId = new Map<string, FinalityInclusionV2>();
+  // Preserve every previously included op so checkpoints remain strictly cumulative & non-equivocating
+  for (const cp of existingCps) {
+    for (const inc of cp.payload.inclusions) {
+      if (!inclusionsByOpId.has(inc.opId)) inclusionsByOpId.set(inc.opId, inc);
+    }
+  }
+  for (const row of listPublicOpRows(t)) {
+    const ts = BigInt(row.author_ts);
+    if (ts <= closedThroughMs && !inclusionsByOpId.has(row.op_id)) {
+      inclusionsByOpId.set(row.op_id, { opId: row.op_id, authorTimestampMs: ts, author: row.author });
+    }
+  }
+  // Include public mailbox ops (zero plaintext ever read)
+  for (const row of t.db.all<{ op_id: string; author: string; author_ts: number }>(
+    'SELECT op_id, author, author_ts FROM v2_mailbox_ops WHERE author_ts <= ?',
+    Number(closedThroughMs),
+  )) {
+    const ts = BigInt(row.author_ts);
+    if (!inclusionsByOpId.has(row.op_id)) {
+      inclusionsByOpId.set(row.op_id, { opId: row.op_id, authorTimestampMs: ts, author: row.author });
+    }
+  }
+  // Allow admitted members to declare opaque (opId, authorTimestampMs, author) tuples for encrypted envelopes
+  // already stored in v2_mailbox_envelopes (still 100% blind to plaintext)
+  if (Array.isArray(options.extraInclusions)) {
+    const HEX32 = /^[0-9a-f]{64}$/u;
+    for (const item of options.extraInclusions.slice(0, 256)) {
+      if (!item || !HEX32.test(item.opId) || !HEX32.test(item.author)) continue;
+      let ts: bigint;
+      try { ts = BigInt(item.authorTimestampMs); } catch { continue; }
+      if (ts <= closedThroughMs && !inclusionsByOpId.has(item.opId)) {
+        inclusionsByOpId.set(item.opId, { opId: item.opId, authorTimestampMs: ts, author: item.author });
+      }
+    }
+  }
+
+  const inclusions = [...inclusionsByOpId.values()].sort((a, b) =>
+    a.authorTimestampMs !== b.authorTimestampMs
+      ? (a.authorTimestampMs < b.authorTimestampMs ? -1 : 1)
+      : (a.opId < b.opId ? -1 : 1),
+  );
+  const payload = {
+    logId: state.logId,
+    policyScopeId: scopeId,
+    closedThroughMs,
+    includedSetDigest: computeIncludedSetDigest(inclusions.map(i => i.opId)),
+    historyDigest: state.historyDigest,
+    stateRoot: state.stateRoot,
+    inclusions,
+  };
+  const sig = await signFinalityCheckpoint(payload, hostIdentity);
+  const checkpoint: FinalityCheckpoint = {
+    payload,
+    attestation: { kind: 'signatures', signatures: [sig] },
+  };
+  const verified = await verifyFinalityV2({
+    logId: state.logId,
+    schedule,
+    checkpoints: [...existingCps, checkpoint],
+  });
+  if (verified.equivocationProofs.length > 0) {
+    throw new HttpError(500, 'notary_equivocation_guard');
+  }
+  const rawCp = encodeRecord(checkpoint);
+  await freshAuthorityAccess(t, principal);
+  t.transaction(() => {
+    authorityAccount(t, principal);
+    const copy = new Uint8Array(rawCp.byteLength); copy.set(rawCp);
+    t.db.run(
+      'INSERT OR REPLACE INTO v2_checkpoints(scope_id, closed_through, raw) VALUES(?, ?, ?)',
+      scopeId,
+      Number(closedThroughMs),
+      copy.buffer,
+    );
+  });
+  notifyDiscoveryWatchers(t);
+  return {
+    checkpoint: authorityRecord(rawCp),
+    closedThroughMs: closedThroughMs.toString(),
+    includedCount: inclusions.length,
+  };
 }

@@ -7,7 +7,7 @@ import { authorityRecord, authorityRecordBytes } from '../../contract/authority.
 import { participantIdentity, requireAgentScope, type Principal } from './access';
 import {
   authorityAccount, authorityError, decodeRequestAuthorityRecord, freshAuthorityAccess,
-  readControlState, syncControlState, withAuthorityMutation,
+  notarizeBlindFrontier, readControlState, syncControlState, withAuthorityMutation,
 } from './authority';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
@@ -17,12 +17,13 @@ export const PARTICIPANT_REQUEST_DOMAIN = 'chronolog/participant-sync/v2';
 export interface ParticipantSyncPayload {
   readonly applicationId: string;
   readonly requestId: string;
-  readonly action: 'control.sync';
+  readonly action: 'control.sync' | 'notary.checkpoint';
   readonly publicOps?: unknown[];
   readonly casNodes?: unknown[];
   readonly checkpoints?: unknown[];
   readonly knownOpIds?: string[];
   readonly knownCasHashes?: string[];
+  readonly extraInclusions?: readonly { readonly opId: string; readonly authorTimestampMs: number | string; readonly author: string }[];
 }
 
 const pending = new WeakMap<Tendril, Map<string, number>>();
@@ -40,7 +41,7 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
     const request = decodeRequestAuthorityRecord<Signed<ParticipantSyncPayload>>(await readJson(req, 4 * 1024 * 1024));
     if (!request || typeof request !== 'object' || Array.isArray(request) || !request.payload || typeof request.payload !== 'object' ||
       Object.keys(request).some(key => !['payload', 'signer', 'signature'].includes(key)) ||
-      request.payload.action !== 'control.sync') {
+      (request.payload.action !== 'control.sync' && request.payload.action !== 'notary.checkpoint')) {
       throw new HttpError(400, 'participant_fields_invalid');
     }
     await verifyRecord(PARTICIPANT_REQUEST_DOMAIN, request);
@@ -53,6 +54,18 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
     if (request.payload.applicationId !== state.logId) throw new HttpError(400, 'participant_application_mismatch');
     if (!state.permissions.openReaders && !state.permissions.readers.has(request.signer)) {
       throw new HttpError(403, 'participant_member_required');
+    }
+
+    if (request.payload.action === 'notary.checkpoint') {
+      const notarized = await withAuthorityMutation(t, () => notarizeBlindFrontier(t, principal, {
+        extraInclusions: request.payload.extraInclusions,
+      }));
+      await freshAuthorityAccess(t, principal);
+      return json(authorityRecord(encodeRecord({
+        requestId: request.payload.requestId,
+        applicationId: state.logId,
+        ...notarized,
+      })));
     }
 
     const synced = await withAuthorityMutation(t, () => syncControlState(t, principal, {

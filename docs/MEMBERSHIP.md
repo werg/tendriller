@@ -45,6 +45,13 @@ CLI shortcuts:
 - `tendril permissions multisig-propose '{"kind":"setMember","member":{...}}' --operation ms-1`
 - `tendril permissions multisig-approve <proposalId> --operation ms-2`
 
+## Scoped passes, private compartments & social recovery
+
+- **Scoped & expiring passes (`scopes`, `expiresAtMs`):** `session.admitMember` accepts optional `scopes` (e.g., `['drafts:write']`) and `expiresAtMs`. Expiring passes automatically stop working across all peers once `op.authorTimestampMs > expiresAtMs` with zero admin online; `chronolog/sql` enforces `requiredScope` directly against `$permissions`.
+- **Private compartments (`session.createCompartment`):** Create named key rings in `$keys` (such as `'admins'` or `'personal:<pk>'`) bound to specific topics so one shared page can hold confidential tabs with real cryptographic isolation.
+- **Threshold social recovery (`setupTrustedContacts` / `mountRecoveryPanel`):** Configure `M`-of-`N` trusted backup contacts (`session.setupSocialRecovery`). Backup contacts hold only HPKE-sealed Shamir shares and **cannot decrypt page content**. A replacement device requests recovery with a 6-digit match code; once `M` contacts approve, the device reconstructs the recovery vault and restores all epoch and compartment keys.
+- **Quiet public-page anti-spam (`openMembers`):** Admins can enable `requireVouch: true` (`setAntiSpam`) and vouch for trusted authors (`vouchAuthor`) without captchas or forced accounts.
+
 ## Row-level application permissions (`chronolog/rls`)
 
 Cryptographic membership (`reader`, `writer`, `administrator`, `publisher`, `finalizer`) is independent of fine-grained SQL permissions. Inside any `chronolog:sqlite` reducer, install expressive Postgres-style write RLS triggers with `applyRls(db, policies)` using `actor()`, `op_id()`, and `op_time()` — and optionally let non-admin writers create, index, alter, and drop their own tables via `ensureTableOwners` / `getOwnedTables` / `recordTableOwners`! See [State models](STATE_MODELS.md).
