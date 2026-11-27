@@ -73,6 +73,8 @@ export function createAuthorityClient(dispatch, { applicationId } = {}) {
       ...options,
     }),
     admissions: options => request('peers/enrollment', { method: 'POST', body: { action: 'admissions' }, ...options }),
+    submitJoinRequest: (reqRecord, options) => request('peers/enrollment', { method: 'POST', body: { action: 'join_request', request: reqRecord }, ...options }),
+    joinRequests: options => request('peers/enrollment', { method: 'POST', body: { action: 'join_requests' }, ...options }),
     publication: id => request('peers/publication', { method: 'POST', body: { action: 'read', ...(id === undefined ? {} : { id }) } }),
     publish: (op, assets) => request('peers/publication', { method: 'POST', body: { action: 'publish', op, assets } }),
     groups: options => request('groups', options),

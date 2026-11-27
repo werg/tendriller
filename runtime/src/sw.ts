@@ -240,11 +240,51 @@ async function navigate(event: FetchEvent): Promise<Response> {
   return saved;
 }
 
+async function recoverAssetFromClients(
+  url: string,
+  expected: { sha256?: string; type?: string; path?: string; publicationId?: string },
+): Promise<Response | null> {
+  try {
+    const clients = await sw.clients.matchAll({ type: "window", includeUncontrolled: false });
+    for (const client of clients) {
+      if (!client.url.startsWith(SCOPE)) continue;
+      const result = await new Promise<{ ok?: boolean; bytes?: ArrayBuffer; type?: string } | null>(resolve => {
+        const channel = new MessageChannel();
+        const timer = setTimeout(() => { channel.port1.close(); resolve(null); }, 4000);
+        channel.port1.onmessage = ev => {
+          clearTimeout(timer);
+          channel.port1.close();
+          resolve(ev.data && typeof ev.data === "object" ? ev.data : null);
+        };
+        try {
+          client.postMessage({ t: "p2p_asset_request", url, ...expected }, [channel.port2]);
+        } catch {
+          clearTimeout(timer);
+          channel.port1.close();
+          resolve(null);
+        }
+      });
+      if (!result?.ok || !(result.bytes instanceof ArrayBuffer)) continue;
+      const res = new Response(result.bytes, {
+        status: 200,
+        headers: {
+          "Content-Type": result.type || expected.type || "application/octet-stream",
+          "X-Tendril-Source": "p2p",
+        },
+      });
+      if (expected.sha256 && await digest(res) !== expected.sha256) continue;
+      return res;
+    }
+  } catch { /* best-effort P2P fallback */ }
+  return null;
+}
+
 async function staticAsset(event: FetchEvent): Promise<Response> {
   const url = event.request.url;
   const meta = await readRegistry();
   const ids = [meta.clients[event.clientId], meta.latest, ...Object.keys(meta.publications)].filter((id): id is string => !!id);
   const resources: { cache: Cache; asset: RuntimeResource }[] = [];
+  let matchedPubAsset: { cache: Cache; publicationId: string; asset: PublicationAsset } | null = null;
   for (const id of new Set(ids)) {
     const publication = meta.publications[id];
     if (!publication) continue;
@@ -253,6 +293,10 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
     if (url.startsWith(pageBase)) {
       const hit = await cache.match(url);
       if (hit && !noStore(hit)) return hit;
+      if (!matchedPubAsset) {
+        const asset = publication.assets.find(a => absolute(encodePublicationPath(a.path), pageBase) === url);
+        if (asset) matchedPubAsset = { cache, publicationId: id, asset };
+      }
     }
     const runtimeBase = bases.find(base => url.startsWith(base));
     if (runtimeBase) {
@@ -285,9 +329,31 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
     await Promise.all(resources.map(({ cache }) => cache.put(url, response!.clone())));
     return response;
   }
-  // Undeclared, query-modified and live URLs are network-only. A page publication
-  // must declare the full dependency graph to gain durable offline behavior.
-  return fetch(event.request);
+  // Try host first; on 404/410 (pruned historical publication asset) or offline failure,
+  // attempt SHA-256-verified P2P recovery from active page clients before failing.
+  let networkResponse: Response | null = null;
+  let networkError: unknown = null;
+  try {
+    networkResponse = await fetch(event.request);
+    if (networkResponse.ok || (networkResponse.status !== 404 && networkResponse.status !== 410)) {
+      return networkResponse;
+    }
+  } catch (err) { networkError = err; }
+  const pubMatch = /\/_publications\/([A-Za-z0-9_-]+)\/(.*)$/.exec(new URL(url).pathname);
+  if (matchedPubAsset || pubMatch) {
+    const recovered = await recoverAssetFromClients(url, {
+      sha256: matchedPubAsset?.asset.sha256,
+      type: matchedPubAsset?.asset.type,
+      path: matchedPubAsset?.asset.path ?? (pubMatch ? decodeURIComponent(pubMatch[2]) : undefined),
+      publicationId: matchedPubAsset?.publicationId ?? pubMatch?.[1],
+    });
+    if (recovered) {
+      if (matchedPubAsset) await matchedPubAsset.cache.put(url, recovered.clone()).catch(() => {});
+      return recovered;
+    }
+  }
+  if (networkResponse) return networkResponse;
+  throw networkError;
 }
 
 async function sweepShareInbox(): Promise<void> {

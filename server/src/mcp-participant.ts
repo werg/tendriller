@@ -25,9 +25,11 @@ import { addActivity } from './activity';
 import { notifyRosterChanged, pageAgents, reconcilePrimaryAgent, validAgentBio, validAgentHandle } from './agent-grants';
 import { selectedApplication } from './application';
 import {
-  listCheckpointRows, listPublicCasRows, listPublicOpRows, readStoredGenesisBytes,
+  listCheckpointRows, listMailboxEnvelopeRows, listMailboxPublicCasRows, listMailboxPublicOpRows,
+  listPublicCasRows, listPublicOpRows, readStoredGenesisBytes,
   reconcileHostEffects, readControlState,
 } from './authority';
+import { notifyDiscoveryWatchers } from './discovery';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { base64url } from './accounts/oauth-support';
 import {
@@ -61,9 +63,9 @@ interface McpCapabilities {
 }
 
 const DEFAULT_CAPABILITIES: McpCapabilities = { read: true, write: true, queries: null, commands: null };
-const ENVELOPE_PREFIX = 'envelope/';
 const PRIV_CAS_PREFIX = 'priv-cas/';
 const HOSTED_REQUESTS_PREFIX = 'hosted-requests/';
+const SNAPSHOT_PREFIX = 'snapshot/';
 
 function validateSchemaInput(schema: any, value: unknown): string | null {
   if (!schema || typeof schema !== 'object') return null;
@@ -146,14 +148,6 @@ function prefixUpperBound(prefix: string): string {
   return prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
 }
 
-function listEnvelopeRows(t: Tendril): Array<{ k: string; v: Uint8Array }> {
-  return t.db.all<{ k: string; v: ArrayBuffer | Uint8Array }>(
-    'SELECT k, v FROM mcp_store WHERE k >= ? AND k < ? ORDER BY k',
-    ENVELOPE_PREFIX,
-    prefixUpperBound(ENVELOPE_PREFIX),
-  ).map(row => ({ k: row.k, v: asBytes(row.v) }));
-}
-
 function listSealedPrivCasRows(t: Tendril, grantId: string): Array<{ hash: string; sealed: Uint8Array }> {
   const prefix = `${PRIV_CAS_PREFIX}${grantId}/`;
   return t.db.all<{ k: string; v: ArrayBuffer | Uint8Array }>(
@@ -164,7 +158,9 @@ function listSealedPrivCasRows(t: Tendril, grantId: string): Array<{ hash: strin
 }
 
 function mcpStoreBytes(t: Tendril): number {
-  return t.db.one<{ n: number }>('SELECT COALESCE(SUM(LENGTH(v)), 0) AS n FROM mcp_store')?.n ?? 0;
+  const storeBytes = t.db.one<{ n: number }>('SELECT COALESCE(SUM(LENGTH(v)), 0) AS n FROM mcp_store')?.n ?? 0;
+  const mailboxBytes = t.db.one<{ n: number }>('SELECT COALESCE(SUM(LENGTH(raw)), 0) AS n FROM v2_mailbox_envelopes')?.n ?? 0;
+  return storeBytes + mailboxBytes;
 }
 
 /** Browser-facing opt-in enrollment and encrypted envelope sync routes under `_tendril/mcp/*`. */
@@ -290,6 +286,7 @@ export async function handlePageMcp(t: Tendril, req: Request, sub: string, princ
       const privPrefix = `${PRIV_CAS_PREFIX}${grantId}/`;
       t.db.run('DELETE FROM mcp_store WHERE k >= ? AND k < ?', privPrefix, prefixUpperBound(privPrefix));
       t.db.run('DELETE FROM mcp_store WHERE k = ?', `${HOSTED_REQUESTS_PREFIX}${grantId}`);
+      t.db.run('DELETE FROM mcp_store WHERE k = ?', `${SNAPSHOT_PREFIX}${grantId}`);
       reconcilePrimaryAgent(t);
       addActivity(t, { kind: 'mcp_disconnect', summary: `Disconnected hosted MCP agent @${row.handle}`, by: `owner:${accountId}` });
       t.afterCommit(() => { notifyRosterChanged(t); notifySetupChanged(t); });
@@ -323,6 +320,7 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
   let currentStoreBytes = storeCap !== null ? mcpStoreBytes(t) : 0;
 
   let stored = 0;
+  const now = t.now();
   for (const item of incoming) {
     if (typeof item !== 'string' || item.length > 256 * 1024) throw new HttpError(400, 'invalid_envelope');
     const raw = unbase64url(item);
@@ -331,8 +329,7 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
     catch { throw new HttpError(400, 'invalid_envelope'); }
     if (bytesToHex(envelope.logId) !== logId) throw new HttpError(400, 'invalid_envelope_scope');
     const digest = bytesToHex(encryptedEnvelopeDigest(raw));
-    const key = ENVELOPE_PREFIX + digest;
-    const exists = t.db.one('SELECT 1 AS x FROM mcp_store WHERE k=?', key);
+    const exists = t.db.one('SELECT 1 AS x FROM v2_mailbox_envelopes WHERE digest=?', digest);
     if (!exists) {
       if (storeCap !== null && currentStoreBytes + raw.byteLength > storeCap) {
         throw quotaError({
@@ -349,19 +346,24 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
       }
       const copy = new Uint8Array(raw.byteLength);
       copy.set(raw);
-      t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', key, copy.buffer);
+      t.db.run(
+        'INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
+        digest, envelope.epoch, bytesToHex(envelope.author), copy.buffer, now,
+      );
       currentStoreBytes += copy.byteLength;
       stored++;
     }
     known.add(digest);
   }
-  if (stored > 0) notifyMcpSyncWatchers(t);
+  if (stored > 0) {
+    notifyMcpSyncWatchers(t);
+    notifyDiscoveryWatchers(t);
+  }
 
   const missing: Array<{ digest: string; envelopeBase64: string }> = [];
-  for (const row of listEnvelopeRows(t)) {
-    const digest = row.k.slice(ENVELOPE_PREFIX.length);
-    if (!known.has(digest)) {
-      missing.push({ digest, envelopeBase64: base64url(row.v) });
+  for (const row of listMailboxEnvelopeRows(t)) {
+    if (!known.has(row.digest)) {
+      missing.push({ digest: row.digest, envelopeBase64: base64url(row.raw) });
       if (missing.length >= 256) break;
     }
   }
@@ -413,7 +415,12 @@ async function withHostedSession<T>(
     create: true,
   });
 
-  const publicCas: SessionCasNode[] = listPublicCasRows(t).map(r => ({ hash: r.hash, bytes: r.bytes, partition: 'public' }));
+  const publicCasMap = new Map<string, SessionCasNode>();
+  for (const r of listPublicCasRows(t)) publicCasMap.set(r.hash, { hash: r.hash, bytes: r.bytes, partition: 'public' });
+  for (const r of listMailboxPublicCasRows(t)) {
+    if (!publicCasMap.has(r.hash)) publicCasMap.set(r.hash, { hash: r.hash, bytes: r.bytes, partition: 'public' });
+  }
+  const publicCas = [...publicCasMap.values()];
   const casContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}:cas`;
   const privCas: SessionCasNode[] = [];
   const hydratedPrivHashes = new Set<string>();
@@ -425,17 +432,25 @@ async function withHostedSession<T>(
     }
   }
 
-  const publicOps = listPublicOpRows(t).map(r => r.raw);
-  const existingPublicOpIds = new Set(listPublicOpRows(t).map(r => r.op_id));
-  const envelopeRows = listEnvelopeRows(t);
-  const hydratedEnvelopeDigests = new Set(envelopeRows.map(r => r.k.slice(ENVELOPE_PREFIX.length)));
+  const controlPublicOpRows = listPublicOpRows(t);
+  const mailboxPublicOpRows = listMailboxPublicOpRows(t);
+  const publicOps = [...controlPublicOpRows.map(r => r.raw), ...mailboxPublicOpRows.map(r => r.raw)];
+  const existingPublicOpIds = new Set(controlPublicOpRows.map(r => r.op_id));
+  const envelopeRows = listMailboxEnvelopeRows(t);
+  const hydratedEnvelopeDigests = new Set(envelopeRows.map(r => r.digest));
   const checkpoints = listCheckpointRows(t).map(r => decodeRecord<FinalityCheckpoint>(r.raw));
+
+  // Load cached epoch-AEAD-encrypted materialized snapshot for O(1) / suffix-only cold start.
+  const snapshotKey = `${SNAPSHOT_PREFIX}${row.grant_id}`;
+  const savedSnapRow = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', snapshotKey);
+  const materializedSnapshot = savedSnapRow ? asBytes(savedSnapRow.v) : undefined;
 
   const session = await createApplicationSession({
     device,
     genesis: genesisBytes,
     casNodes: [...publicCas, ...privCas],
     epochKeys,
+    ...(materializedSnapshot ? { materializedSnapshot } : {}),
     wasmModule: quickJsWasm,
     sqliteWasmModule: sqliteCasWasm,
   });
@@ -456,7 +471,7 @@ async function withHostedSession<T>(
     if (publicOps.length > 0 || envelopeRows.length > 0 || checkpoints.length > 0) {
       await session.mergeFacts({
         publicOps,
-        encryptedEnvelopes: envelopeRows.map(r => r.v),
+        encryptedEnvelopes: envelopeRows.map(r => r.raw),
         casNodes: [...publicCas, ...privCas],
         retentions: [],
         checkpoints,
@@ -465,6 +480,7 @@ async function withHostedSession<T>(
     return await work({ session, roster: pageAgents(t), requests, markRequestsDirty: () => { requestsDirty = true; } });
   } finally {
     let addedEnvelopes = 0;
+    const now = t.now();
     try {
       if (requestsDirty) {
         const sealedReq = await sealHostedRequests(material.signingSeedHex, requestsContext, new TextEncoder().encode(JSON.stringify(requests)));
@@ -476,9 +492,13 @@ async function withHostedSession<T>(
       for (const rawEnv of exported.encryptedEnvelopes) {
         const digest = bytesToHex(encryptedEnvelopeDigest(rawEnv));
         if (!hydratedEnvelopeDigests.has(digest)) {
+          const decodedEnv = decodeEncryptedEnvelope(rawEnv);
           const copy = new Uint8Array(rawEnv.byteLength);
           copy.set(rawEnv);
-          t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + digest, copy.buffer);
+          t.db.run(
+            'INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
+            digest, decodedEnv.epoch, bytesToHex(decodedEnv.author), copy.buffer, now,
+          );
           hydratedEnvelopeDigests.add(digest);
           addedEnvelopes++;
         }
@@ -492,13 +512,23 @@ async function withHostedSession<T>(
           hydratedPrivHashes.add(node.hash);
         }
       }
+      // Persist opaque epoch-AEAD-encrypted materialized snapshot so subsequent /mcp calls skip replay.
+      const nextSnap = await session.exportMaterializedSnapshot();
+      if (nextSnap && nextSnap.byteLength <= 1024 * 1024) {
+        const copy = new Uint8Array(nextSnap.byteLength);
+        copy.set(nextSnap);
+        t.db.run('INSERT OR REPLACE INTO mcp_store(k, v) VALUES(?, ?)', snapshotKey, copy.buffer);
+      }
       // Persist any new public control ops (if hosted MCP authored one, e.g. with admin rights).
       if (exported.publicOps.length > existingPublicOpIds.size) {
         const state = await readControlState(t);
         if (state) reconcileHostEffects(t, state);
       }
     } catch { /* Best-effort encrypted export */ }
-    if (addedEnvelopes > 0) notifyMcpSyncWatchers(t);
+    if (addedEnvelopes > 0) {
+      notifyMcpSyncWatchers(t);
+      notifyDiscoveryWatchers(t);
+    }
     try { await session.close(); } catch { /* ignore */ }
     epochKeys.clear();
   }

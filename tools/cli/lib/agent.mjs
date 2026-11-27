@@ -5,14 +5,24 @@ import { existsSync, watch as watchFiles } from 'node:fs';
 import { join } from 'node:path';
 import { evaluateBroadcastMatch, verifyBroadcastSignature } from '@tendriller/core';
 import { pullAgentConnections } from './connections.mjs';
+import { createAgentHealthTracker } from './health.mjs';
 import { acknowledgeWorkspaceBroadcast, detectWorkspaceVersions, readBroadcastState, saveBroadcastState } from './workspace.mjs';
 
 const PAGE_RETRY_MS = 1000, PAGE_MAX_RETRY_MS = 60_000;
 const safeCode = error => /^[A-Za-z0-9_]{1,96}$/u.test(error?.code ?? '') ? error.code : 'page_unavailable';
 
 /** Run until the signal aborts. `report` receives one JSON-safe object per event. */
-export async function runAgent(workspace, { signal, report = () => {}, openOwnerSupervisor } = {}) {
+export async function runAgent(workspace, { signal, report: rawReport = () => {}, openOwnerSupervisor } = {}) {
   signal?.throwIfAborted();
+  const health = createAgentHealthTracker({
+    label: `@${workspace.config.agent?.handle || 'agent'}`,
+    workspaceRoot: workspace.root,
+    healthFilePath: join(workspace.paths.agent, 'health.json'),
+  });
+  const report = value => {
+    try { health.observe(value); } catch {}
+    rawReport(value);
+  };
   const client = await workspace.client();
   const binding = await workspace.attachBinding({ create: true });
   const [{ createNativeWorkspaceSupervisor }, { mergeSessionChanges }] = await Promise.all([
@@ -263,6 +273,10 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
         definition: { id: owner.session.definition.id, version: owner.session.definition.version } });
       entry.stopParticipation = owner.participation?.onStatus?.(status => report({ page: id, slug: entry.slug, connection: status.phase, ...(status.error ? { error: status.error } : {}) }));
       entry.stopStatus = owner.session.onStatus(status => report({ page: id, slug: entry.slug, canAuthor: status.canAuthor, database: status.database }));
+      const { attachAgentContentPinner } = await import('@tendriller/core/publication-blobs').catch(() => ({}));
+      entry.contentPinner = typeof attachAgentContentPinner === 'function'
+        ? attachAgentContentPinner(owner.session, { signal: pageSignal })
+        : null;
       pageOf.set(owner.session.applicationId, { id, slug: entry.slug });
       changes.add(owner.session);
       await new Promise(resolve => {
@@ -278,7 +292,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     }
     if (entry.owner) changes.remove(entry.owner.session);
     if (stopping || pages.get(id) !== entry || pageSignal.aborted) return;
-    entry.stopParticipation?.(); entry.stopStatus?.();
+    entry.stopParticipation?.(); entry.stopStatus?.(); entry.contentPinner?.close();
     if (entry.owner) { try { if (!await supervisor.removePage(id)) await entry.owner.close(); } catch {} entry.owner = undefined; }
     const ms = Math.min(PAGE_MAX_RETRY_MS, PAGE_RETRY_MS * 2 ** Math.min(entry.failures++, 6));
     entry.state = 'retrying';
@@ -290,7 +304,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     if (!entry) return;
     pages.delete(id);
     clearTimeout(entry.retryTimer); entry.lifetime?.abort();
-    entry.stopParticipation?.(); entry.stopStatus?.();
+    entry.stopParticipation?.(); entry.stopStatus?.(); entry.contentPinner?.close();
     if (entry.owner) changes.remove(entry.owner.session);
     try { if (entry.owner && !await supervisor.removePage(id)) await entry.owner.close(); } catch {}
     report({ page: id, slug: entry.slug, state: 'closed', reason });
@@ -337,7 +351,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     await rescan({ remote: true });
     if (!signal?.aborted) await new Promise(resolve => signal?.addEventListener('abort', resolve, { once: true }));
   } finally {
-    stopping = true; clearTimeout(rescanTimer); clearInterval(broadcastPollTimer); watcher?.close();
+    stopping = true; health.stop(); clearTimeout(rescanTimer); clearInterval(broadcastPollTimer); watcher?.close();
     stopEvents(); stopBroadcasts(); stopStatus();
     await Promise.allSettled([...pages.keys()].map(id => closePage(id, 'stopping')));
     changes.close(); await changeReport;

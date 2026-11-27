@@ -20,24 +20,20 @@ export interface BlobCapableSession {
       readonly deduplicate?: boolean;
       readonly signal?: AbortSignal;
     }): Promise<{ readonly hash?: string; readonly id?: string; readonly bytes: number }>;
-    get?(target: string | { readonly hash: string; readonly bytes: number; readonly profile: 'chronolog-blob-v2'; readonly visibility: 'public' }, options?: {
+    get?(target: string | Record<string, unknown>, options?: {
       readonly expectedBytes?: number;
       readonly maxBytes?: number;
       readonly localOnly?: boolean;
       readonly cache?: boolean;
       readonly signal?: AbortSignal;
     }): Promise<Uint8Array | null>;
-    putBlob?(bytes: Uint8Array, options?: { readonly signal?: AbortSignal }): Promise<{ readonly hash: string; readonly bytes: number }>;
-    getBlob?(hash: string, options?: {
-      readonly expectedBytes?: number;
-      readonly maxBytes?: number;
-      readonly localOnly?: boolean;
-      readonly cache?: boolean;
-      readonly signal?: AbortSignal;
-    }): Promise<Uint8Array | null>;
-    hasBlob?(hash: string): Promise<boolean>;
-    deleteBlob?(hash: string): Promise<void>;
+    pin?(target: string | Record<string, unknown>): Promise<void>;
+    pruneCache?(options: { readonly maxBytes: number }): Promise<{ readonly evictedCount: number; readonly evictedBytes: number }>;
   };
+  topic?(name: string): unknown;
+  readEvents?(options?: { readonly limit?: number }): Promise<{ readonly events?: readonly { readonly payload: unknown }[] }>;
+  onChange?(listener: () => void): () => void;
+  onPeerLink?(listener: (event: { readonly type: string }) => void): () => void;
 }
 
 export interface RetainPublicationBlobsResult {
@@ -74,8 +70,8 @@ export interface RecoverPublicationResult {
 
 export function retainPublicationBlobs(
   session: BlobCapableSession | null | undefined,
-  assets: readonly { readonly hash: string; readonly bytes: Uint8Array | ArrayBuffer | string }[],
-  options?: { readonly signal?: AbortSignal },
+  assets: readonly { readonly hash: string; readonly bytes: Uint8Array | ArrayBuffer | string; readonly type?: string }[],
+  options?: { readonly pin?: boolean; readonly signal?: AbortSignal },
 ): Promise<RetainPublicationBlobsResult>;
 
 export function recoverPublicationAsset(
@@ -89,3 +85,8 @@ export function recoverPublication(
   publication: SignedPublicationLike,
   options?: RecoverPublicationAssetOptions,
 ): Promise<RecoverPublicationResult>;
+
+export function attachAgentContentPinner(
+  session: BlobCapableSession | null | undefined,
+  options?: { readonly maxBytes?: number; readonly maxRefsPerScan?: number; readonly signal?: AbortSignal },
+): Readonly<{ scanNow(): Promise<{ readonly pinned: number }>; close(): void }>;

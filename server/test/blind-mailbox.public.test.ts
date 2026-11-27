@@ -4,7 +4,9 @@ import sqliteCasWasm from '@chronolog/peer-session/sqlite-cas.wasm';
 import {
   bytesToHex,
   createApplicationSession,
+  encodeRecord,
   openApplicationDevice,
+  signRecord,
 } from '@chronolog/peer-session';
 import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
 import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
@@ -87,9 +89,11 @@ describe('Chronolog v2 blind store-and-forward mailbox & blockedAuthors moderati
       expect(pushBody.privateLog).toBe(true);
       expect(pushBody.addedEnvelopes).toBeGreaterThan(0);
 
-      // Verify host DO stores ZERO plaintext of the secret message
+      // Verify host DO stores ZERO plaintext of the secret message and ignores unencrypted private CAS pages
       const rawMailbox = await inDO(h.id, t => t.db.all<{ raw: ArrayBuffer }>('SELECT raw FROM v2_mailbox_envelopes'));
+      const rawPrivCas = await inDO(h.id, t => t.db.all<{ hash: string }>("SELECT hash FROM v2_mailbox_cas WHERE partition = 'private'"));
       expect(rawMailbox.length).toBeGreaterThan(0);
+      expect(rawPrivCas.length).toBe(0);
       const textDump = rawMailbox.map(r => new TextDecoder().decode(new Uint8Array(r.raw))).join('');
       expect(textDump).not.toContain('Secret async message');
 
@@ -206,5 +210,53 @@ describe('Chronolog v2 blind store-and-forward mailbox & blockedAuthors moderati
       await spam.close();
       await guest.close();
     }
+  });
+
+  it('accepts Ed25519-signed multisig join_request entries and filters admitted/blocked keys from join_requests', async () => {
+    const h = await create();
+    const signerA = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+    const candidate = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+    const wrapA = await deviceWrapKey(signerA.store);
+    const wrapCand = await deviceWrapKey(candidate.store);
+
+    const created = await createPageGenesis({
+      identity: signerA.identity,
+      wrapKey: wrapA.publicKey,
+      authority: { mode: 'multisig', signers: [signerA.identity.publicKey], threshold: 1 },
+      privateLog: true,
+      topics: { db: { module: 'chronolog/sql' } },
+    });
+
+    const initRes = await enrollReq(h, {
+      action: 'initialize',
+      genesis: authorityRecord(created.genesisBytes),
+      casNodes: created.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    });
+    expect(initRes.status).toBe(200);
+
+    const signedReq = await signRecord('tendriller-join-request-v1', {
+      applicationId: created.logId,
+      publicKey: candidate.identity.publicKey,
+      wrapKey: wrapCand.publicKey,
+      label: 'Alice phone',
+      requestedAt: Date.now(),
+    }, candidate.identity);
+
+    const postRes = await enrollReq(h, {
+      action: 'join_request',
+      request: authorityRecord(encodeRecord(signedReq)),
+    });
+    expect(postRes.status).toBe(200);
+    expect(await postRes.json()).toEqual({ accepted: true, count: 1 });
+
+    const listRes = await enrollReq(h, { action: 'join_requests' });
+    expect(listRes.status).toBe(200);
+    const list = await listRes.json() as { requests: Array<{ publicKey: string; wrapKey: string; label: string }> };
+    expect(list.requests).toHaveLength(1);
+    expect(list.requests[0]).toMatchObject({
+      publicKey: candidate.identity.publicKey,
+      wrapKey: wrapCand.publicKey,
+      label: 'Alice phone',
+    });
   });
 });

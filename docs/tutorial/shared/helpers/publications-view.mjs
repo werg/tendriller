@@ -1,5 +1,23 @@
 // Client-side `$publications` history inspector, P2P hash-recovery verifier, and signed rollback helper.
 
+/**
+ * Wire the page's Service Worker P2P asset-recovery callback so pruned historical
+ * publication assets (HTTP 404/410 from the host) transparently recover from connected
+ * Chronolog peers with SHA-256 verification.
+ */
+export function wireServiceWorkerP2pRecovery({ runtime = globalThis.window?.tendril, session } = {}) {
+  if (typeof runtime?.publication?.registerP2pAssetProvider !== 'function' || typeof session?.extensions?.call !== 'function') {
+    return () => {};
+  }
+  return runtime.publication.registerP2pAssetProvider(async req => {
+    try {
+      return await session.extensions.call('publication.recoverAsset', [req]);
+    } catch {
+      return null;
+    }
+  });
+}
+
 async function verifyReleaseFiles(session, files, { fetchHost } = {}) {
   try {
     const mod = await import('@tendriller/core/publication-blobs');

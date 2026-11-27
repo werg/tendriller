@@ -80,6 +80,15 @@ export interface HostMailboxSyncResponse {
   readonly addedCasNodes: number;
 }
 
+export interface HostJoinRequestEntry {
+  readonly publicKey: string;
+  readonly wrapKey: string;
+  readonly label: string;
+  readonly requestedAt: number;
+  readonly expiresAt: number;
+  readonly request: AuthorityRecord;
+}
+
 export interface AuthorityClient {
   application(options?: AuthorityRequestOptions): Promise<HostApplication>;
   prepare(configuration: HostAppConfig): Promise<HostApplication>;
@@ -89,6 +98,8 @@ export interface AuthorityClient {
   initialize(input: { readonly genesis: AuthorityRecord; readonly casNodes?: readonly PublicCasNodePayload[]; readonly publicOps?: readonly AuthorityRecord[] }): Promise<HostApplication>;
   syncControl(input?: HostControlSyncInput, options?: AuthorityRequestOptions): Promise<HostControlSyncResponse>;
   syncMailbox?(input?: HostMailboxSyncInput, options?: AuthorityRequestOptions): Promise<HostMailboxSyncResponse>;
+  submitJoinRequest?(request: AuthorityRecord, options?: AuthorityRequestOptions): Promise<{ readonly accepted: boolean; readonly count: number }>;
+  joinRequests?(options?: AuthorityRequestOptions): Promise<{ readonly requests: readonly HostJoinRequestEntry[] }>;
   admissions(options?: AuthorityRequestOptions): Promise<HostAdmissions>;
   publication(id?: string): Promise<{ readonly opId: string; readonly revision: number; readonly version: number; readonly release: unknown; readonly finalized: boolean } | null>;
   publish(op: AuthorityRecord, assets: readonly { readonly hash: string; readonly bytes: string }[]): Promise<unknown>;

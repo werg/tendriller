@@ -37,7 +37,9 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
       catch { /* A later activation or explicit save can announce again. */ }
     };
     navigator.serviceWorker.addEventListener("controllerchange", announce);
-    navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") announce(); });
+    navigator.serviceWorker.addEventListener("message", event => {
+      if (event.data?.t === "publication_request") announce();
+    });
     announce();
     return registration;
   } catch (error) {
@@ -148,6 +150,28 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     capabilityObserver ??= observe();
     sensorChanged();
   });
+  let p2pAssetProvider: ((req: { url: string; sha256?: string; type?: string; path?: string; publicationId?: string }) => Promise<{ bytes: Uint8Array; type?: string } | null>) | null = null;
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", event => {
+      if (event.data?.t !== "p2p_asset_request") return;
+      const port = event.ports?.[0];
+      if (!port) return;
+      const provider = p2pAssetProvider;
+      if (!provider) { port.postMessage({ ok: false }); return; }
+      void provider({
+        url: String(event.data.url ?? ""),
+        ...(typeof event.data.sha256 === "string" ? { sha256: event.data.sha256 } : {}),
+        ...(typeof event.data.type === "string" ? { type: event.data.type } : {}),
+        ...(typeof event.data.path === "string" ? { path: event.data.path } : {}),
+        ...(typeof event.data.publicationId === "string" ? { publicationId: event.data.publicationId } : {}),
+      }).then(res => {
+        if (!res || !(res.bytes instanceof Uint8Array)) { port.postMessage({ ok: false }); return; }
+        const copy = new Uint8Array(res.bytes.byteLength);
+        copy.set(res.bytes);
+        port.postMessage({ ok: true, bytes: copy.buffer, ...(res.type ? { type: res.type } : {}) }, [copy.buffer]);
+      }).catch(() => { try { port.postMessage({ ok: false }); } catch {} });
+    });
+  }
   const shared: RuntimeServices = {
     host: core.host, application: core.application, agents: agents.api, chat: chat.api, transport: transport.api, errors: errors.api,
     signals: createSignalBinding(options.signals),
@@ -174,8 +198,13 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
         onCatalogChange: list => { mountedFacetsCatalog = Object.freeze([...list]); },
       }),
       onUpdate: listener => updates.onUpdate(listener),
-      hold: () => updates.hold(),
+      onBeforeReload: handler => updates.onBeforeReload(handler),
+      hold: reason => updates.hold(reason),
       update: () => updates.update(),
+      registerP2pAssetProvider(provider) {
+        p2pAssetProvider = provider;
+        return () => { if (p2pAssetProvider === provider) p2pAssetProvider = null; };
+      },
     },
     documentUrl(reference) { return resolveDocumentUrl(cfg, reference, updates.pinned); },
     assetUrl(path) {

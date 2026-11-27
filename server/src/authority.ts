@@ -31,6 +31,7 @@ import {
   prunePendingAdmissions, type InviteRedemption,
 } from './admissions';
 import { notifyDiscoveryWatchers } from './discovery';
+import { notifyMcpSyncWatchers } from './publication-watch';
 import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
 import { selectedApplication } from './application';
 import { HttpError, json, readJson } from './http';
@@ -234,6 +235,24 @@ export function listPublicOpRows(t: Tendril): Array<{ op_id: string; author: str
   return t.db.all<{ op_id: string; author: string; author_ts: number; raw: ArrayBuffer | Uint8Array }>(
     'SELECT op_id, author, author_ts, raw FROM v2_public_ops ORDER BY author_ts, author, op_id',
   ).map(row => ({ ...row, raw: asBytes(row.raw) }));
+}
+
+export function listMailboxEnvelopeRows(t: Tendril): Array<{ digest: string; epoch: number; author: string; raw: Uint8Array }> {
+  return t.db.all<{ digest: string; epoch: number; author: string; raw: ArrayBuffer }>(
+    'SELECT digest, epoch, author, raw FROM v2_mailbox_envelopes ORDER BY stored_at ASC',
+  ).map(r => ({ digest: r.digest, epoch: r.epoch, author: r.author, raw: new Uint8Array(r.raw) }));
+}
+
+export function listMailboxPublicOpRows(t: Tendril): Array<{ op_id: string; author: string; raw: Uint8Array }> {
+  return t.db.all<{ op_id: string; author: string; raw: ArrayBuffer }>(
+    'SELECT op_id, author, raw FROM v2_mailbox_ops ORDER BY author_ts ASC, op_id ASC',
+  ).map(r => ({ op_id: r.op_id, author: r.author, raw: new Uint8Array(r.raw) }));
+}
+
+export function listMailboxPublicCasRows(t: Tendril): Array<{ hash: string; bytes: Uint8Array }> {
+  return t.db.all<{ hash: string; bytes: ArrayBuffer }>(
+    "SELECT hash, bytes FROM v2_mailbox_cas WHERE partition = 'public' ORDER BY stored_at ASC",
+  ).map(r => ({ hash: r.hash, bytes: new Uint8Array(r.bytes) }));
 }
 
 export function listPublicCasRows(t: Tendril): Array<{ hash: string; bytes: Uint8Array }> {
@@ -792,7 +811,29 @@ export async function syncControlState(
 const ENROLLMENT_FIELDS = [
   'action', 'publicKey', 'proof', 'invite', 'genesis', 'casNodes', 'publicOps',
   'checkpoints', 'knownOpIds', 'knownCasHashes', 'encryptedEnvelopes', 'knownEnvelopeDigests',
+  'request',
 ];
+const JOIN_REQUEST_DOMAIN = 'tendriller-join-request-v1';
+const JOIN_REQUESTS_KEY = 'v2_join_requests';
+const JOIN_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_JOIN_REQUESTS = 32;
+
+interface JoinRequestPayload {
+  readonly applicationId: string;
+  readonly publicKey: string;
+  readonly wrapKey: string;
+  readonly label?: string;
+  readonly requestedAt: number;
+}
+
+interface StoredJoinRequest {
+  readonly publicKey: string;
+  readonly wrapKey: string;
+  readonly label: string;
+  readonly requestedAt: number;
+  readonly expiresAt: number;
+  readonly request: AuthorityRecord;
+}
 
 /**
  * Blind Store-and-Forward Mailbox for async peer-to-peer catch-up:
@@ -866,20 +907,21 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
     }
   }
 
-  // Validate incoming CAS nodes (public or private partition, hash-verified)
+  // Validate incoming public CAS nodes only (hash-verified).
+  // Private SQLite-CAS pages are NEVER stored unencrypted on the blind host;
+  // private peers converge from AEAD `encryptedEnvelopes` and replay locally.
   const rawCas = Array.isArray(input.casNodes) ? input.casNodes : [];
   if (rawCas.length > 128) throw new HttpError(400, 'too_many_cas_nodes');
   const existingCasHashes = new Set(t.db.all<{ hash: string }>('SELECT hash FROM v2_mailbox_cas').map(r => r.hash));
   const existingCasBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(bytes)), 0) AS total FROM v2_mailbox_cas')?.total ?? 0;
-  const newCas: Array<{ hash: string; partition: 'public' | 'private'; bytes: Uint8Array }> = [];
+  const newCas: Array<{ hash: string; partition: 'public'; bytes: Uint8Array }> = [];
   let addedCasBytes = 0;
 
   for (const item of rawCas) {
     if (!item || typeof item !== 'object' || !hex(item.hash) || typeof item.bytes !== 'string' || !/^(?:[0-9a-f]{2})*$/.test(item.bytes)) {
       throw new HttpError(400, 'mailbox_cas_invalid');
     }
-    const partition: 'public' | 'private' = item.partition === 'private' ? 'private' : 'public';
-    if (partition === 'private' && !state.genesis.privateLog) continue;
+    if (item.partition === 'private') continue;
     if (item.bytes.length > MAX_PUBLIC_CAS_BYTES * 2) throw new HttpError(413, 'mailbox_cas_too_large');
     const bytes = item.bytes.length === 0 ? new Uint8Array(0) : Uint8Array.from(item.bytes.match(/../g) as string[], (b: string) => parseInt(b, 16));
     if (hashCasNode(bytes) !== item.hash && computeCasHash(bytes, []) !== item.hash) {
@@ -888,7 +930,7 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
     if (existingCasHashes.has(item.hash) || newCas.some(c => c.hash === item.hash)) continue;
     if (existingCasHashes.size + newCas.length >= MAX_MAILBOX_CAS_ITEMS) break;
     if (existingCasBytes + addedCasBytes + bytes.byteLength > MAX_MAILBOX_CAS_TOTAL_BYTES) break;
-    newCas.push({ hash: item.hash, partition, bytes });
+    newCas.push({ hash: item.hash, partition: 'public', bytes });
     addedCasBytes += bytes.byteLength;
   }
 
@@ -911,6 +953,7 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
           c.hash, c.partition, copy.buffer, now);
       }
       notifyDiscoveryWatchers(t);
+      if (newEnvs.length > 0) notifyMcpSyncWatchers(t);
     });
   }
 
@@ -1060,6 +1103,55 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
       if (input.action === 'mailbox') {
         fields('encryptedEnvelopes', 'publicOps', 'casNodes', 'knownEnvelopeDigests', 'knownOpIds', 'knownCasHashes');
         return json(await syncMailbox(t, principal, input));
+      }
+
+      if (input.action === 'join_request') {
+        fields('request');
+        const state = await readControlState(t);
+        if (!state) throw new HttpError(409, 'application_uninitialized', 'Application genesis has not been initialized');
+        const signed = decodeRequestAuthorityRecord<Signed<JoinRequestPayload>>(input.request, 8 * 1024);
+        await verifyRecord(JOIN_REQUEST_DOMAIN, signed);
+        const p = signed.payload;
+        if (
+          !p ||
+          signed.signer !== p.publicKey ||
+          !hex(p.publicKey) ||
+          !hex(p.wrapKey) ||
+          (p.applicationId !== applicationId && p.applicationId !== state.logId) ||
+          !Number.isSafeInteger(p.requestedAt)
+        ) {
+          throw new HttpError(400, 'join_request_invalid');
+        }
+        if (state.permissions.blockedAuthors.has(p.publicKey)) {
+          throw new HttpError(403, 'author_blocked');
+        }
+        const now = t.now();
+        const label = typeof p.label === 'string' && p.label.trim() ? p.label.trim().slice(0, 80) : 'New signer';
+        const existing = t.db.get<StoredJoinRequest[]>(JOIN_REQUESTS_KEY, [])
+          .filter(r => r.expiresAt > now && r.publicKey !== p.publicKey);
+        const next: StoredJoinRequest[] = [
+          ...existing.slice(-(MAX_JOIN_REQUESTS - 1)),
+          {
+            publicKey: p.publicKey,
+            wrapKey: p.wrapKey,
+            label,
+            requestedAt: p.requestedAt,
+            expiresAt: now + JOIN_REQUEST_TTL_MS,
+            request: authorityRecord(encodeRecord(signed)),
+          },
+        ];
+        t.db.set(JOIN_REQUESTS_KEY, next);
+        notifyDiscoveryWatchers(t);
+        return json({ accepted: true, count: next.length });
+      }
+
+      if (input.action === 'join_requests') {
+        fields();
+        const state = await readControlState(t);
+        const now = t.now();
+        const active = t.db.get<StoredJoinRequest[]>(JOIN_REQUESTS_KEY, [])
+          .filter(r => r.expiresAt > now && !state?.permissions.readers.has(r.publicKey) && !state?.permissions.blockedAuthors.has(r.publicKey));
+        return json({ requests: active });
       }
 
       if (input.action === 'admissions') {

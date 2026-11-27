@@ -44,13 +44,11 @@ function checkFile(file) {
 
 /**
  * Retain verified publication asset blobs in the local Chronolog session store
- * via the unified lazy public blob pipe (`content.put` / `content.putBlob`)
+ * via the unified lazy public blob pipe (`session.content.put` + `pin`)
  * so connected peers can recover historical versions if the host later prunes them.
  */
-export async function retainPublicationBlobs(session, assets, { signal } = {}) {
-  const hasUnifiedPut = typeof session?.content?.put === 'function';
-  const hasLegacyPut = typeof session?.content?.putBlob === 'function';
-  if (!hasUnifiedPut && !hasLegacyPut) {
+export async function retainPublicationBlobs(session, assets, { pin = true, signal } = {}) {
+  if (typeof session?.content?.put !== 'function') {
     return { supported: false, retained: 0, skipped: Array.isArray(assets) ? assets.length : 0 };
   }
   const seen = new Set();
@@ -66,15 +64,16 @@ export async function retainPublicationBlobs(session, assets, { signal } = {}) {
     if (await sha256Hex(bytes) !== asset.hash) {
       throw Object.assign(new Error(`Publication asset hash mismatch for ${asset.hash}`), { code: 'PUBLICATION_HASH_MISMATCH' });
     }
-    const info = hasUnifiedPut
-      ? await session.content.put(bytes, {
-          visibility: 'public',
-          ...(typeof asset.type === 'string' && asset.type.length > 0 ? { mediaType: asset.type } : {}),
-          ...(signal === undefined ? {} : { signal }),
-        })
-      : await session.content.putBlob(bytes, signal === undefined ? {} : { signal });
+    const info = await session.content.put(bytes, {
+      visibility: 'public',
+      ...(typeof asset.type === 'string' && asset.type.length > 0 ? { mediaType: asset.type } : {}),
+      ...(signal === undefined ? {} : { signal }),
+    });
     if (info.hash !== asset.hash) {
       throw Object.assign(new Error(`Publication asset hash mismatch for ${asset.hash}`), { code: 'PUBLICATION_HASH_MISMATCH' });
+    }
+    if (pin && typeof session.content.pin === 'function') {
+      await session.content.pin(info).catch(() => {});
     }
     retained++;
   }
@@ -114,32 +113,24 @@ export async function recoverPublicationAsset(session, file, options = {}) {
     if (seedFromHost) {
       try {
         if (typeof session?.content?.put === 'function') {
-          await session.content.put(hostBytes, {
+          const info = await session.content.put(hostBytes, {
             visibility: 'public',
             ...(typeof file.type === 'string' && file.type.length > 0 ? { mediaType: file.type } : {}),
             ...(signal === undefined ? {} : { signal }),
           });
-        } else if (typeof session?.content?.putBlob === 'function') {
-          await session.content.putBlob(hostBytes, signal === undefined ? {} : { signal });
+          if (typeof session.content.pin === 'function') await session.content.pin(info).catch(() => {});
         }
       } catch { /* Best-effort local seeding never blocks reads. */ }
     }
     return { source: 'host', bytes: hostBytes };
   }
 
-  const getOpts = {
+  if (typeof session?.content?.get !== 'function') return null;
+  const peerBytes = await session.content.get(file.hash, {
     expectedBytes: file.size,
     cache,
     ...(signal === undefined ? {} : { signal }),
-  };
-  let peerBytes = null;
-  if (typeof session?.content?.get === 'function') {
-    peerBytes = await session.content.get(file.hash, getOpts);
-  } else if (typeof session?.content?.getBlob === 'function') {
-    peerBytes = await session.content.getBlob(file.hash, getOpts);
-  } else {
-    return null;
-  }
+  });
   if (peerBytes === null) return null;
   await verifyAsset(file, peerBytes);
   return { source: 'peer', bytes: peerBytes };
@@ -203,4 +194,87 @@ export async function recoverPublication(session, publication, options = {}) {
     fromHost,
     fromPeers,
   };
+}
+
+function collectContentRefs(value, out, depth = 0) {
+  if (depth > 8 || value === null || value === undefined || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectContentRefs(item, out, depth + 1);
+    return;
+  }
+  if (value.profile === 'authored-content-v1' && typeof value.id === 'string' && HEX_SHA256.test(value.id)) {
+    out.set(`priv:${value.id}`, value);
+    return;
+  }
+  if (value.profile === 'chronolog-blob-v2' && typeof value.hash === 'string' && HEX_SHA256.test(value.hash)) {
+    out.set(`pub:${value.hash}`, value);
+    return;
+  }
+  for (const v of Object.values(value)) collectContentRefs(v, out, depth + 1);
+}
+
+/**
+ * Proactively fetch and pin recent `session.content` references observed in materialized
+ * topics and events (e.g. inside `tendril agent run`) under a bounded cache budget, so mobile
+ * or offline uploads remain recoverable from the user's always-on agent even after the uploader
+ * goes offline.
+ */
+export function attachAgentContentPinner(session, {
+  maxBytes = 128 * 1024 * 1024,
+  maxRefsPerScan = 32,
+  signal,
+} = {}) {
+  if (!session || typeof session.content?.get !== 'function' || typeof session.content?.pin !== 'function') {
+    return Object.freeze({ scanNow: async () => ({ pinned: 0 }), close() {} });
+  }
+  const pinnedKeys = new Set();
+  let inFlight = null;
+  let queued = false;
+  let closed = false;
+
+  const scanNow = () => {
+    if (closed || signal?.aborted) return Promise.resolve({ pinned: 0 });
+    if (inFlight) { queued = true; return inFlight; }
+    inFlight = (async () => {
+      let pinned = 0;
+      const refs = new Map();
+      try {
+        const reducers = session.topic?.('$reducers');
+        const topicNames = Object.keys(reducers?.topics ?? {}).filter(name => !name.startsWith('$'));
+        for (const name of topicNames) collectContentRefs(session.topic?.(name), refs);
+        if (typeof session.readEvents === 'function') {
+          const batch = await session.readEvents({ limit: 64 }).catch(() => null);
+          for (const ev of batch?.events ?? []) collectContentRefs(ev.payload, refs);
+        }
+        let processed = 0;
+        for (const [key, ref] of refs) {
+          if (closed || signal?.aborted || processed >= maxRefsPerScan) break;
+          if (pinnedKeys.has(key)) continue;
+          processed++;
+          const bytes = await session.content.get(ref, { cache: true, ...(signal ? { signal } : {}) }).catch(() => null);
+          if (bytes !== null) {
+            await session.content.pin(ref).catch(() => {});
+            pinnedKeys.add(key);
+            pinned++;
+          }
+        }
+        if (typeof session.content.pruneCache === 'function' && Number.isFinite(maxBytes) && maxBytes > 0) {
+          await session.content.pruneCache({ maxBytes }).catch(() => {});
+        }
+      } catch { /* best-effort background pinner */ }
+      return { pinned };
+    })().finally(() => {
+      inFlight = null;
+      if (queued && !closed && !signal?.aborted) { queued = false; void scanNow(); }
+    });
+    return inFlight;
+  };
+
+  const offChange = typeof session.onChange === 'function' ? session.onChange(() => { void scanNow(); }) : () => {};
+  const offPeer = typeof session.onPeerLink === 'function' ? session.onPeerLink(ev => { if (ev?.type === 'connected') void scanNow(); }) : () => {};
+  void scanNow();
+
+  const close = () => { closed = true; offChange(); offPeer(); };
+  signal?.addEventListener('abort', close, { once: true });
+  return Object.freeze({ scanNow, close });
 }

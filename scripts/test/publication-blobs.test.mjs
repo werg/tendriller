@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import {
+  attachAgentContentPinner,
   retainPublicationBlobs,
   recoverPublicationAsset,
   recoverPublication,
@@ -11,16 +12,19 @@ const sha256Hex = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function createMockBlobSession() {
   const blobs = new Map();
+  const pinned = new Set();
   return {
     blobs,
+    pinned,
     content: {
-      async putBlob(bytes) {
+      async put(bytes) {
         const copy = new Uint8Array(bytes);
         const hash = sha256Hex(copy);
         blobs.set(hash, copy);
         return { hash, bytes: copy.byteLength };
       },
-      async getBlob(hash, options = {}) {
+      async get(target, options = {}) {
+        const hash = typeof target === 'string' ? target : (target?.hash ?? target?.id);
         const found = blobs.get(hash) ?? null;
         if (found === null) return null;
         if (options.expectedBytes !== undefined && found.byteLength !== options.expectedBytes) {
@@ -28,18 +32,21 @@ function createMockBlobSession() {
         }
         return new Uint8Array(found);
       },
-      async hasBlob(hash) { return blobs.has(hash); },
-      async deleteBlob(hash) { blobs.delete(hash); },
+      async pin(target) {
+        const key = typeof target === 'string' ? target : (target?.hash ?? target?.id);
+        if (key) pinned.add(key);
+      },
+      async pruneCache() { return { evictedCount: 0, evictedBytes: 0 }; },
     },
   };
 }
 
-test('retainPublicationBlobs no-ops gracefully on sessions without putBlob and verifies hashes when supported', async () => {
+test('retainPublicationBlobs no-ops gracefully on sessions without content.put, verifies hashes, and pins retained blobs', async () => {
   const html = new TextEncoder().encode('<!doctype html><h1>v1</h1>');
   const htmlHash = sha256Hex(html);
 
-  const legacy = await retainPublicationBlobs({ content: {} }, [{ hash: htmlHash, bytes: html }]);
-  assert.deepEqual(legacy, { supported: false, retained: 0, skipped: 1 });
+  const unsupported = await retainPublicationBlobs({ content: {} }, [{ hash: htmlHash, bytes: html }]);
+  assert.deepEqual(unsupported, { supported: false, retained: 0, skipped: 1 });
 
   const session = createMockBlobSession();
   const retained = await retainPublicationBlobs(session, [
@@ -47,13 +54,14 @@ test('retainPublicationBlobs no-ops gracefully on sessions without putBlob and v
     { hash: htmlHash, bytes: html }, // duplicate hash skipped cleanly
   ]);
   assert.deepEqual(retained, { supported: true, retained: 1, skipped: 1 });
-  assert.deepEqual(await session.content.getBlob(htmlHash), html);
+  assert.deepEqual(await session.content.get(htmlHash), html);
+  assert.equal(session.pinned.has(htmlHash), true);
 
   await assert.rejects(
     retainPublicationBlobs(session, [{ hash: '00'.repeat(32), bytes: html }]),
     /PUBLICATION_HASH_MISMATCH|hash mismatch/i,
   );
-  assert.equal(await session.content.hasBlob(htmlHash), true);
+  assert.equal(session.blobs.has(htmlHash), true);
 });
 
 test('recoverPublication falls back to Chronolog P2P blobs when host prunes old versions (404)', async () => {
@@ -85,8 +93,9 @@ test('recoverPublication falls back to Chronolog P2P blobs when host prunes old 
   assert.deepEqual(recovered.assets.get(sharedCssFile.hash), sharedCss);
   assert.equal(recovered.files.find(f => f.path === 'index.html')?.source, 'peer');
   assert.equal(recovered.files.find(f => f.path === 'app.css')?.source, 'host');
-  // seedFromHost seeded the host-fetched CSS into the local peer blob store too
-  assert.equal(await peerSession.content.hasBlob(sharedCssFile.hash), true);
+  // seedFromHost seeded & pinned the host-fetched CSS into the local peer blob store too
+  assert.equal(peerSession.blobs.has(sharedCssFile.hash), true);
+  assert.equal(peerSession.pinned.has(sharedCssFile.hash), true);
 });
 
 test('recoverPublicationAsset rejects tampered peer bytes and reports missing blobs cleanly', async () => {
@@ -102,7 +111,7 @@ test('recoverPublicationAsset rejects tampered peer bytes and reports missing bl
   const tamperedBytes = new TextEncoder().encode('TAMPERED! v1 bundle');
   const corruptSession = {
     content: {
-      async getBlob() { return tamperedBytes; },
+      async get() { return tamperedBytes; },
     },
   };
   await assert.rejects(
@@ -110,6 +119,22 @@ test('recoverPublicationAsset rejects tampered peer bytes and reports missing bl
       fetchHost: async () => new Response('not found', { status: 404 }),
     }),
   );
+
+  // attachAgentContentPinner discovers and pins referenced content objects automatically
+  const mediaBytes = new TextEncoder().encode('agent-pinned-photo');
+  const mediaHash = sha256Hex(mediaBytes);
+  const agentMock = createMockBlobSession();
+  await agentMock.content.put(mediaBytes);
+  agentMock.topic = name => name === '$reducers'
+    ? { topics: { gallery: {} } }
+    : name === 'gallery'
+      ? { items: [{ ref: { profile: 'authored-content-v1', id: mediaHash, bytes: mediaBytes.byteLength } }] }
+      : null;
+  const pinner = attachAgentContentPinner(agentMock);
+  const res = await pinner.scanNow();
+  assert.equal(res.pinned >= 0, true);
+  assert.equal(agentMock.pinned.has(mediaHash), true);
+  pinner.close();
 });
 
 test('recoverPublication works end-to-end across real Chronolog v2 peers over unified lazy content pipe', async () => {

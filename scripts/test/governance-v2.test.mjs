@@ -7,7 +7,8 @@ import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
 import { createAdmission, createPageGenesis, deviceWrapKey, openPageGenesis } from '../../session/admission.mjs';
 import { authorityRecord } from '../../contract/authority.mjs';
 import {
-  approveMultisig, blockAuthor, describeGovernance, proposeMultisig, setOpenAccess, unblockAuthor,
+  approveMultisig, approveMultisigAndSeal, blockAuthor, describeGovernance,
+  proposeMultisig, setOpenAccess, unblockAuthor, verificationCode,
 } from '../../docs/tutorial/shared/helpers/governance.mjs';
 import { runSessionCommand } from '../../tools/cli/lib/session.mjs';
 
@@ -153,6 +154,13 @@ test('multisigMembers 2-of-2 governance requires second signer approval via help
     assert.equal(sessionA.isWriter(newcomer.identity.publicKey), true);
     assert.equal(sessionB.isWriter(newcomer.identity.publicKey), true);
     assert.equal(describeGovernance(sessionA).pendingProposals, 0);
+
+    // Deterministic 6-digit out-of-band verification code matches across peers
+    const code1 = await verificationCode(created.logId, newcomer.identity.publicKey, wrapB.publicKey);
+    const code2 = await verificationCode(created.logId, newcomer.identity.publicKey, wrapB.publicKey);
+    assert.match(code1, /^\d{3}-\d{3}$/);
+    assert.equal(code1, code2);
+    assert.equal(typeof approveMultisigAndSeal, 'function');
   } finally {
     await sessionA.close();
     await sessionB.close();

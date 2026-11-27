@@ -648,10 +648,13 @@ it('executes hosted MCP v2 ES Module reducer in QuickJS-WASM with OAuth-wrapped 
     });
     expect(unknown.result.isError).toBe(true);
     await inDO(f.page.id, t => {
-      expect(t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_store WHERE k LIKE 'envelope/%'")!.n).toBe(1);
+      expect(t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM v2_mailbox_envelopes')!.n).toBe(1);
       const sealed = t.db.one<{ v: ArrayBuffer }>("SELECT v FROM mcp_store WHERE k LIKE 'hosted-requests/%'");
       expect(sealed).toBeTruthy();
       expect(new TextDecoder().decode(new Uint8Array(sealed!.v))).not.toContain('op-note-1');
+      const snap = t.db.one<{ v: ArrayBuffer }>("SELECT v FROM mcp_store WHERE k LIKE 'snapshot/%'");
+      expect(snap).toBeTruthy();
+      expect(new TextDecoder().decode(new Uint8Array(snap!.v))).not.toContain('Zero plaintext keys at rest!');
     });
 
     const read = await mcpCall(f.settings, issued.access_token, 'query_application', {

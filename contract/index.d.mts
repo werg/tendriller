@@ -464,10 +464,14 @@ export interface RuntimeServices {
     readonly facets?: readonly FacetDescriptor[];
     /** Called when a new release is selected (live hot-swapped, requires reload, or reverted to this document's release). */
     onUpdate(listener: (update: PublicationUpdate) => void): () => void;
+    /** Runs asynchronously right before an automatic full-page reload (bounded timeout). Flush debounced drafts here, or return `false` / acquire `hold()` to defer. */
+    onBeforeReload(handler: (update: PublicationUpdate) => boolean | void | Promise<boolean | void>): () => void;
     /** Defer the automatic full-page reload while there is unsaved work or an active call; call the result to release. */
-    hold(): () => void;
+    hold(reason?: string): () => void;
     /** Load the latest selected release now. */
     update(): void;
+    /** Register a peer-to-peer asset recovery callback invoked by the Service Worker when the host returns 404/410 for a pruned publication asset. */
+    registerP2pAssetProvider?(provider: (req: { url: string; sha256?: string; type?: string; path?: string; publicationId?: string }) => Promise<{ bytes: Uint8Array; type?: string } | null>): () => void;
   };
   sensors: {
     status(): SensorStatus;

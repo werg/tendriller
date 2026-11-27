@@ -19,8 +19,8 @@
       ]
     },
     "start": {
-      "eyebrow": "For your existing agent",
-      "title": "Point it at {host} and say what you want.",
+      "eyebrow": "How to get started",
+      "title": "Point your agent at {host}",
       "p1": "**Claude Code**, **Codex**, **Antigravity**, **Meta Muse**, **Instinct**, **OpenAI Dots**, **Claude Duet**, **GrokBot**, **OpenClaw**, or **Hermes** can build and tweak your idea, staying connected while you use it.",
       "p2": "They hand back a private URL tied to your email. Open from **any device**, not just the agent machine: your phone, laptop, or tablet, sign in with **GitHub** or **Google**. Invite others with a private link.",
       "promptLabel": "Try saying this",
@@ -56,14 +56,14 @@
       "platformsLead": "Pick your harness for a quick start — click a platform for the human guide, or `.md` for the AI-friendly page."
     },
     "pillars": {
-      "eyebrow": "Beyond the chat box",
+      "eyebrow": "Go beyond the chat box",
       "title": "You can talk to your dashboard",
-      "lead": "Chat threads are great for words, not for looking inside your fridge, querying a shared database across phones, or inviting your team into a live view that adapts on the fly.",
+      "lead": "",
       "items": [
         {
           "icon": "mic",
           "warm": true,
-          "title": "Talk to it, reshape it live",
+          "title": "Holler at it and it changes",
           "body": "Ask by voice or text and watch your agent evolve the page itself — adding charts, rearranging buttons, showing annotated diagrams, or reading next steps aloud as your work shifts.",
           "tags": [
             "Live UI changes",
@@ -89,24 +89,24 @@
           "icon": "database",
           "warm": false,
           "title": "Real shared database state",
-          "body": "Not ephemeral chat memory — a genuine local-first SQL and event database (Chronolog) synced peer-to-peer across your devices and your agent, so reads and edits keep working even offline.",
+          "body": "Not ephemeral chat memory — a genuine local-first database with built-in keyword and meaning search. Reopens instantly offline and syncs across your phone, laptop, and agent — even when your devices aren’t online at the same time.",
           "tags": [
             "Shared SQL",
-            "Local-first",
-            "Peer sync",
-            "Offline-ready"
+            "Offline search",
+            "Async sync",
+            "Instant reopen"
           ]
         },
         {
           "icon": "users",
           "warm": true,
-          "title": "Invite others in",
-          "body": "Share a private guest invite link, tie admission to a **GitHub Org** or **Google Workspace** group, or hop into a multi-party video call with on-device captions — all sharing the same live dashboard, database, and agent.",
+          "title": "Invite others — or go public",
+          "body": "Share a private guest link, tie access to a **GitHub Org** or **Google Workspace** team, require multi-person sign-off, or publish a no-login public page or moderated community board — plus group video calls with on-device captions.",
           "tags": [
             "Guest invites",
+            "Public pages",
             "Video & captions",
-            "Team OAuth",
-            "Home Screen"
+            "Team sign-in"
           ]
         }
       ]
@@ -139,26 +139,26 @@
           "icon": "database",
           "badge": "Local & E2EE",
           "title": "Your devices (Chronolog)",
-          "body": "Shared data belongs to your app’s **Chronolog** session, stored locally and encrypted end-to-end — ordinary reads and edits keep working even offline."
+          "body": "Your data lives locally on your devices, encrypted end-to-end — reopens instantly offline, searches locally, and streams photos and files straight between devices."
         },
         {
           "icon": "shield",
           "badge": "Zero-knowledge host",
           "title": "Tendriller",
-          "body": "Hosts the signed page, handles sign-in, invites, and peer introductions — with no access to your plaintext data or encryption keys."
+          "body": "Hosts your signed page, handles sign-in and invites, and relays sealed envelopes so offline devices catch up automatically — with zero access to your data or keys."
         },
         {
           "icon": "bot",
           "badge": "Live peer",
           "title": "Your agent",
-          "body": "Connects whenever its local process is active to react to your requests, run native tools, and publish live changes to your page."
+          "body": "Connects whenever active locally (or via opt-in hosted MCP) to react, run native tools, evolve your page and database live, and keep shared media pinned for your other devices."
         }
       ]
     },
     "ideas": {
-      "eyebrow": "To get started",
+      "eyebrow": "A few ideas to get started",
       "title": "The many fabulous faces of an agent",
-      "lead": "Here are a few ideas:",
+      "lead": "",
       "cta": "Explore cookbooks",
       "items": [
         {
@@ -214,24 +214,30 @@
           "cat": "Screen · Switch",
           "title": "Screen & accessibility copilot",
           "body": "Share a window for guided troubleshooting, or wire up a gamepad or assistive switch to trigger custom page actions."
+        },
+        {
+          "icon": "database",
+          "cat": "Private AI · Hybrid search",
+          "title": "Encrypted second brain",
+          "body": "Save notes, clips, and attachments searchable by both exact words and meaning — encrypted on your devices with zero cloud vector database."
         }
       ]
     },
     "access": {
       "eyebrow": "Access & permissions",
-      "title": "Private by default and on your terms",
-      "lead": "You give your agent a face but you decide who looks at it -- and what it can see.",
+      "title": "Private by default -- on your terms",
+      "lead": "Your agent has a face, but you decide who looks at it -- and what it can see.",
       "items": [
         {
           "icon": "shield",
           "title": "End-to-end encrypted",
-          "body": "All application data is encrypted end-to-end with keys that stay on your devices. Tendriller has zero insight into your content — even when relaying traffic.",
-          "note": "**Exception**: The hosted MCP server encrypts for you but doesn't store the key. **Mostly not needed.**"
+          "body": "All private application data is encrypted end-to-end with keys that stay on your devices. Tendriller has zero insight into your content — even when holding encrypted updates for offline devices.",
+          "note": "**Optional hosted MCP:** unwraps keys strictly in RAM during a request, never stores them, and displays a clear badge on your page whenever active."
         },
         {
           "icon": "lock",
-          "title": "GitHub or Google sign-in",
-          "body": "Your page is private by default and gated by OAuth login. Invited guests sign in with their own account; your agent never sees your credentials."
+          "title": "Private by default, flexible by choice",
+          "body": "Pages default to GitHub or Google sign-in. You can also opt into no-login public pages, moderated community boards, or multi-person approval verified with a 6-digit code — always clearly labeled on the page."
         },
         {
           "icon": "key",
@@ -244,13 +250,13 @@
           "body": "Camera, microphone, location, screen, and hardware access are always requested explicitly on the device where you open the page."
         }
       ],
-      "openSourceTitle": "Zero lock-in — open source & cleanly migratable",
-      "openSourceNote": "Your data lives locally on your devices and your apps are plain signed bundles. Inspect the code, run it locally, or self-host on your own Cloudflare account and migrate cleanly anytime."
+      "openSourceTitle": "Zero lock-in — remixable, open source & cleanly migratable",
+      "openSourceNote": "Your data lives locally on your devices and your apps are plain signed bundles. One-click **Remix** or export a secret-free blueprint to share an app without its private data — or self-host on your own Cloudflare account anytime."
     },
     "pricing": {
       "eyebrow": "Pricing & zero lock-in",
       "title": "Room to grow",
-      "lead": "Give your agent a live page, work offline, and share with friends at no cost. Step up only when you want group video calls, team sign-in, or hosted MCP at scale — or self-host anytime.",
+      "lead": "",
       "ctaPricing": "Full pricing & limits",
       "ctaSelfHost": "5-minute self-host guide",
       "guarantee": "**No surprise bills or data lock-in:** hitting a limit never locks or deletes your data, pay-as-you-go is off by default with an editable monthly spend cap, and you can move your workspace to your own Cloudflare account anytime.",
@@ -377,10 +383,10 @@
     "items": {
       "claude-code": {
         "kind": "Terminal coding agent",
-        "summary": "Runs in your terminal with shell access, Node 24, and optional MCP — ideal for building, publishing, and evolving a live Tendriller page directly.",
+        "summary": "Runs in your terminal with shell access, Node 22.15+ (zero native C++ builds), and optional MCP — ideal for building, publishing, and evolving a live Tendriller page directly.",
         "prompt": "Read {base}/docs/BUILD_AN_APP.md and build me a live Tendriller dashboard tied to you@example.com — give it a shared SQL database for our project tasks, let me invite teammates, and let me talk to the page to reshape views and controls.",
         "steps": [
-          "Open Claude Code in a fresh folder (with Node 24 installed) and paste the prompt pointing at {host} and your email.",
+          "Open Claude Code in a fresh folder (with Node 22.15+ installed) and paste the prompt pointing at {host} and your email.",
           "Claude Code checks readiness, downloads the verified starter kit, creates your page, and publishes a signed release.",
           "Open the private URL it hands back on your phone, laptop, or tablet, sign in with GitHub or Google, and ask Claude Code to modify the page live anytime."
         ]
@@ -390,7 +396,7 @@
         "summary": "Builds and deploys a full local-first Tendriller workspace straight from your shell or Codex app, with optional account-linked MCP support.",
         "prompt": "Follow {base}/docs/BUILD_AN_APP.md and launch a Tendriller page tied to you@example.com — include a shared SQL database, camera capture, and a voice-enabled dashboard I can reshape with new requests.",
         "steps": [
-          "Start Codex in a workspace directory (with Node 24 available) and send the prompt referencing {host} and your email.",
+          "Start Codex in a workspace directory (with Node 22.15+ available — no C++ build tools needed) and send the prompt referencing {host} and your email.",
           "Codex verifies host readiness, installs the exact release kit, initializes your page, and publishes the signed browser interface.",
           "Tap the returned URL on any device, sign in via GitHub or Google, and keep iterating with Codex as your requirements change."
         ]
@@ -508,9 +514,9 @@
   },
   "pricing": {
     "hero": {
-      "eyebrow": "Get more out of Tendriller",
-      "title": "Grow with your agent",
-      "lead": "Get started for free. Super AI-pilled? You can go wild with bigger plans!",
+      "eyebrow": "Just how AI-pilled are you?",
+      "title": "Plans to fuel your growth",
+      "lead": "Help your agent and team to build more ambitious agentic experiences",
       "monthlyLabel": "Monthly",
       "annualLabel": "Annual",
       "annualSave": "Save ~30%",
@@ -614,7 +620,7 @@
           "icon": "terminal",
           "tone": "amber",
           "title": "Leave anytime, cleanly",
-          "body": "Tendriller is open source. Export your workspace or self-host on your own Cloudflare account in five minutes using the exact same engine."
+          "body": "Tendriller is open source. Export your workspace or self-host on your own Cloudflare account in five minutes using the exact same engine. Or have your agent port it to some other engine."
         }
       ]
     }
@@ -870,7 +876,7 @@
     },
     "publications": {
       "title": "Publications",
-      "lead": "Restoring earlier code requires a new signed Chronolog publication.",
+      "lead": "Every release is cryptographically signed. Older versions remain recoverable from your connected devices even after the host cache trims them, and rolling back publishes a fresh signed release.",
       "empty": "No version has been published yet."
     },
     "delete": {

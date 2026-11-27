@@ -258,3 +258,184 @@ export async function cancelMultisig(session, proposalId, { operationId } = {}) 
     updates: [{ topic: '$permissions', input: { action: 'cancel', proposalId } }],
   });
 }
+
+const JOIN_REQUEST_DOMAIN = 'tendriller-join-request-v1';
+
+/**
+ * Deterministic 6-digit out-of-band confirmation code (`482-917`) binding a candidate
+ * device's `(logId, publicKey, wrapKey)` so signers can verify identity by voice/QR
+ * without comparing 64-hex keys.
+ */
+export async function verificationCode(logId, publicKey, wrapKey) {
+  const bytes = new TextEncoder().encode(`tendriller-verify:${logId}:${publicKey}:${wrapKey}`);
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes));
+  const num = ((digest[0] << 16) | (digest[1] << 8) | digest[2]) % 1_000_000;
+  const s = String(num).padStart(6, '0');
+  return `${s.slice(0, 3)}-${s.slice(3)}`;
+}
+
+/** Create and submit an Ed25519-signed peer join request to the blind enrollment relay. */
+export async function submitJoinRequest({ peers, identity, wrapKey, applicationId, label = 'New device', signal }) {
+  const { signRecord, encodeRecord } = await import('@chronolog/peer-session');
+  const { authorityRecord } = await import('@tendriller/core/authority');
+  const wrapPub = typeof wrapKey === 'string' ? wrapKey : wrapKey?.publicKey;
+  const signed = await signRecord(JOIN_REQUEST_DOMAIN, {
+    applicationId,
+    publicKey: identity.publicKey,
+    wrapKey: wrapPub,
+    label: String(label || 'New device').slice(0, 80),
+    requestedAt: Date.now(),
+  }, identity);
+  const res = await peers.submitJoinRequest(authorityRecord(encodeRecord(signed)), { signal });
+  const code = await verificationCode(applicationId, identity.publicKey, wrapPub);
+  return Object.freeze({ ...res, code, publicKey: identity.publicKey, wrapKey: wrapPub });
+}
+
+/**
+ * Approve a pending `multisigMembers` proposal AND automatically seal epoch HPKE lockboxes
+ * into `$keys` if this approval crossed the M-of-N threshold and admitted a new reader.
+ */
+export async function approveMultisigAndSeal(session, proposalId, { wrapKeyByPublicKey = new Map(), operationId } = {}) {
+  const before = session.permissions()?.multisig?.proposals?.[proposalId] ?? null;
+  const op = await approveMultisig(session, proposalId, { operationId });
+  const res = await op.materialized();
+  if (res.outcome !== 'accepted') return { outcome: res.outcome, sealed: false };
+
+  const targetPk = before?.publicKey ?? before?.member?.publicKey ?? null;
+  const targetWrap = before?.wrapKey ?? before?.member?.wrapKey ?? (targetPk ? wrapKeyByPublicKey.get(targetPk) : null);
+  let sealed = false;
+  if (
+    targetPk &&
+    targetWrap &&
+    session.genesis?.privateLog !== false &&
+    session.isReader?.(targetPk) &&
+    typeof session.sealEpochKeys === 'function'
+  ) {
+    try {
+      await session.sealEpochKeys([{ publicKey: targetPk, wrapKey: targetWrap }]);
+      sealed = true;
+    } catch { /* another online key holder may already have sealed or will seal on sync */ }
+  }
+  return { outcome: 'accepted', sealed };
+}
+
+/**
+ * Mount a calm, accessible Multisig Join & Co-Signing UI panel:
+ * - Visitors/non-members get a 1-click "Request to join" button + 6-digit verification code.
+ * - Existing signers see incoming join requests (with verification codes + 1-click "Propose")
+ *   and active proposals with M-of-N progress (`1/2 -> 2/2`) and 1-click "Approve & seal".
+ */
+export function mountMultisigPanel({ root, session, peers, identity, wrapKey }) {
+  if (!root || !session) return { refresh: async () => {}, destroy() {} };
+  const panel = document.createElement('section');
+  panel.className = 'tg-banner';
+  panel.setAttribute('aria-label', 'Multisig membership and proposals');
+  const content = document.createElement('div');
+  content.style.width = '100%';
+  panel.append(content);
+  root.append(panel);
+
+  const wrapKeyByPk = new Map();
+  let destroyed = false;
+
+  const render = async () => {
+    if (destroyed) return;
+    const perms = session.permissions?.() ?? {};
+    if (perms.mode !== 'multisig') {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const ms = perms.multisig ?? { threshold: 1, signers: [], proposals: {} };
+    const selfPk = identity?.publicKey ?? session.identity?.publicKey ?? '';
+    const isSigner = Array.isArray(ms.signers) && ms.signers.includes(selfPk);
+    const appId = session.applicationId ?? session.logId ?? '';
+    const frag = document.createDocumentFragment();
+
+    const heading = document.createElement('strong');
+    heading.textContent = `Multisig governance (${ms.threshold}-of-${(ms.signers ?? []).length} approvals)`;
+    frag.append(heading);
+
+    if (!isSigner && !session.isReader?.(selfPk) && peers?.submitJoinRequest && identity && wrapKey) {
+      const p = document.createElement('p');
+      const wrapPub = typeof wrapKey === 'string' ? wrapKey : wrapKey.publicKey;
+      const code = await verificationCode(appId, selfPk, wrapPub);
+      p.textContent = `Verification code: ${code}. Confirm this code with existing signers after requesting access.`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Request to join';
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = 'Sending request…';
+        try {
+          await submitJoinRequest({ peers, identity, wrapKey, applicationId: appId });
+          btn.textContent = `Request sent (${code})`;
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = `Retry (${err?.message ?? 'failed'})`;
+        }
+      };
+      frag.append(p, btn);
+    }
+
+    if (isSigner) {
+      if (typeof peers?.joinRequests === 'function') {
+        const res = await peers.joinRequests().catch(() => ({ requests: [] }));
+        for (const req of res?.requests ?? []) {
+          wrapKeyByPk.set(req.publicKey, req.wrapKey);
+          const code = await verificationCode(appId, req.publicKey, req.wrapKey);
+          const row = document.createElement('div');
+          row.style.marginTop = '.5rem';
+          const info = document.createElement('span');
+          info.textContent = `Join request: ${req.label} · code ${code} `;
+          const proposeBtn = document.createElement('button');
+          proposeBtn.type = 'button';
+          proposeBtn.textContent = 'Propose to admit';
+          proposeBtn.onclick = async () => {
+            proposeBtn.disabled = true;
+            await proposeMultisig(session, {
+              kind: 'setMember',
+              member: { publicKey: req.publicKey, wrapKey: req.wrapKey, reader: true, writer: true, administrator: false },
+            });
+            await render();
+          };
+          row.append(info, proposeBtn);
+          frag.append(row);
+        }
+      }
+
+      const proposals = Object.entries(ms.proposals ?? {});
+      for (const [id, prop] of proposals) {
+        const approvals = Array.isArray(prop?.approvals) ? prop.approvals : [];
+        const alreadyApproved = approvals.includes(selfPk);
+        const row = document.createElement('div');
+        row.style.marginTop = '.5rem';
+        const info = document.createElement('span');
+        info.textContent = `Proposal ${id.slice(0, 8)} (${prop?.kind ?? 'change'}) · ${approvals.length}/${ms.threshold} approvals `;
+        row.append(info);
+        if (!alreadyApproved) {
+          const approveBtn = document.createElement('button');
+          approveBtn.type = 'button';
+          approveBtn.textContent = 'Approve & seal keys';
+          approveBtn.onclick = async () => {
+            approveBtn.disabled = true;
+            await approveMultisigAndSeal(session, id, { wrapKeyByPublicKey: wrapKeyByPk });
+            await render();
+          };
+          row.append(approveBtn);
+        }
+        frag.append(row);
+      }
+    }
+
+    content.replaceChildren(frag);
+  };
+
+  void render();
+  const off = typeof session.onChange === 'function' ? session.onChange(() => { void render(); }) : () => {};
+  return Object.freeze({
+    element: panel,
+    refresh: render,
+    destroy() { destroyed = true; off(); panel.remove(); },
+  });
+}
