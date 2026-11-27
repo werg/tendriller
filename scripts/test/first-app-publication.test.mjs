@@ -96,13 +96,23 @@ setInterval(() => {}, 1000);`);
     return gate.control(new Request('https://fixture/__first_app_publication', request));
   });
   let publications = 0;
+  const firstReceipt = {
+    opId: 'c'.repeat(64),
+    revision: 1,
+    version: 2,
+    release: { revision: 1, opId: 'c'.repeat(64), author: intent.author, timestampMs: 2, entry: intent.entry, files: intent.files },
+    finalized: false,
+  };
   const node = async args => {
     const command = args[3];
     // The attached CLI's current self response: the page's signing identity is its public key.
     if (command === 'self') return JSON.stringify({ mode: 'attach', page: 'notes', applicationId: 'f'.repeat(64), identity: { publicKey: author }, endpoint: { ownerInstanceId: 'owner' } });
     if (command === 'publication') {
       if (publications++) throw completed;
-      return JSON.stringify({ publication: { id: previous } });
+      return JSON.stringify({ opId: previous, revision: 0, version: 1, release: { revision: 0, opId: previous, author, timestampMs: 1, entry: 'index.html', files: [] }, finalized: false });
+    }
+    if (command === 'publication-operation') {
+      return JSON.stringify({ opId: firstReceipt.opId, operationId, receipt: firstReceipt });
     }
     assert.equal(command, 'publish');
     const passed = gate.before(await publishRequest());
@@ -112,7 +122,7 @@ setInterval(() => {}, 1000);`);
         const rejected = await passed;
         if (rejected) throw Error('Publication request failed: ' + rejected.status);
       }
-      return JSON.stringify({ publication: { id: 'c'.repeat(64), payload: intent } });
+      return JSON.stringify(firstReceipt);
     } finally { state.publisherSettled = true; state.trace.push('publisher-settled'); }
   };
   const page = {

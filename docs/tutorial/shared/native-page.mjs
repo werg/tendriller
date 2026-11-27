@@ -1,7 +1,7 @@
 // One optional page inside the workspace's single agent program.
 // Chronolog v2: zero native C/C++ builds, built-in QuickJS-NG + sqlite-cas.wasm,
 // and atomic `$permissions` + `$keys` admission.
-import { bytesToHex, createApplicationSession, describeApplication, encodeSignedOperation, genesisChainId, hexToBytes } from '@chronolog/peer-session';
+import { bytesToHex, createApplicationSession, describeApplication, encodeSignedOperation, genesisChainId, hexToBytes, verifySignedOperation } from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';
 import { createAdmission, openPageGenesis } from '@tendriller/core/admission';
@@ -18,14 +18,19 @@ export function publicationControl(context, definition) {
     publication: () => context.host.peers.publication(),
     async publicationOperation(id) {
       const saved = await context.readPrivate(`pub-v2-${digest(id)}.json`, true);
-      return saved ? { op: saved.op, receipt: await context.host.peers.publication(saved.opId) } : null;
+      return saved ? {
+        op: saved.op,
+        opId: saved.opId,
+        operationId: saved.operationId,
+        receipt: await context.host.peers.publication(saved.opId),
+      } : null;
     },
     async preparePublication({ operationId, entry = 'index.html', files }) {
       const name = `pub-v2-${digest(operationId)}.json`;
       const saved = await context.readPrivate(name, true);
       if (saved) {
         if (saved.entry !== entry || JSON.stringify(saved.files) !== JSON.stringify(files)) {
-          throw Error('Publication operation ID already binds another graph');
+          throw Object.assign(Error('Publication operation ID already binds another graph'), { code: 'PEER_PUBLICATION_OPERATION_REUSED' });
         }
         return saved.op;
       }
@@ -49,12 +54,14 @@ export function publicationControl(context, definition) {
             action: 'publish',
             entry,
             files,
-            ...(previous ? { expectedRevision: previous.revision } : {}),
+            ...(previous ? { previous: previous.opId, expectedRevision: previous.revision } : {}),
           },
         }],
       }, context.signer.privateKey);
+      const { opId: opIdBytes } = await verifySignedOperation(signed);
+      const opId = bytesToHex(opIdBytes);
       const op = authorityRecord(encodeSignedOperation(signed));
-      await context.savePrivate(name, { entry, files, op });
+      await context.savePrivate(name, { entry, files, op, opId, operationId });
       return op;
     },
     publish: (op, assets) => context.host.peers.publish(op, assets),

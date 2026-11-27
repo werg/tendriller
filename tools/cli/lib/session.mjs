@@ -197,12 +197,15 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       if (options.operation === undefined) throw error;
       // An explicitly retained identity can still retry with the complete original bytes.
     }
-    const knownHashes = new Set((currentHead?.publication?.payload?.files ?? []).map(file => `${file.hash}:${file.size}`));
+    const currentFiles = currentHead?.release?.files ?? currentHead?.publication?.payload?.files ?? [];
+    const currentId = currentHead?.opId ?? currentHead?.publication?.id ?? null;
+    const currentRevision = currentHead?.revision ?? currentHead?.publication?.payload?.revision ?? -1;
+    const knownHashes = new Set(currentFiles.map(file => `${file.hash}:${file.size}`));
     const operationId = options.operation ?? (() => {
       const digest = createHash('sha256').update(JSON.stringify({
-        previous: currentHead?.publication?.id ?? null, entry: source.entry, files: manifestFiles,
+        previous: currentId, entry: source.entry, files: manifestFiles,
       })).digest('hex').slice(0, 16);
-      return `pub-${(currentHead?.publication?.payload?.revision ?? -1) + 1}-${digest}`;
+      return `pub-${currentRevision + 1}-${digest}`;
     })();
     let publication;
     try {
@@ -221,13 +224,15 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
         return await control.publish(publication, fullAssets);
       }
     } catch (error) {
-      const committed = error.outcome === 'committed' && error.receipt?.publication?.id === publication?.id;
+      const receiptId = error.receipt?.opId ?? error.receipt?.publication?.id ?? null;
+      const publicationId = publication?.opId ?? publication?.id ?? null;
+      const committed = error.outcome === 'committed' && receiptId !== null && (publicationId === null || receiptId === publicationId);
       error.publication = { operationId: publication?.payload?.operationId ?? operationId,
         ...(publication?.payload?.operationId && publication.payload.operationId !== operationId ? { localOperationId: operationId } : {}),
-        publicationId: publication?.id ?? null,
+        publicationId,
         outcome: committed ? 'committed' : publication ? 'unknown' : 'not_submitted',
         phase: error.phase ?? (publication ? 'submission' : 'preparation'),
-        receipt: committed ? { publicationId: error.receipt.publication.id, version: error.receipt.version } : null,
+        receipt: committed ? { publicationId: receiptId, version: error.receipt.version } : null,
         nextAction: committed
           ? 'The host acknowledged this publication. Reopen the same device and inspect publication plus publication-operation; verify the signed selected head before calling the release current.'
           : 'Keep this operation identity, device store and authored bytes. Inspect publication and publication-operation after reopening. Retry only the original publication intent; do not create a replacement operation because the response was uncertain.' };
