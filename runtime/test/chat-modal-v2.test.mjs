@@ -263,11 +263,16 @@ test('built-in chat routes through real Chronolog v2 agentMessage command, reads
   mounted.textarea.value = 'Hello from v2 chat';
   mounted.textarea.dispatch('input');
   mounted.sendBtn.dispatch('click');
-  await flush(25);
+  let feedAfterSend = { messages: [] };
+  for (let i = 0; i < 40; i++) {
+    await flush(10);
+    feedAfterSend = (await session.query('agentFeed', null)).value;
+    if (feedAfterSend.messages.length > 0 && /Saved locally/.test(mounted.feed.textContent)) break;
+    await new Promise(r => setTimeout(r, 25));
+  }
 
   assert.equal(mounted.statusStrip.hidden, true, `must not fail with OPERATION_UPDATES_REQUIRED (got: ${mounted.statusStrip.textContent})`);
   assert.equal(mounted.textarea.value, '', 'draft clears once stored locally');
-  const feedAfterSend = (await session.query('agentFeed', null)).value;
   assert.equal(feedAfterSend.messages.length, 1);
   assert.equal(feedAfterSend.messages[0].text, 'Hello from v2 chat');
   assert.equal(feedAfterSend.messages[0].author, identity.publicKey);

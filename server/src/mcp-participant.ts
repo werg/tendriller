@@ -567,10 +567,51 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
     await checkGrant('applications:read');
     t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now()));
     let described: { queries: readonly any[]; commands: readonly any[] } | null = null;
+    let topics: Record<string, unknown> = {};
+    let sqlSchemas: Record<string, unknown> = {};
+    let permissionsSummary: { openReaders: boolean; openWriters: boolean; memberCount: number } | null = null;
     if (principal.wrapPrivateKey && readStoredGenesisBytes(t)) {
-      described = await t.serializeMcp(() =>
-        withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => session.describe()),
+      const inspected = await t.serializeMcp(() =>
+        withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
+          const desc = await session.describe().catch(() => null);
+          const redTopics = (session.topic('$reducers') as { topics?: Record<string, any> } | null)?.topics ?? {};
+          const appTopics: Record<string, unknown> = {};
+          const schemas: Record<string, unknown> = {};
+          for (const [name, binding] of Object.entries(redTopics)) {
+            if (name.startsWith('$')) continue;
+            appTopics[name] = binding;
+            if (caps.read && binding?.module === 'chronolog/sql') {
+              const s = await session.query(name, { kind: 'schema' } as any).catch(() => null);
+              if (s?.value) {
+                const sv = s.value as Record<string, unknown>;
+                schemas[name] = {
+                  schemaVersion: sv.schemaVersion ?? 0,
+                  allowUserDdl: sv.allowUserDdl !== false,
+                  tables: sv.tables ?? [],
+                  policies: sv.policies ?? {},
+                };
+              }
+            }
+          }
+          const perms = session.permissions() as unknown as { openReaders?: boolean; openWriters?: boolean; members?: readonly unknown[] };
+          return {
+            desc,
+            appTopics,
+            schemas,
+            permsSummary: {
+              openReaders: Boolean(perms?.openReaders),
+              openWriters: Boolean(perms?.openWriters),
+              memberCount: Array.isArray(perms?.members) ? perms.members.length : 0,
+            },
+          };
+        }),
       ).catch(() => null);
+      if (inspected) {
+        described = inspected.desc;
+        topics = inspected.appTopics;
+        sqlSchemas = inspected.schemas;
+        permissionsSummary = inspected.permsSummary;
+      }
     }
     const configTools = t.db.get<{ tools?: { queries?: any[]; commands?: any[] } } | null>('application_configuration', null)?.tools;
     const rawQueries = described?.queries ?? configTools?.queries ?? [];
@@ -592,9 +633,12 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
           keyCustody: 'oauth-token-wrapped',
         },
         roster,
+        topics,
+        sqlSchemas,
+        ...(permissionsSummary ? { permissionsSummary } : {}),
         queries,
         commands,
-        builtinTools: ['agents_list', 'agent_message', 'agent_feed', 'read_application_events', 'inspect_application_operation'],
+        builtinTools: ['agents_list', 'agent_message', 'agent_feed', 'query_sql', 'query_multiple_applications', 'read_application_events', 'inspect_application_operation'],
       },
     });
   }
@@ -631,6 +675,45 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
         const op = await session.operations.get(operationId);
         return json({ value: { operationId, operation: op ? op.inspect() : null } });
+      });
+    }
+
+    if (method === 'query_sql') {
+      await checkGrant('applications:read');
+      if (!caps.read) throw new HttpError(403, 'read_not_permitted');
+      meterCall();
+      const sql = string(params.sql, 8192);
+      const sqlParams = Array.isArray(params.params) ? params.params : [];
+      const format = params.format === 'rows' ? 'rows' : 'objects';
+      const requestedTopic = typeof params.topic === 'string' && params.topic.trim() ? params.topic.trim() : null;
+      return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
+        const redTopics = (session.topic('$reducers') as { topics?: Record<string, any> } | null)?.topics ?? {};
+        let targetTopic = requestedTopic;
+        if (!targetTopic) {
+          const sqlTopics = Object.entries(redTopics)
+            .filter(([name, binding]) => !name.startsWith('$') && binding?.module === 'chronolog/sql')
+            .map(([name]) => name);
+          if (sqlTopics.length === 1) targetTopic = sqlTopics[0];
+          else if (sqlTopics.includes('sql')) targetTopic = 'sql';
+          else if (sqlTopics.length === 0) {
+            // Fall back to a single non-control custom SQL topic (e.g. `@app/memory`)
+            const appTopics = Object.keys(redTopics).filter(name => !name.startsWith('$') && !name.startsWith('agent/'));
+            if (appTopics.length === 1) targetTopic = appTopics[0];
+          }
+        }
+        if (!targetTopic) {
+          throw new HttpError(400, 'sql_topic_required', 'Specify "topic" because this page has zero or multiple SQL topics.');
+        }
+        try {
+          const result = await session.query(targetTopic, { sql, params: sqlParams, format } as any);
+          return json({ value: { topic: targetTopic, revision: result.revision, value: result.value } });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/not authorized|authorization denied|readonly/i.test(msg)) {
+            throw new HttpError(403, 'sql_read_only', 'query_sql only permits read-only SQL queries.');
+          }
+          throw new HttpError(400, 'sql_query_failed', msg);
+        }
       });
     }
 
@@ -772,7 +855,16 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             throw new HttpError(403, 'operation_not_approved');
           }
           const described = await session.describe().catch(() => null);
-          const cmdSpec = described?.commands.find(c => c.name === commandName);
+          const appTopics = Object.keys((session.topic('$reducers') as any)?.topics ?? {})
+            .filter(name => !name.startsWith('$') && !name.startsWith('agent/'));
+          const colonIdx = commandName.indexOf(':');
+          const cmdSpec = described?.commands.find(c => c.name === commandName)
+            ?? (colonIdx > 0 && appTopics.length === 1 && commandName.slice(0, colonIdx) === appTopics[0]
+              ? described?.commands.find(c => c.name === commandName.slice(colonIdx + 1))
+              : undefined)
+            ?? (colonIdx < 0 && appTopics.length === 1
+              ? described?.commands.find(c => c.name === `${appTopics[0]}:${commandName}`)
+              : undefined);
           if (described && described.commands.length > 0 && !cmdSpec) {
             throw new HttpError(404, 'command_not_found', `Unknown command "${commandName}".`);
           }
@@ -780,16 +872,15 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             const schemaErr = validateSchemaInput(cmdSpec.input, params.input ?? null);
             if (schemaErr) throw new HttpError(400, 'invalid_input', schemaErr);
           }
+          const resolvedCommand = cmdSpec?.name ?? commandName;
           try {
             try {
-              op = await session.command(commandName, (params.input ?? null) as any, { operationId });
+              op = await session.command(resolvedCommand, (params.input ?? null) as any, { operationId });
             } catch (firstErr) {
               const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-              if (!firstMsg.startsWith('APPLICATION_COMMAND_UNKNOWN') || commandName.includes(':')) throw firstErr;
-              const topics = Object.keys((session.topic('$reducers') as any)?.topics ?? {})
-                .filter(name => !name.startsWith('$') && !name.startsWith('agent/'));
-              if (topics.length !== 1) throw firstErr;
-              op = await session.command(`${topics[0]}:${commandName}`, (params.input ?? null) as any, { operationId });
+              if (!firstMsg.startsWith('APPLICATION_COMMAND_UNKNOWN') || resolvedCommand.includes(':')) throw firstErr;
+              if (appTopics.length !== 1) throw firstErr;
+              op = await session.command(`${appTopics[0]}:${resolvedCommand}`, (params.input ?? null) as any, { operationId });
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

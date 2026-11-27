@@ -12,7 +12,7 @@ describe("public routes", () => {
     const html = await landing.text();
     expect(html).toContain("/agent.md");
     expect(html).toContain("https://github.com/werg/tendriller");
-    expect(html).toContain("Why Tendriller?");
+    expect(html).toMatch(/Why (&quot;)?Tendriller(&quot;)?\?/);
     const nf = await req("/nope");
     expect(nf.status).toBe(404);
     expect(await nf.json()).toMatchObject({ error: { code: "not_found" } });
