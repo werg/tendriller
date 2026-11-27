@@ -8,6 +8,7 @@ import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
 import { composeOwnerExtensions } from '@tendriller/core/admission';
+import { recoverPublicationAsset } from '@tendriller/core/publication-blobs';
 import { browserProfileId } from './browser-profile.mjs';
 import { admitBrowserSession, bootstrapBrowser, finalizeFirstBrowserGenesis } from './browser-bootstrap.mjs';
 import { hostedMcpExtensions } from './hosted-mcp.mjs';
@@ -37,7 +38,7 @@ export function servePageWorker({
 
   return serveBrowserOwner({
     async load({ signal }) {
-      const response = await fetch(new URL(configUrl, import.meta.url), { signal });
+      const response = await fetch(new URL(configUrl, self.location.href), { signal });
       if (!response.ok) throw Error('Application configuration is unavailable');
       const configuration = await response.json();
       const profileId = browserProfileId(configuration.applicationId);
@@ -84,8 +85,30 @@ export function servePageWorker({
               onNotification: () => void admission.refresh(),
             });
             Object.defineProperty(session, 'participation', { value: participation });
+            const pubRecoveryExtension = Object.freeze({
+              async call(name, args) {
+                if (name !== 'publication.recoverAsset') throw Object.assign(Error('EXTENSION_UNKNOWN'), { code: 'EXTENSION_UNKNOWN' });
+                const [req] = args ?? [];
+                const pubState = session.topic?.('$publications');
+                const versions = [pubState?.current, ...(Array.isArray(pubState?.history) ? pubState.history : [])].filter(Boolean);
+                let matched = null;
+                for (const ver of versions) {
+                  for (const f of ver.files ?? []) {
+                    if ((req?.sha256 && f.hash === req.sha256) || (req?.path && f.path === req.path)) {
+                      matched = f;
+                      break;
+                    }
+                  }
+                  if (matched) break;
+                }
+                const target = matched ?? (req?.sha256 ? { hash: req.sha256, size: req.size ?? 0, type: req.type || 'application/octet-stream', path: req.path || '' } : null);
+                if (!target?.hash) return null;
+                const found = await recoverPublicationAsset(session, target, { cache: true });
+                return found ? { bytes: found.bytes, type: target.type || 'application/octet-stream', source: found.source } : null;
+              },
+            });
             const custom = typeof extraExtensions === 'function' ? extraExtensions({ session, admission, opened }) : [];
-            const extList = [admission.extensions, hostedMcpExtensions({ session, admission }), ...(Array.isArray(custom) ? custom : custom ? [custom] : [])];
+            const extList = [admission.extensions, hostedMcpExtensions({ session, admission }), pubRecoveryExtension, ...(Array.isArray(custom) ? custom : custom ? [custom] : [])];
             return {
               session,
               extensions: composeOwnerExtensions(...extList),

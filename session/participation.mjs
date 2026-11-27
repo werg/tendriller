@@ -129,9 +129,12 @@ export function participateApplication(session, { peers, openDirectConnection,
   }
   const uploadedDigests = new Set(), uploadedOpIds = new Set(), uploadedCasHashes = new Set();
   let mailboxInFlight = null, mailboxDirty = false, mailboxTimer = undefined;
+  let mergingFromMailbox = false, lastMailboxSyncAt = 0, mailboxCooldownUntil = 0, mailboxFailures = 0;
 
-  async function syncMailbox() {
+  async function syncMailbox({ force = false } = {}) {
     if (signal.aborted || typeof peers.syncMailbox !== 'function' || typeof session.exportFacts !== 'function') return;
+    const now = Date.now();
+    if (!force && (now < mailboxCooldownUntil || now - lastMailboxSyncAt < 5000)) return;
     mailboxDirty = true;
     if (mailboxInFlight) return mailboxInFlight;
     mailboxInFlight = (async () => {
@@ -170,10 +173,15 @@ export function participateApplication(session, { peers, openDirectConnection,
           }
 
           for (const node of facts.casNodes ?? []) {
+            if (node.partition !== 'public') continue;
             knownCasHashes.push(node.hash);
             if (!uploadedCasHashes.has(node.hash) && outgoingCas.length < 128 && node.bytes.byteLength <= 512 * 1024) {
-              outgoingCas.push({ hash: node.hash, partition: node.partition, bytes: bytesToHex(node.bytes) });
+              outgoingCas.push({ hash: node.hash, partition: 'public', bytes: bytesToHex(node.bytes) });
             }
+          }
+
+          if (!outgoingEnvelopes.length && !outgoingOps.length && !outgoingCas.length && lastMailboxSyncAt > 0 && Date.now() - lastMailboxSyncAt < 5000) {
+            break;
           }
 
           const resp = await peers.syncMailbox({
@@ -185,7 +193,14 @@ export function participateApplication(session, { peers, openDirectConnection,
             knownCasHashes,
           }, { signal }).catch(() => null);
 
-          if (!resp) continue;
+          if (!resp) {
+            mailboxFailures++;
+            mailboxCooldownUntil = Date.now() + Math.min(30_000, 2000 * 2 ** Math.min(mailboxFailures - 1, 4));
+            break;
+          }
+          mailboxFailures = 0;
+          mailboxCooldownUntil = 0;
+          lastMailboxSyncAt = Date.now();
           for (const e of outgoingEnvelopes) uploadedDigests.add(e.digest);
           for (const o of outgoingOps) uploadedOpIds.add(o.opId);
           for (const c of outgoingCas) uploadedCasHashes.add(c.hash);
@@ -204,16 +219,23 @@ export function participateApplication(session, { peers, openDirectConnection,
           for (const c of incomingCas) uploadedCasHashes.add(c.hash);
 
           if (incomingEnvelopes.length || incomingOps.length || incomingCas.length) {
-            await session.mergeFacts({
-              publicOps: incomingOps,
-              encryptedEnvelopes: incomingEnvelopes,
-              casNodes: incomingCas,
-              retentions: [],
-              checkpoints: [],
-            });
+            mergingFromMailbox = true;
+            try {
+              await session.mergeFacts({
+                publicOps: incomingOps,
+                encryptedEnvelopes: incomingEnvelopes,
+                casNodes: incomingCas,
+                retentions: [],
+                checkpoints: [],
+              });
+            } finally {
+              mergingFromMailbox = false;
+            }
           }
         } catch {
-          // Best-effort async catch-up; direct WebRTC and local writes never depend on mailbox
+          mailboxFailures++;
+          mailboxCooldownUntil = Date.now() + Math.min(30_000, 2000 * 2 ** Math.min(mailboxFailures - 1, 4));
+          break;
         }
       }
     })().finally(() => { mailboxInFlight = null; });
@@ -221,12 +243,13 @@ export function participateApplication(session, { peers, openDirectConnection,
   }
 
   function scheduleMailboxSync() {
-    if (signal.aborted || typeof peers.syncMailbox !== 'function') return;
+    if (signal.aborted || mergingFromMailbox || typeof peers.syncMailbox !== 'function') return;
     if (mailboxTimer !== undefined) return;
+    const delay = Math.max(500, mailboxCooldownUntil - Date.now());
     mailboxTimer = setTimeout(() => {
       mailboxTimer = undefined;
-      void syncMailbox();
-    }, 250);
+      void syncMailbox({ force: true });
+    }, delay);
     mailboxTimer.unref?.();
   }
 

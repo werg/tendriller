@@ -420,7 +420,7 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       if(!saved)localStorage.setItem(identityKey,JSON.stringify(await exportSigningIdentity(identity)));
       const store={
         async get(key){const value=localStorage.getItem(storeKey+key);return value===null?null:Uint8Array.from(atob(value),c=>c.charCodeAt(0));},
-        async put(key,bytes){localStorage.setItem(storeKey+key,btoa(String.fromCharCode(...bytes)));},
+        async put(key,bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000));localStorage.setItem(storeKey+key,btoa(s));},
       };
       const input=document.querySelector('textarea');input.value=view.readDraft('draft')||'';
       input.addEventListener('input',()=>view.writeDraft(input.value,'draft'));

@@ -198,7 +198,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
       const tts = await waitFor(load(), abort.signal);
       if (!active()) return;
       const ctx = audioContext();
-      if (ctx.state !== "running") await Promise.race([ctx.resume().catch(() => {}), pause(1000)]);
+      if (ctx.state !== "running") await Promise.race([ctx.resume().catch(() => {}), pause(3000)]);
       if (!active()) return;
       if (ctx.state !== "running") {
         // Autoplay permission is independent of the model: keep it ready for the
