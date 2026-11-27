@@ -85,15 +85,25 @@ export async function deleteUnreferencedContent(t: Tendril, hash: string, olderT
 }
 
 /** Stores the bytes content-addressed in R2 (skipped if already present). */
-export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
+export async function storeContent(
+  t: Tendril,
+  body: ArrayBuffer,
+  type: string,
+  options?: { pageLimit?: number | null },
+): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
-  const owner = t.db.get<string | null>("owner_account", null);
-  const pageLimit = owner
-    ? (await getAccountEntitlements(t.env, owner, t.now()).catch(() => null))?.quotas.pageStorageBytes
-    : undefined;
+  const pageLimit = options && 'pageLimit' in options
+    ? options.pageLimit
+    : (() => {
+        const owner = t.db.get<string | null>("owner_account", null);
+        return owner
+          ? getAccountEntitlements(t.env, owner, t.now()).then(e => e.quotas.pageStorageBytes, () => undefined)
+          : Promise.resolve(undefined);
+      })();
+  const resolvedPageLimit = await pageLimit;
   await contentOperation(t, hash, async () => {
     const riskScore = scanContent(body);
-    const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, pageLimit);
+    const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, resolvedPageLimit ?? undefined);
     let globalReserved = false;
     let uploaded = false;
     const key = fileKey(t, hash);

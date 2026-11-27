@@ -26,11 +26,35 @@ import {
 import type { HostAppConfig } from '../../contract/authority.mjs';
 import { notifyDiscoveryWatchers } from './discovery';
 import { createVersion, storeContent, type VersionFile } from './files';
+import { getAccountEntitlements } from './billing/entitlements';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
 const CONTENT_LIMIT = 8 * 1024 * 1024;
 const MAX_PUBLICATION_FILES = 256;
+const ASSET_UPLOAD_CONCURRENCY = 4;
+
+async function storeSuppliedAssets(
+  t: Tendril,
+  principal: Principal,
+  supplied: Map<string, Uint8Array>,
+  required: Map<string, { path: string; hash: string; size: number; type: string }>,
+): Promise<void> {
+  await freshAuthorityAccess(t, principal);
+  if (supplied.size === 0) return;
+  const owner = t.db.get<string | null>('owner_account', null);
+  const pageLimit = owner
+    ? (await getAccountEntitlements(t.env, owner, t.now()).catch(() => null))?.quotas.pageStorageBytes
+    : undefined;
+  const entries = [...supplied.entries()];
+  for (let i = 0; i < entries.length; i += ASSET_UPLOAD_CONCURRENCY) {
+    const batch = entries.slice(i, i + ASSET_UPLOAD_CONCURRENCY);
+    await Promise.all(batch.map(([hash, bytes]) =>
+      storeContent(t, bytes.slice().buffer, required.get(hash)!.type, { pageLimit }),
+    ));
+  }
+  await freshAuthorityAccess(t, principal);
+}
 
 export interface PeerPublicationReceipt {
   readonly opId: string;
@@ -54,7 +78,9 @@ function assetBytes(value: unknown): Uint8Array {
   let binary: string;
   try { binary = atob(value); } catch { throw new HttpError(400, 'peer_publication_bytes_invalid'); }
   if (btoa(binary) !== value) throw new HttpError(400, 'peer_publication_bytes_invalid', 'Expected canonical base64 bytes');
-  return Uint8Array.from(binary, character => character.charCodeAt(0));
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
 }
 
 export async function exchangePeerPublication(
@@ -177,11 +203,7 @@ export async function exchangePeerPublication(
       if (!config?.publisherKeys?.includes(parsed.author)) {
         throw new HttpError(403, 'publisher_required', 'Author is not in prepared publisherKeys');
       }
-      await freshAuthorityAccess(t, principal);
-      for (const [hash, bytes] of supplied) {
-        await storeContent(t, bytes.slice().buffer, required.get(hash)!.type);
-        await freshAuthorityAccess(t, principal);
-      }
+      await storeSuppliedAssets(t, principal, supplied, required);
       const release: ControlRelease = {
         revision: 0,
         opId: parsed.opId,
@@ -232,11 +254,7 @@ export async function exchangePeerPublication(
     }
 
     // Store all referenced assets in R2 before creating the DO version.
-    await freshAuthorityAccess(t, principal);
-    for (const [hash, bytes] of supplied) {
-      await storeContent(t, bytes.slice().buffer, required.get(hash)!.type);
-      await freshAuthorityAccess(t, principal);
-    }
+    await storeSuppliedAssets(t, principal, supplied, required);
 
     const release: ControlRelease = nextState.publications.current?.opId === parsed.opId
       ? nextState.publications.current

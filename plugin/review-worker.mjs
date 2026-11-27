@@ -1,6 +1,5 @@
 // Browser-owned application Worker for the signed review page. Identity, keys and storage stay in this profile.
 import quickJsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
-import sqliteCasWasmUrl from '@chronolog/peer-session/sqlite-cas.wasm';
 import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
@@ -16,7 +15,7 @@ const loadWasm = async url => {
   if (!res.ok) throw Error(`Failed to load WASM (${res.status})`);
   return WebAssembly.compile(await res.arrayBuffer());
 };
-const wasmModulesPromise = Promise.all([loadWasm(quickJsWasmUrl), loadWasm(sqliteCasWasmUrl)]);
+const wasmModulePromise = loadWasm(quickJsWasmUrl);
 
 serveBrowserOwner({
   async load({ signal }) {
@@ -33,9 +32,9 @@ serveBrowserOwner({
         const device = await openBrowserDevice({ name: profileId, create: true });
         let session, participation, admission;
         try {
-          const [opened, [wasmModule, sqliteWasmModule]] = await Promise.all([
+          const [opened, wasmModule] = await Promise.all([
             bootstrapBrowser({ configuration, device, imports, topics, signal }),
-            wasmModulesPromise,
+            wasmModulePromise,
           ]);
           session = await createApplicationSession({
             device,
@@ -44,7 +43,6 @@ serveBrowserOwner({
             genesis: opened.genesisBytes,
             casNodes: opened.casNodes,
             wasmModule,
-            sqliteWasmModule,
             ...(opened.epoch0Key ? { epochKeys: new Map([[0, opened.epoch0Key]]) } : {}),
           });
           if (opened.publicOps.length > 0) {

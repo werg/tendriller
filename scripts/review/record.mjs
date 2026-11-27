@@ -76,12 +76,13 @@ export async function recordReview({ project, accessPath, output, composition, v
     await positive(1, async () => {
       const result = await call('describe_application', app); assert(JSON.stringify(result.structuredContent).includes('completeItem'));
       const value = result.structuredContent;
-      assert.equal(value.hostedParticipant.keyCustody, 'oauth-token-wrapped'); assert.equal(value.hasDomainBundle, true);
+      assert.equal(value.hostedParticipant.keyCustody, 'oauth-token-wrapped');
+      assert.ok(Array.isArray(value.commands) && value.commands.some(item => item.name === 'completeItem'));
       return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), hostedParticipant: value.hostedParticipant.handle, keyCustody: value.hostedParticipant.keyCustody };
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
     const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
-    const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).publication.id;
+    const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).opId;
     await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));
     let operationId;
@@ -124,9 +125,9 @@ export async function recordReview({ project, accessPath, output, composition, v
     const metadata = await readWithAdmissionRetry(() => host.peers.application());
     decodeGenesisBlock(authorityRecordBytes(metadata.genesis));
     const publication = await readWithAdmissionRetry(() => host.peers.publication());
-    assert.equal(publication.id, originalPublication, 'Data commands must not require or change signed code');
+    assert.equal(publication.opId, originalPublication, 'Data commands must not require or change signed code');
     if (publication.op) await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication.op)));
-    report.publication = publication.id;
+    report.publication = publication.opId;
     await page.goto(handle.page_url); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.reload(); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.screenshot({ path: resolve(output, 'verified-page.png'), fullPage: true });
