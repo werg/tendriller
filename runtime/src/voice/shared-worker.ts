@@ -1,13 +1,31 @@
 // Shared per-tab Cactus Whistle WASM worker pool and audio-to-16kHz-PCM decoder.
-// Prevents built-in chat and normal page code from double-loading the ~18 MB model.
+// Consolidates dictation, tap-to-talk, meeting stream transcription, and local wake spotting
+// onto a single verified ~18 MB WASM worker per tab.
 import type { RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 
 type SpeechResources = NonNullable<RuntimeArtifactFeatures["speech"]>;
 
+export interface SpeechStreamPartial {
+  readonly confirmed: string;
+  readonly pending: string;
+  readonly text: string;
+}
+
+export interface SpeechStreamHandle {
+  readonly native: boolean;
+  push(samples: Float32Array, options?: { signal?: AbortSignal }): Promise<SpeechStreamPartial>;
+  stop(options?: { signal?: AbortSignal }): Promise<string>;
+  cancel(): Promise<void>;
+}
+
 export interface SharedSpeechWorker {
+  readonly supportsStreaming: boolean;
   retain(): () => void;
   ensureInit(speech: SpeechResources, options?: { onProgress?: (text: string) => void; signal?: AbortSignal }): Promise<void>;
-  transcribe(samples: Float32Array, language: string, options?: { signal?: AbortSignal }): Promise<string>;
+  transcribe(samples: Float32Array, language: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<string>;
+  transcribeSegment(samples: Float32Array, language: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<string>;
+  detect(samples: Float32Array, language: string, phrase: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ matched: boolean; command: string }>;
+  startStream(language: string, options?: { signal?: AbortSignal }): Promise<SpeechStreamHandle>;
 }
 
 const poolsByCtor = new WeakMap<Function, Map<string, SharedSpeechWorkerImpl>>();
@@ -22,18 +40,31 @@ function poolForCurrentWorker(): Map<string, SharedSpeechWorkerImpl> {
   return map;
 }
 
+function clampCopy(samples: Float32Array): Float32Array {
+  const copy = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i]!;
+    copy[i] = Number.isFinite(v) ? (v > 1 ? 1 : v < -1 ? -1 : v) : 0;
+  }
+  return copy;
+}
+
 class SharedSpeechWorkerImpl implements SharedSpeechWorker {
   private worker: Worker | null = null;
   private initialized = false;
+  private streamingSupported = false;
   private initPromise: Promise<void> | null = null;
   private initWaiters = 0;
   private holders = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private nextId = 0;
+  private streamSeq = 0;
   private progressListeners = new Set<(text: string) => void>();
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
   constructor(private readonly workerUrl: string) {}
+
+  get supportsStreaming(): boolean { return this.streamingSupported; }
 
   retain(): () => void {
     this.holders++;
@@ -52,6 +83,7 @@ class SharedSpeechWorkerImpl implements SharedSpeechWorker {
     this.worker?.terminate();
     this.worker = null;
     this.initialized = false;
+    this.streamingSupported = false;
     this.initPromise = null;
     for (const entry of this.pending.values()) entry.reject(error);
     this.pending.clear();
@@ -88,11 +120,27 @@ class SharedSpeechWorkerImpl implements SharedSpeechWorker {
     return next;
   }
 
-  private call(action: string, payload: Record<string, unknown>, transfer: Transferable[] = [], timeoutMs = 30_000): Promise<any> {
+  private call(
+    action: string,
+    payload: Record<string, unknown>,
+    transfer: Transferable[] = [],
+    timeoutMs = 30_000,
+    fatalOnTimeout = false,
+  ): Promise<any> {
     const worker = this.ensureWorker();
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.fail(new Error("On-device speech worker timed out.")), timeoutMs);
+      const timer = setTimeout(() => {
+        const entry = this.pending.get(id);
+        if (!entry) return;
+        this.pending.delete(id);
+        const err = new Error("On-device speech worker timed out.");
+        if (fatalOnTimeout) {
+          this.fail(err);
+        } else {
+          entry.reject(err);
+        }
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: value => { clearTimeout(timer); resolve(value); },
         reject: error => { clearTimeout(timer); reject(error); },
@@ -117,13 +165,14 @@ class SharedSpeechWorkerImpl implements SharedSpeechWorker {
         this.initPromise = this.enqueue(async () => {
           if (this.initialized && this.worker) return;
           for (const fn of this.progressListeners) { try { fn("Downloading private speech model…"); } catch {} }
-          await this.call("init", {
+          const res = await this.call("init", {
             engine: speech.engine,
             modelUrl: new URL(speech.url, baseUrl).href,
             modelSha256: speech.sha256,
             modelSize: speech.size,
-          }, [], 120_000);
+          }, [], 120_000, true);
           this.initialized = true;
+          this.streamingSupported = res?.streaming === true;
         }).catch(err => {
           this.initPromise = null;
           throw err;
@@ -139,21 +188,119 @@ class SharedSpeechWorkerImpl implements SharedSpeechWorker {
     }
   }
 
-  async transcribe(samples: Float32Array, language: string, options: { signal?: AbortSignal } = {}): Promise<string> {
+  async transcribe(samples: Float32Array, language: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
     if (options.signal?.aborted) throw new DOMException("Transcription cancelled", "AbortError");
     if (!this.initialized || !this.worker) throw new Error("Speech model is not loaded yet.");
-    // Clamp samples into [-1, 1] and copy into a transferable ArrayBuffer
-    const copy = new Float32Array(samples.length);
-    for (let i = 0; i < samples.length; i++) {
-      const v = samples[i]!;
-      copy[i] = Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0;
-    }
+    const copy = clampCopy(samples);
     const task = this.enqueue(async () => {
       if (options.signal?.aborted) throw new DOMException("Transcription cancelled", "AbortError");
-      const res = await this.call("transcribe", { samples: copy.buffer, language }, [copy.buffer], 30_000);
+      const res = await this.call("transcribe", { samples: copy.buffer, language }, [copy.buffer], options.timeoutMs ?? 30_000, false);
       return String(res?.text ?? "").trim();
     });
     return raceAbort(task, options.signal);
+  }
+
+  async transcribeSegment(samples: Float32Array, language: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
+    if (options.signal?.aborted) throw new DOMException("Transcription cancelled", "AbortError");
+    if (!this.initialized || !this.worker) throw new Error("Speech model is not loaded yet.");
+    const copy = clampCopy(samples);
+    const task = this.enqueue(async () => {
+      if (options.signal?.aborted) throw new DOMException("Transcription cancelled", "AbortError");
+      const res = await this.call("transcribe-segment", { samples: copy.buffer, language }, [copy.buffer], options.timeoutMs ?? 12_000, false);
+      return String(res?.text ?? "").trim();
+    });
+    return raceAbort(task, options.signal);
+  }
+
+  async detect(samples: Float32Array, language: string, phrase: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{ matched: boolean; command: string }> {
+    if (options.signal?.aborted) throw new DOMException("Detection cancelled", "AbortError");
+    if (!this.initialized || !this.worker) throw new Error("Speech model is not loaded yet.");
+    const copy = clampCopy(samples);
+    const task = this.enqueue(async () => {
+      if (options.signal?.aborted) throw new DOMException("Detection cancelled", "AbortError");
+      const res = await this.call("detect", { samples: copy.buffer, language, phrase }, [copy.buffer], options.timeoutMs ?? 10_000, false);
+      return { matched: res?.matched === true, command: String(res?.command ?? "").trim() };
+    });
+    return raceAbort(task, options.signal);
+  }
+
+  async startStream(language: string, options: { signal?: AbortSignal } = {}): Promise<SpeechStreamHandle> {
+    if (options.signal?.aborted) throw new DOMException("Stream cancelled", "AbortError");
+    if (!this.initialized || !this.worker) throw new Error("Speech model is not loaded yet.");
+
+    const sessionId = `stream-${++this.streamSeq}`;
+    let closed = false;
+    let native = false;
+    const fallbackChunks: Float32Array[] = [];
+    let fallbackSamples = 0;
+
+    if (this.streamingSupported) {
+      try {
+        const res = await raceAbort(
+          this.enqueue(() => this.call("stream-start", { sessionId, language }, [], 15_000, false)),
+          options.signal,
+        );
+        native = res?.native === true;
+      } catch {
+        native = false;
+      }
+    }
+
+    return {
+      get native() { return native; },
+      push: async (samples: Float32Array, pushOpts: { signal?: AbortSignal } = {}): Promise<SpeechStreamPartial> => {
+        if (closed || pushOpts.signal?.aborted) throw new DOMException("Stream closed", "AbortError");
+        const copy = clampCopy(samples);
+        if (!native) {
+          const cap = 16_000 * 30;
+          const remaining = cap - fallbackSamples;
+          if (remaining > 0) {
+            const take = copy.length <= remaining ? copy : copy.subarray(0, remaining);
+            fallbackChunks.push(take);
+            fallbackSamples += take.length;
+          }
+          return { confirmed: "", pending: "", text: "" };
+        }
+        const task = this.enqueue(async () => {
+          if (closed || pushOpts.signal?.aborted) return { confirmed: "", pending: "", text: "" };
+          const res = await this.call("stream-chunk", { sessionId, samples: copy.buffer }, [copy.buffer], 15_000, false);
+          return {
+            confirmed: String(res?.confirmed ?? ""),
+            pending: String(res?.pending ?? ""),
+            text: String(res?.text ?? ""),
+          };
+        });
+        return raceAbort(task, pushOpts.signal);
+      },
+      stop: async (stopOpts: { signal?: AbortSignal } = {}): Promise<string> => {
+        if (closed) return "";
+        closed = true;
+        if (!native) {
+          if (fallbackSamples === 0) return "";
+          const merged = new Float32Array(fallbackSamples);
+          let offset = 0;
+          for (const chunk of fallbackChunks) { merged.set(chunk, offset); offset += chunk.length; }
+          fallbackChunks.length = 0;
+          fallbackSamples = 0;
+          return this.transcribe(merged, language, { signal: stopOpts.signal });
+        }
+        const task = this.enqueue(async () => {
+          const res = await this.call("stream-stop", { sessionId }, [], 15_000, false);
+          return String(res?.text ?? "").trim();
+        });
+        return raceAbort(task, stopOpts.signal);
+      },
+      cancel: async (): Promise<void> => {
+        if (closed) return;
+        closed = true;
+        fallbackChunks.length = 0;
+        fallbackSamples = 0;
+        if (!native || !this.worker) return;
+        try {
+          await this.enqueue(() => this.call("stream-cancel", { sessionId }, [], 5_000, false));
+        } catch { /* best-effort reset */ }
+      },
+    };
   }
 }
 

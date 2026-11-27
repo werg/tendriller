@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { errorResponse, json, readJson } from "./http";
 import { safeEqual, sha256Hex } from "./ids";
+import { invalidateServiceMode } from "./service-state";
 
 /** Cloudflare generic notification destination. Policy IDs map to hard stop stages. */
 export async function budgetWebhook(req: Request, env: Env): Promise<Response> {
@@ -18,6 +19,7 @@ export async function budgetWebhook(req: Request, env: Env): Promise<Response> {
     WHEN mode = 'read_only' OR ? = 2 THEN 'read_only'
     WHEN mode = 'creation_paused' OR ? = 1 THEN 'creation_paused'
     ELSE mode END WHERE id = 1`).bind(rank, rank).run();
+  invalidateServiceMode();
   await env.ACCOUNTS.prepare("INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, 'cloudflare', ?, 'service', ?, ?)")
     .bind(crypto.randomUUID(), desired, String(body.alert_correlation_id ?? body.policy_id).slice(0, 200), Date.now()).run();
   return json({ ok: true, mode: desired });

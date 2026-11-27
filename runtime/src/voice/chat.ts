@@ -816,11 +816,15 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     } catch (err) {
       if (!disposed) {
         voiceError = err instanceof Error ? err.message : "Could not send message.";
-        if (via === "text" && !textarea.value) {
+        // Preserve both typed and voice-dictated messages when delivery fails (#142).
+        const currentDraft = textarea.value.trim();
+        if (!currentDraft) {
           textarea.value = trimmed;
-          autoResize();
-          try { sessionStorage.setItem(draftKey, trimmed); } catch { /* ignore */ }
+        } else if (!currentDraft.includes(trimmed)) {
+          textarea.value = `${currentDraft}\n${trimmed}`;
         }
+        autoResize();
+        try { sessionStorage.setItem(draftKey, textarea.value); } catch { /* ignore */ }
       }
     } finally {
       sending = false;

@@ -25,7 +25,7 @@ export async function mountConnectedAgentChat({
   autoSpeak = false,
   handsFreeLoop = false,
   onAttach,
-  loadVoice = () => import(runtime.assetUrl('voice.mjs')),
+  loadVoice = () => (typeof runtime.loadVoice === 'function' ? runtime.loadVoice() : import(runtime.assetUrl('voice.mjs'))),
 } = {}) {
   if (!runtime) throw Error('mountConnectedAgentChat requires window.tendril runtime');
   if (!session) throw Error('mountConnectedAgentChat requires a Chronolog session');

@@ -1,5 +1,23 @@
 import type { RuntimeApi } from "@tendriller/core/contract";
-import type { SpeechStatus } from "@tendriller/core/voice";
+import type {
+  AsrEngineDescriptor,
+  AsrEngineId,
+  DictationOptions,
+  DictationStream,
+  SpeechStatus,
+  SpeechStreamPartial,
+  TranscribeAudioOptions,
+  TranscriptEvent,
+} from "@tendriller/core/voice";
+export type {
+  AsrEngineDescriptor,
+  AsrEngineId,
+  DictationOptions,
+  DictationStream,
+  SpeechStreamPartial,
+  TranscribeAudioOptions,
+  TranscriptEvent,
+};
 /** model uses pinned local assets; local uses an installed browser language pack; browser may upload ambient audio. */
 export type WakeMode = "model" | "local" | "browser";
 export type WakeState = "off" | "starting" | "loading" | "listening" | "detected" | "command" | "transcribing" | "restarting" | "paused" | "error";
@@ -20,6 +38,7 @@ export interface VoiceOptions {
   consentMode?: VoiceConsentMode;
   consent?(request: Readonly<VoiceConsent>): boolean | Promise<boolean>;
   transcript(text: string): void;
+  partial?(partial: SpeechStreamPartial): void;
   status?(status: VoiceStatus): void;
   /** Normalized 0..1 live microphone RMS level while recording. */
   level?(level: number): void;
@@ -154,6 +173,83 @@ export interface AgentChatHandle {
   dispose(): void;
 }
 export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): AgentChatHandle;
+export function dictate(runtime: RuntimeApi, options?: DictationOptions): DictationStream;
+export function transcribeAudio(
+  runtime: RuntimeApi,
+  audio: Blob | ArrayBuffer | AudioBuffer | Float32Array,
+  options?: TranscribeAudioOptions,
+): Promise<{ text: string; language: string; durationMs: number }>;
+export interface BindDictationOptions {
+  button?: HTMLButtonElement;
+  mode?: "append" | "replace";
+  language?: string;
+  holdToTalk?: boolean;
+  onPartial?: (partial: SpeechStreamPartial) => void;
+  onTranscript?: (text: string) => void;
+  onStatus?: (status: VoiceStatus) => void;
+  onLevel?: (level: number) => void;
+  onError?: (message: string) => void;
+}
+export interface DictationBinding {
+  readonly state: "idle" | "working" | "recording" | "error";
+  start(): Promise<void>;
+  stop(): void;
+  cancel(): void;
+  toggle(): void;
+  setLanguage(tag: string): void;
+  dispose(): void;
+}
+export function bindDictation(
+  runtime: RuntimeApi,
+  target: HTMLTextAreaElement | HTMLInputElement | ((text: string) => void),
+  options?: BindDictationOptions,
+): DictationBinding;
+export interface StreamTranscriptSegment {
+  readonly utteranceId: string;
+  readonly text: string;
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+  readonly language: string;
+  readonly droppedSegments: number;
+}
+export interface StreamTranscriberStatus {
+  readonly state: "idle" | "loading" | "active" | "paused" | "error" | "disposed";
+  readonly message: string;
+  readonly droppedSegments: number;
+}
+export interface StreamTranscriberOptions {
+  readonly stream: MediaStream;
+  readonly language?: string;
+  readonly maxSegmentMs?: number;
+  readonly silenceMs?: number;
+  readonly maxQueuedSegments?: number;
+  readonly stopOnHidden?: boolean;
+  readonly transcribe?: (input: { samples: Float32Array; language: string; signal: AbortSignal }) => Promise<string>;
+  readonly onSegment: (segment: StreamTranscriptSegment) => void;
+  readonly onLevel?: (level: number) => void;
+  readonly onStatus?: (status: StreamTranscriberStatus) => void;
+}
+export interface StreamTranscriber {
+  readonly status: StreamTranscriberStatus;
+  start(): Promise<void>;
+  pause(): void;
+  resume(): void;
+  flush(): void;
+  setLanguage(tag: string): void;
+  dispose(): void;
+}
+export function createStreamTranscriber(runtime: RuntimeApi, options: StreamTranscriberOptions): StreamTranscriber;
+export function decodeAudioToPcm16k(input: Blob | ArrayBuffer | AudioBuffer | Float32Array, sampleRate?: number): Promise<Float32Array>;
+export function classifyCaptureError(error: unknown, stage: "model" | "microphone_permission" | "recorder" | "transcription", permissionState?: string | null): string;
+export function isBrowserLocalAvailable(language: string): Promise<boolean>;
+export function resolveSpeechLanguage(requested?: string | null, options?: { fallbackLanguage?: string }): string;
+export class UnsupportedLanguageError extends Error {
+  readonly code: "UNSUPPORTED_SPEECH_LANGUAGE";
+  readonly requested: string;
+  readonly supported: readonly string[];
+  constructor(requested: string, supported?: readonly string[]);
+}
+export const SPEECH_ENGINE_CATALOG: readonly AsrEngineDescriptor[];
 export const SPEECH_DOWNLOAD_BYTES: number;
 export const SPEECH_MODEL_BYTES: number;
 export const SPEECH_LANGUAGES: readonly string[];

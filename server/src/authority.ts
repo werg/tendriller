@@ -18,8 +18,8 @@ import {
   type FinalityCheckpoint, type FinalityInclusionV2, type FinalityPolicyV2, type Signed,
 } from '@chronolog/authority';
 import {
-  computeCasHash, ContentAddressedStore, decodeCasNode, decodeEncryptedEnvelope, decodeLogGenesis, decodeSignedOperation,
-  encryptedEnvelopeDigest, genesisLogId, hashCasNode, isControlTopic, MemoryBytesStore, seedStandardModules, TopicKernel,
+  computeCasHash, ContentAddressedStore, decodeCasNode, decodeEncryptedEnvelope, decodeLogGenesis, decodeOperationCore, decodeSignedOperation,
+  encryptedEnvelopeDigest, genesisLogId, hashCasNode, isControlTopic, MemoryBytesStore, operationIdDigest, seedStandardModules, TopicKernel,
   verifySignedOperation, type LogGenesis, type KernelOperationInput, type SignedOperation,
 } from '@chronolog/peer-session/kernel';
 import {
@@ -388,6 +388,48 @@ export function listPublicOpRows(t: Tendril): Array<{ op_id: string; author: str
   ).map(row => ({ ...row, raw: asBytes(row.raw) }));
 }
 
+/** Op identities only, in canonical order, for set reconciliation without reading signed bytes. */
+export function listPublicOpIds(t: Tendril): string[] {
+  return t.db.all<{ op_id: string }>('SELECT op_id FROM v2_public_ops ORDER BY author_ts, author, op_id').map(row => row.op_id);
+}
+
+/** Signed bytes for the stored public ops a peer does not have yet. */
+export function missingPublicOpRecords(t: Tendril, known: ReadonlySet<string>): AuthorityRecord[] {
+  const missing = listPublicOpIds(t).filter(id => !known.has(id));
+  if (!missing.length) return [];
+  // When the peer lacks most ops, one ordered scan beats per-row point reads.
+  if (missing.length > 32) return listPublicOpRows(t).filter(row => !known.has(row.op_id)).map(row => authorityRecord(row.raw));
+  return missing.map(id => {
+    const row = t.db.one<{ raw: ArrayBuffer | Uint8Array }>('SELECT raw FROM v2_public_ops WHERE op_id = ?', id);
+    return authorityRecord(asBytes(row!.raw));
+  });
+}
+
+/** CAS nodes a peer does not have yet; hashes are compared before any bytes are read. */
+export function missingPublicCasNodes(t: Tendril, known: ReadonlySet<string>): Array<{ hash: string; bytes: string }> {
+  const missing = t.db.all<{ hash: string }>('SELECT hash FROM v2_public_cas ORDER BY hash').map(row => row.hash).filter(hash => !known.has(hash));
+  if (!missing.length) return [];
+  if (missing.length > 32) return listPublicCasRows(t).filter(row => !known.has(row.hash)).map(row => ({ hash: row.hash, bytes: bytesToHex(row.bytes) }));
+  return missing.map(hash => {
+    const row = t.db.one<{ bytes: ArrayBuffer | Uint8Array }>('SELECT bytes FROM v2_public_cas WHERE hash = ?', hash);
+    return { hash, bytes: bytesToHex(asBytes(row!.bytes)) };
+  });
+}
+
+/**
+ * Decode a stored public-control op without repeating its signature check.
+ * Every row of `v2_public_ops` is inserted only after `verifyPublicControlOp`
+ * (sync, genesis initialization, peer publication), and only this Durable
+ * Object writes its SQLite storage. The stored op ID is still recomputed and
+ * compared, so a row can never be replayed under a different identity.
+ */
+export function storedKernelOp(row: { op_id: string; raw: Uint8Array }): KernelOperationInput {
+  const signed = decodeSignedOperation(row.raw);
+  const opId = operationIdDigest(signed.coreBytes);
+  if (bytesToHex(opId) !== row.op_id) throw new HttpError(500, 'control_store_corrupt', 'A stored control operation does not match its identity');
+  return { opId, core: decodeOperationCore(signed.coreBytes) };
+}
+
 export function listMailboxEnvelopeRows(t: Tendril): Array<{ digest: string; epoch: number; author: string; raw: Uint8Array }> {
   return t.db.all<{ digest: string; epoch: number; author: string; raw: ArrayBuffer }>(
     'SELECT digest, epoch, author, raw FROM v2_mailbox_envelopes ORDER BY stored_at ASC',
@@ -645,17 +687,21 @@ export async function readControlState(t: Tendril): Promise<MaterializedControlS
     const opRows = listPublicOpRows(t);
     const publicOps: KernelOperationInput[] = [];
     for (const row of opRows) {
-      const signed = decodeSignedOperation(row.raw);
-      const { core, opId } = await verifySignedOperation(signed);
-      if (bytesToHex(core.logId) !== logId || core.visibility !== 'public') continue;
-      publicOps.push({ opId, core });
+      const op = storedKernelOp(row);
+      if (bytesToHex(op.core.logId) !== logId || op.core.visibility !== 'public') continue;
+      publicOps.push(op);
     }
     const checkpoints = listCheckpointRows(t).map(row => decodeRecord<FinalityCheckpoint>(row.raw));
     const computed = await replayBlindHostControl({ genesisBytes, publicCas, publicOps, checkpoints });
     try { t.db.set(CONTROL_CACHE_KEY, serializeCachedControl(fingerprint, computed)); } catch {}
     return computed;
-  });
+  // The persisted copy (`v2_control_cache`) is derived from these inputs, so
+  // writing it must not discard this memo; ordinary page traffic does not either.
+  }, CONTROL_STATE_DEPS);
 }
+
+/** Every input of the materialized control state. */
+const CONTROL_STATE_DEPS = ['v2_public_ops', 'v2_public_cas', 'v2_checkpoints', `meta:${GENESIS_KEY}`] as const;
 
 /**
  * Reconcile host-side effects after any public-control state change:
@@ -879,8 +925,8 @@ export async function syncControlState(
       };
       t.db.set('v2_control_summary', summary);
     }
-    const missingOps = listPublicOpRows(t).filter(r => !knownOps.has(r.op_id)).map(r => authorityRecord(r.raw));
-    const missingCas = listPublicCasRows(t).filter(r => !knownCas.has(r.hash)).map(r => ({ hash: r.hash, bytes: bytesToHex(r.bytes) }));
+    const missingOps = missingPublicOpRecords(t, knownOps);
+    const missingCas = missingPublicCasNodes(t, knownCas);
     const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
     return {
       genesis: authorityRecord(genesisBytes),
@@ -913,27 +959,18 @@ export async function syncControlState(
     decodedCheckpoints.push({ cp, raw });
   }
 
-  // Build candidate set & run TopicKernel in blindHostMode BEFORE committing.
-  const existingCas = listPublicCasRows(t);
-  const casMap = new Map(existingCas.map(n => [n.hash, n.bytes]));
+  // Decide novelty from identities alone; stored bytes are read only when a replay is needed.
+  const storedCasHashes = new Set(t.db.all<{ hash: string }>('SELECT hash FROM v2_public_cas').map(row => row.hash));
   const newCas: Array<{ hash: string; bytes: Uint8Array }> = [];
   for (const node of incomingCas) {
-    if (!casMap.has(node.hash)) {
-      casMap.set(node.hash, node.bytes);
-      newCas.push(node);
-    }
+    if (!storedCasHashes.has(node.hash) && !newCas.some(n => n.hash === node.hash)) newCas.push(node);
   }
-
-  const existingOpRows = listPublicOpRows(t);
-  const opMap = new Map(existingOpRows.map(r => [r.op_id, r]));
+  const storedOpIds = new Set(listPublicOpIds(t));
   const newOps: typeof verifiedOps = [];
   for (const op of verifiedOps) {
-    if (!opMap.has(op.opId)) {
-      opMap.set(op.opId, { op_id: op.opId, author: op.author, author_ts: Number(op.authorTimestampMs), raw: op.raw });
-      newOps.push(op);
-    }
+    if (!storedOpIds.has(op.opId) && !newOps.some(n => n.opId === op.opId)) newOps.push(op);
   }
-  if (opMap.size > MAX_PUBLIC_OPS) throw new HttpError(413, 'public_ops_limit');
+  if (storedOpIds.size + newOps.length > MAX_PUBLIC_OPS) throw new HttpError(413, 'public_ops_limit');
 
   // If every submitted op/CAS node was already stored and no checkpoints were submitted, skip WASM replay.
   if (newOps.length === 0 && newCas.length === 0 && decodedCheckpoints.length === 0) {
@@ -949,8 +986,8 @@ export async function syncControlState(
       };
       t.db.set('v2_control_summary', summary);
     }
-    const missingOps = existingOpRows.filter(r => !knownOps.has(r.op_id)).map(r => authorityRecord(r.raw));
-    const missingCas = existingCas.filter(r => !knownCas.has(r.hash)).map(r => ({ hash: r.hash, bytes: bytesToHex(r.bytes) }));
+    const missingOps = missingPublicOpRecords(t, knownOps);
+    const missingCas = missingPublicCasNodes(t, knownCas);
     const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
     return {
       genesis: authorityRecord(genesisBytes),
@@ -966,12 +1003,13 @@ export async function syncControlState(
     };
   }
 
-  const allKernelOps: KernelOperationInput[] = [];
-  for (const row of opMap.values()) {
-    const signed = decodeSignedOperation(row.raw);
-    const { core, opId } = await verifySignedOperation(signed);
-    allKernelOps.push({ opId, core });
-  }
+  // Build candidate set & run TopicKernel in blindHostMode BEFORE committing.
+  const existingCas = listPublicCasRows(t);
+  const casMap = new Map(existingCas.map(n => [n.hash, n.bytes]));
+  for (const node of newCas) casMap.set(node.hash, node.bytes);
+  // Stored rows were verified on insert; new ops were verified above.
+  const allKernelOps: KernelOperationInput[] = listPublicOpRows(t).map(storedKernelOp);
+  for (const op of newOps) allKernelOps.push(op.kernelInput);
 
   const existingCpRows = listCheckpointRows(t);
   const existingCps = existingCpRows.map(r => decodeRecord<FinalityCheckpoint>(r.raw));
@@ -1044,8 +1082,8 @@ export async function syncControlState(
     });
   }
 
-  const missingOps = listPublicOpRows(t).filter(r => !knownOps.has(r.op_id)).map(r => authorityRecord(r.raw));
-  const missingCas = listPublicCasRows(t).filter(r => !knownCas.has(r.hash)).map(r => ({ hash: r.hash, bytes: bytesToHex(r.bytes) }));
+  const missingOps = missingPublicOpRecords(t, knownOps);
+  const missingCas = missingPublicCasNodes(t, knownCas);
   const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
 
   return {

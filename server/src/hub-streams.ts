@@ -66,7 +66,7 @@ export function listHubSubscribers<T = unknown>(t: Tendril, kind?: HubStreamKind
       ? t.db.all<SubscriberRow>('SELECT key,kind,agent_id,conn_id,stream_id,state,created_at FROM hub_subscribers WHERE kind=? ORDER BY created_at, key', kind)
       : t.db.all<SubscriberRow>('SELECT key,kind,agent_id,conn_id,stream_id,state,created_at FROM hub_subscribers ORDER BY created_at, key');
     return rows.map(row => hydrate<T>(row));
-  });
+  }, ['hub_subscribers']);
 }
 
 export function getHubSubscriber<T = unknown>(t: Tendril, key: string): HubSubscriber<T> | null {

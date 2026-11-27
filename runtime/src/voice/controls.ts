@@ -1,6 +1,6 @@
 import type { RuntimeApi } from "../../../contract/index.mjs";
 import { createVoice, type VoiceConsentMode } from "./index";
-import { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES } from "./resources";
+import { SPEECH_DOWNLOAD_BYTES, SPEECH_LANGUAGES, SPEECH_MODEL_BYTES } from "./resources";
 import { MAX_WAKE_SESSION_MS } from "./microphone";
 import { utilityBottom, utilityMaxWidth, utilityRight, utilityTop } from "../utility-layout";
 
@@ -24,10 +24,16 @@ export interface VoiceControlsOptions {
   autoOutput?: boolean | "browser" | "neural";
 }
 
-const LANGUAGES = [
-  ["en-US", "English"], ["de-DE", "Deutsch"], ["fr-FR", "Français"],
-  ["es-ES", "Español"], ["it-IT", "Italiano"], ["nl-NL", "Nederlands"], ["pl-PL", "Polski"],
-] as const;
+const LANGUAGE_NAMES: Record<string, [string, string]> = {
+  en: ["en-US", "English"],
+  de: ["de-DE", "Deutsch"],
+  fr: ["fr-FR", "Français"],
+  es: ["es-ES", "Español"],
+  it: ["it-IT", "Italiano"],
+  nl: ["nl-NL", "Nederlands"],
+  pl: ["pl-PL", "Polski"],
+};
+const LANGUAGES = SPEECH_LANGUAGES.map(code => LANGUAGE_NAMES[code] ?? [code, code.toUpperCase()]) as ReadonlyArray<readonly [string, string]>;
 const terminal = (state: string) => ["off", "idle", "paused", "error"].includes(state);
 
 /**

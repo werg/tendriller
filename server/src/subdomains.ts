@@ -7,7 +7,8 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
 import { TENDRIL_ID_RE } from "./ids";
-import { getAccountEntitlements, quotaError, type AccountEntitlements } from "./billing/entitlements";
+import { cachedAccountEntitlements, getAccountEntitlements, quotaError, type AccountEntitlements } from "./billing/entitlements";
+import { TtlCache } from "./isolate-cache";
 import { barePageUrl, pageHostForLabel, parsePageHostLabel, publicBase } from "./urls";
 
 export interface PageSubdomainRow {
@@ -111,6 +112,18 @@ export function normalizePageSubdomain(raw: string, env: Env): string | null {
   return slug;
 }
 
+/**
+ * Routing lookups for `<label>.<PAGE_BASE_DOMAIN>`. Nearly every page request on
+ * the standard pages domain is for a 12-character page ID, which is a miss here,
+ * so absent labels are cached as well. Revocation window: another isolate keeps
+ * routing a released or moved name to its previous page for at most 20 seconds,
+ * and a newly claimed name may stay unresolved there for at most 10 seconds.
+ * The page's Durable Object still authenticates every request it receives.
+ */
+const subdomainRows = new TtlCache<PageSubdomainRow | null>(20_000, 10_000, 2048);
+
+export function invalidateSubdomainCache(): void { subdomainRows.clear(); }
+
 /** Look up an active named subdomain for an incoming Worker request on `*.<PAGE_BASE_DOMAIN>`. */
 export async function resolveSubdomainRequest(
   url: URL,
@@ -119,12 +132,15 @@ export async function resolveSubdomainRequest(
   if (!env.ACCOUNTS) return null;
   const label = parsePageHostLabel(url, env);
   if (!label) return null;
-  const row = await env.ACCOUNTS.prepare(
-    "SELECT subdomain, account_id, tendril_id, created_at, updated_at FROM page_subdomains WHERE subdomain = ?",
-  ).bind(label).first<PageSubdomainRow>().catch(() => null);
+  const row = await subdomainRows.get(label, async () => {
+    // A failed read is not cached as an absence.
+    return await env.ACCOUNTS.prepare(
+      "SELECT subdomain, account_id, tendril_id, created_at, updated_at FROM page_subdomains WHERE subdomain = ?",
+    ).bind(label).first<PageSubdomainRow>();
+  }).catch(() => null);
   if (!row) return null;
 
-  const ent = await getAccountEntitlements(env, row.account_id).catch(() => null);
+  const ent = await cachedAccountEntitlements(env, row.account_id).catch(() => null);
   const entitlementOk = Boolean(ent && subdomainPlanAllowed(ent));
   return { record: row, host: url.hostname.toLowerCase(), entitlementOk };
 }
@@ -150,7 +166,7 @@ export async function isActiveSubdomainForPage(
     "SELECT account_id FROM page_subdomains WHERE subdomain = ? AND tendril_id = ?",
   ).bind(label, tendrilId).first<{ account_id: string }>().catch(() => null);
   if (!row) return null;
-  const ent = await getAccountEntitlements(env, row.account_id).catch(() => null);
+  const ent = await cachedAccountEntitlements(env, row.account_id).catch(() => null);
   if (!ent || !subdomainPlanAllowed(ent)) return null;
   return pageHostForLabel(env, label);
 }
@@ -280,6 +296,19 @@ export async function setPageSubdomain(
   rawSubdomain: string | null,
   by: string,
   options: SetSubdomainOptions = {},
+): Promise<SubdomainUpdateResult> {
+  // This isolate observes its own binding changes at once, including on failure paths.
+  try { return await updatePageSubdomain(env, accountId, tendrilId, rawSubdomain, by, options); }
+  finally { subdomainRows.clear(); }
+}
+
+async function updatePageSubdomain(
+  env: Env,
+  accountId: string,
+  tendrilId: string,
+  rawSubdomain: string | null,
+  by: string,
+  options: SetSubdomainOptions,
 ): Promise<SubdomainUpdateResult> {
   if (!env.ACCOUNTS) throw new HttpError(503, "unavailable", "Accounts database is not configured");
   if (!TENDRIL_ID_RE.test(tendrilId)) {

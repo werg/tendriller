@@ -196,7 +196,9 @@ test('the served bootstrap mounts working management and sensor controls without
   env.window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
   env.document.dispatchEvent(new Event('visibilitychange')); await flush();
   for (let i = 0; i < 3; i++) await env.advance();
-  assert.deepEqual(env.calls, { fetch: [], sockets: 2, stores: 0, registrations: 0, publications: [] });
+  assert.deepEqual({ fetch: env.calls.fetch, sockets: env.calls.sockets, stores: env.calls.stores }, { fetch: [], sockets: 2, stores: 0 });
+  assert.equal(env.calls.registrations, 1, 'default bootstrap opportunistically warms the service worker on idle after load');
+  assert.equal(env.calls.publications.length, 1);
 });
 
 test('host operations remain explicit and publication saving registers offline support on demand', async () => {
@@ -275,8 +277,7 @@ test('unpaired utility notices selection changes explicitly and clears stale not
  const notice=host.shadowRoot.children.find(e=>e.attributes.get('aria-label')==='Publication update');
  assert.equal(notice.hidden,true);assert.equal(env.api.application.available,false);
  env.sockets[0].receive(2);assert.equal(notice.hidden,false);
- const link=notice.children.find(e=>e.tagName==='a');assert.equal(link.textContent,'Open update');
- assert.equal(link.href,'https://fixture.test/page/app.html');assert.equal(link.target,undefined);
+ const btn=notice.children.find(e=>e.tagName==='button');assert.equal(btn.textContent,'Update now');
  assert.equal(env.context.location.href,'https://fixture.test/page/_publications/1/app.html');
  env.sockets[0].receive(1);assert.equal(notice.hidden,true);
  env.sockets[0].receive(3);assert.equal(notice.hidden,false);env.sockets[0].receive(0);assert.equal(notice.hidden,true);

@@ -10,7 +10,18 @@ import { brandBase, brandMark } from "./brand";
 import { serviceSession } from "./accounts/auth";
 import { icon, renderShell, servicePage } from "./accounts/ui";
 import { copyAttrs, renderCopyText, SITE_COPY } from "./site-copy";
-import { getAccountEntitlements } from "./billing/entitlements";
+import { cachedAccountEntitlements, getAccountEntitlements } from "./billing/entitlements";
+import { TtlCache } from "./isolate-cache";
+
+/**
+ * Active custom-domain routing rows. Revocation window: another isolate keeps
+ * routing a removed or deactivated hostname for at most 20 seconds, and a newly
+ * activated hostname may stay unresolved there for at most 10 seconds. The page
+ * Durable Object still authenticates every request it receives.
+ */
+const customDomainRows = new TtlCache<CustomDomainRow | null>(20_000, 10_000, 1024);
+
+export function invalidateCustomDomainCache(): void { customDomainRows.clear(); }
 import { requireWritesOpen } from "./service-state";
 import { barePageUrl, publicBase, type PageRoute } from "./urls";
 import {
@@ -198,12 +209,12 @@ export async function resolveCustomDomainRequest(
 ): Promise<{ record: CustomDomainRow; page: PageRoute | null; entitlementOk: boolean } | null> {
   if (!env.ACCOUNTS) return null;
   const host = url.hostname.toLowerCase();
-  const row = await env.ACCOUNTS.prepare(
+  const row = await customDomainRows.get(host, async () => await env.ACCOUNTS.prepare(
     "SELECT hostname, account_id, tendril_id, status, cf_hostname_id, verification_txt_name, verification_txt_value, ssl_status, last_error, created_at, verified_at, updated_at FROM custom_domains WHERE hostname = ? AND status = 'active'",
-  ).bind(host).first<CustomDomainRow>().catch(() => null);
+  ).bind(host).first<CustomDomainRow>()).catch(() => null);
   if (!row) return null;
 
-  const ent = await getAccountEntitlements(env, row.account_id).catch(() => null);
+  const ent = await cachedAccountEntitlements(env, row.account_id).catch(() => null);
   const entitlementOk = Boolean(ent && (ent.unlimitedHost || ent.quotas.customDomain));
 
   const m = /^\/s\/([a-z2-7]{26})(\/.*)?$/.exec(url.pathname);
@@ -222,7 +233,7 @@ export async function isActiveCustomDomainForPage(env: Env, rawHost: string | nu
     "SELECT account_id FROM custom_domains WHERE hostname = ? AND tendril_id = ? AND status = 'active'",
   ).bind(host, tendrilId).first<{ account_id: string }>().catch(() => null);
   if (!row) return null;
-  const ent = await getAccountEntitlements(env, row.account_id).catch(() => null);
+  const ent = await cachedAccountEntitlements(env, row.account_id).catch(() => null);
   if (!ent || (!ent.unlimitedHost && !ent.quotas.customDomain)) return null;
   return host;
 }
@@ -575,6 +586,7 @@ export async function routeCustomDomains(req: Request, env: Env, url: URL): Prom
           hostname, session.accountId, tendrilId, status, cfHostnameId,
           txtName, txtValue, sslStatus, lastError, now, status === "active" ? now : null, now,
         ).run();
+      customDomainRows.delete(hostname);
 
       if (wantsJson) {
         return json({
@@ -629,6 +641,7 @@ export async function routeCustomDomains(req: Request, env: Env, url: URL): Prom
         WHERE hostname = ? AND account_id = ?`)
         .bind(status, sslStatus, txtName, txtValue, lastError, status === "active" ? now : null, now, hostname, session.accountId)
         .run();
+      customDomainRows.delete(hostname);
 
       if (wantsJson) {
         return json({ hostname, status, ssl_status: sslStatus, last_error: lastError });
@@ -648,6 +661,7 @@ export async function routeCustomDomains(req: Request, env: Env, url: URL): Prom
       if (row.cf_hostname_id) await deleteCfSaasHostname(env, row.cf_hostname_id);
       await env.ACCOUNTS.prepare("DELETE FROM custom_domains WHERE hostname = ? AND account_id = ?")
         .bind(hostname, session.accountId).run();
+      customDomainRows.delete(hostname);
       if (wantsJson) return json({ ok: true, hostname });
       return redirect("/dashboard/domains?status=removed", 303);
     }

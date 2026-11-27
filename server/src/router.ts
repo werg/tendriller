@@ -35,6 +35,8 @@ import { serviceReadiness } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
 import { verifyIconToken } from "./page-icon";
 import type { CacheContext } from "./immutable-cache";
+import { ServerTiming, withServerTiming } from "./server-timing";
+import { TtlCache } from "./isolate-cache";
 
 function stub(env: Env, id: string): DurableObjectStub {
   return env.TENDRIL.get(env.TENDRIL.idFromName(id));
@@ -50,8 +52,37 @@ function forward(env: Env, id: string, kind: string, req: Request, url: URL, hea
   return stub(env, id).fetch(new Request(`https://tendril.internal/${kind}${url.search}`, init));
 }
 
-async function asset(env: Env, url: URL, path: string, extra?: Record<string, string>): Promise<Response> {
-  const res = await env.ASSETS.fetch(new Request(new URL(path, url.origin).toString(), { method: "GET" }));
+/**
+ * Bare-domain existence of standard page IDs. A present ID is reused for 60
+ * seconds (the page's Durable Object still rejects a deleted page); an absent
+ * ID is remembered for 10 seconds so repeated probes cost no D1 read. Fresh page
+ * IDs are random, so no isolate can have cached their absence before creation.
+ */
+const pageIds = new TtlCache<true | null>(60_000, 10_000, 4096);
+
+async function pageIdExists(env: Env, id: string): Promise<boolean> {
+  if (!env.ACCOUNTS) return false;
+  return Boolean(await pageIds.get(id, async () =>
+    await env.ACCOUNTS.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(id).first() ? true : null).catch(() => null));
+}
+
+/**
+ * Serve a bundled static asset. Conditional request headers are forwarded so
+ * the assets layer can answer 304 for an unchanged file, and only a full 200
+ * response is rewritten with the route's cache policy.
+ */
+async function asset(env: Env, url: URL, path: string, extra?: Record<string, string>, req?: Request): Promise<Response> {
+  const headers = new Headers();
+  const inm = req?.headers.get("If-None-Match"), ims = req?.headers.get("If-Modified-Since");
+  if (inm) headers.set("If-None-Match", inm);
+  if (ims) headers.set("If-Modified-Since", ims);
+  const res = await env.ASSETS.fetch(new Request(new URL(path, url.origin).toString(), { method: "GET", headers }));
+  if (res.status === 304) {
+    const out = new Response(null, { status: 304, headers: res.headers });
+    out.headers.set("Cache-Control", "no-cache");
+    for (const [k, v] of Object.entries(extra ?? {})) if (k.toLowerCase() !== "content-type") out.headers.set(k, v);
+    return out;
+  }
   if (!res.ok) {
     await res.body?.cancel();
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -62,25 +93,50 @@ async function asset(env: Env, url: URL, path: string, extra?: Record<string, st
   return out;
 }
 
+/**
+ * Bundled documentation rewritten for this service origin. The text is a pure
+ * function of the deployed asset (identified by its ETag) and `publicBase`, so
+ * the rewrite of large guides such as `llms-full.txt` runs once per isolate.
+ */
+const docTexts = new Map<string, { tag: string; text: string }>();
+
+async function publicDocText(env: Env, url: URL, path: string): Promise<string | null> {
+  const res = await env.ASSETS.fetch(new Request(new URL(path, url.origin).toString(), { method: "GET" }));
+  if (!res.ok) { await res.body?.cancel(); return null; }
+  const base = publicBase(env), key = `${base}|${path}`, tag = res.headers.get("ETag") ?? "";
+  const hit = docTexts.get(key);
+  if (tag && hit?.tag === tag) { await res.body?.cancel(); return hit.text; }
+  const text = (await res.text()).replaceAll("https://tendriller.dev", base);
+  if (tag && text.length <= 2_000_000) {
+    if (!docTexts.has(key) && docTexts.size >= 64) docTexts.delete(docTexts.keys().next().value!);
+    docTexts.set(key, { tag, text });
+  }
+  return text;
+}
+
 export async function route(req: Request, env: Env, context?: CacheContext): Promise<Response> {
   const reqUrl = new URL(req.url);
   const host = reqUrl.hostname.toLowerCase();
   const pagesDomain = env.PAGE_BASE_DOMAIN?.toLowerCase();
   const serviceHost = new URL(publicBase(env)).hostname.toLowerCase();
   const onStandardPagesDomain = host !== serviceHost && !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
+  const timing = new ServerTiming();
+  const started = Date.now();
   const customSubdomain = onStandardPagesDomain
-    ? await resolveSubdomainRequest(reqUrl, env)
+    ? await timing.time("host", () => resolveSubdomainRequest(reqUrl, env))
     : null;
   const customDomain = !onStandardPagesDomain && host !== serviceHost
-    ? await resolveCustomDomainRequest(reqUrl, env)
+    ? await timing.time("host", () => resolveCustomDomainRequest(reqUrl, env))
     : null;
   const onPagesDomain = onStandardPagesDomain || Boolean(customDomain);
   let res: Response;
-  try { res = await routeInner(req, env, onPagesDomain, customSubdomain, customDomain, context); }
+  try { res = await routeInner(req, env, onPagesDomain, customSubdomain, customDomain, context, timing); }
   catch (err) { res = toErrorResponse(err); }
+  timing.add("route", Date.now() - started);
   const preview = isBranchPreview(env);
   if (onPagesDomain || preview) {
     const headers = new Headers(res.headers);
+    timing.applyTo(headers);
     if (onPagesDomain && reqUrl.protocol === "https:") {
       headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
     }
@@ -88,7 +144,7 @@ export async function route(req: Request, env: Env, context?: CacheContext): Pro
     if (res.status === 101) return new Response(null, { status: 101, headers, webSocket: res.webSocket });
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   }
-  return res;
+  return withServerTiming(res, timing);
 }
 
 async function routeInner(
@@ -97,7 +153,8 @@ async function routeInner(
   onPagesDomain: boolean,
   customSubdomain: Awaited<ReturnType<typeof resolveSubdomainRequest>>,
   customDomain: Awaited<ReturnType<typeof resolveCustomDomainRequest>>,
-  context?: CacheContext,
+  context: CacheContext | undefined,
+  timing: ServerTiming,
 ): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -139,7 +196,7 @@ async function routeInner(
     return stub(env, tid!).fetch(new Request(`https://tendril.internal/icon-blob/${encodeURIComponent(tag!)}/${encodeURIComponent(file!)}`, { method: req.method }));
   }
   if (publicRead && rootBrand) {
-    const response = await asset(env, url, path === '/favicon.ico' ? '/_tendril/brand/favicon.ico' : path);
+    const response = await asset(env, url, path === '/favicon.ico' ? '/_tendril/brand/favicon.ico' : path, undefined, req);
     response.headers.set('X-Content-Type-Options', 'nosniff');
     if (req.method === 'HEAD') { await response.body?.cancel(); return new Response(null, response); }
     return response;
@@ -156,10 +213,8 @@ async function routeInner(
       // For standard gibberish IDs, verify the page exists in D1 before opening bare-domain routing
       // so probes against unknown IDs fail closed with 404 and zero DO invocations.
       if (pageHost.hostKind === "id") {
-        const exists = env.ACCOUNTS
-          ? await env.ACCOUNTS.prepare("SELECT 1 FROM tendrils WHERE id = ?").bind(pageHost.id).first().catch(() => null)
-          : null;
-        if (!exists) return errorResponse(404, "not_found", "Not found");
+        const id = pageHost.id;
+        if (!await timing.time("exists", () => pageIdExists(env, id))) return errorResponse(404, "not_found", "Not found");
       }
       page = parseBarePagePath(url, pageHost.id);
     }
@@ -185,30 +240,30 @@ async function routeInner(
     const brand = /^_tendril\/brand\/(icon-(64|180|192|512)\.png|favicon\.ico)$/.test(rest);
     if ((req.method === "GET" || req.method === "HEAD") && req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       if (runtime && !runtime[2].split("/").includes("..")) return runtimeAsset(env, req, runtime[1], runtime[2], context);
-      if (brand) return asset(env, url, `/${rest}`);
+      if (brand) return asset(env, url, `/${rest}`, undefined, req);
     }
     const resource = /^_tendril\/assets\/([a-f0-9]{64})\/([A-Za-z0-9_-][A-Za-z0-9_.-]{0,199})$/.exec(rest);
     // Optional resources and the scoped service worker keep their existing
     // access gate; authored files and page APIs authenticate in their one DO call.
     if (resource || rest === "_tendril/sw.js") {
-      const check = await stub(env, page.id).fetch(new Request("https://tendril.internal/claim/check", {
+      const check = await timing.time("do", () => stub(env, page.id).fetch(new Request("https://tendril.internal/claim/check", {
         headers: { "x-tendril-key": page.key, ...(page.bare ? { "x-tendril-bare": "1" } : {}), Cookie: req.headers.get("Cookie") ?? "",
           "x-visitor-ip": req.headers.get("CF-Connecting-IP") ?? "" },
-      }));
+      })));
       if (!check.ok && ![401, 403, 404].includes(check.status)) return check;
       await check.body?.cancel();
       if (!check.ok) return pageAdmissionFailure(req, env, page, check.status === 403, customHost);
       if (resource) return immutableAsset(env, req, resource[1], resource[2], context);
-      return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base, "Cache-Control": "private, max-age=300" });
+      return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base, "Cache-Control": "private, max-age=300" }, req);
     }
-    const response = await forward(env, page.id, "page", req, url, {
+    const response = await timing.time("do", () => forward(env, page.id, "page", req, url, {
       "x-tendril-key": page.key,
       ...(page.bare ? { "x-tendril-bare": "1" } : {}),
       "x-tendril-origin": url.origin,
       "x-tendril-base": page.base,
       "x-tendril-rest": encodeURIComponent(rest),
       "x-visitor-ip": req.headers.get("CF-Connecting-IP") ?? "",
-    });
+    }));
     const denied = response.headers.get(PAGE_ACCESS_HEADER);
     if (denied === "signin" || denied === "unavailable") {
       await response.body?.cancel();
@@ -240,9 +295,8 @@ async function routeInner(
   if (path === "/pricing") {
     const accept = req.headers.get("Accept") ?? "";
     if (publicRead && accept.includes("text/markdown") && !accept.includes("text/html")) {
-      const guide = await asset(env, url, "/docs/PRICING.md");
-      if (guide.ok) {
-        const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
+      const body = await publicDocText(env, url, "/docs/PRICING.md");
+      if (body !== null) {
         return new Response(req.method === "HEAD" ? null : body, {
           headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Vary: "Accept", Link: onboardingLinks(publicBase(env)) },
         });
@@ -253,9 +307,8 @@ async function routeInner(
   if (path === "/pricing.md" || path === "/self-host.md" || path === "/changelog.md") {
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
     const docPath = path === "/pricing.md" ? "/docs/PRICING.md" : path === "/self-host.md" ? "/docs/SELF_HOSTING.md" : "/docs/CHANGELOG.md";
-    const guide = await asset(env, url, docPath);
-    if (!guide.ok) return guide;
-    const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
+    const body = await publicDocText(env, url, docPath);
+    if (body === null) return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     return new Response(req.method === "HEAD" ? null : body, {
       headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)) },
     });
@@ -328,12 +381,12 @@ async function routeInner(
     const response = await asset(env, url, path, {
       "Content-Type": "application/gzip", "Content-Disposition": 'attachment; filename="tendriller-first-app.tgz"',
       "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)),
-    });
+    }, req);
     if (req.method === "HEAD") { await response.body?.cancel(); return new Response(null, response); }
     return response;
   }
-  if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
-  if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
+  if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico", undefined, req);
+  if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path, undefined, req);
   if (path === "/health") {
     const preview = isBranchPreview(env) && /^[a-f0-9]{40}$/.test(env.BRANCH_PREVIEW_SHA ?? "")
       ? { branch: env.BRANCH_PREVIEW_BRANCH, commit: env.BRANCH_PREVIEW_SHA } : undefined;
@@ -357,9 +410,8 @@ async function routeInner(
   }
   if (path === "/agent.md" || path === "/AGENTS.md" || path === "/llms.txt" || path === "/llms-full.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
-    const guide = await asset(env, url, path);
-    if (!guide.ok) return guide;
-    const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
+    const body = await publicDocText(env, url, path);
+    if (body === null) return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     return new Response(req.method === "HEAD" ? null : body, {
       headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)) },
     });
@@ -368,7 +420,7 @@ async function routeInner(
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation images are read-only");
     const response = await asset(env, url, path, {
       "Content-Type": "image/png", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache",
-    });
+    }, req);
     if (req.method === "HEAD") { await response.body?.cancel(); return new Response(null, response); }
     return response;
   }
@@ -459,9 +511,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Changelog is read-only');
       const accept = req.headers.get('Accept') ?? '';
       if (accept.includes('text/markdown') && !accept.includes('application/json')) {
-        const guide = await asset(env, url, '/docs/CHANGELOG.md');
-        if (guide.ok) {
-          const body = (await guide.text()).replaceAll('https://tendriller.dev', publicBase(env));
+        const body = await publicDocText(env, url, '/docs/CHANGELOG.md');
+        if (body !== null) {
           return new Response(req.method === 'HEAD' ? null : body, {
             headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'public, max-age=60', 'X-Content-Type-Options': 'nosniff', Vary: 'Accept', Link: onboardingLinks(publicBase(env)) },
           });

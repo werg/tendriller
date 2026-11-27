@@ -5,6 +5,7 @@ import { publicBase } from "../urls";
 import { currentUsagePeriod, estimateOverageCents, isPlanId, planSpec, type PlanId, type PlanQuotas } from "./plans";
 import { activePremiumGrant, type PremiumGrant } from "./premium-grants";
 import { recordServiceUsage } from "../admin/analytics";
+import { TtlCache } from "../isolate-cache";
 
 export const PAST_DUE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PAYG_SPEND_CAP_CENTS = 2500;
@@ -298,6 +299,27 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
   };
 }
 
+/**
+ * Plan-gating entitlements reused for 20 seconds per isolate (matching the
+ * page policy cache). Use this only for plan/feature gates and plan-derived
+ * caps (named subdomains, custom domains, page storage, version retention):
+ * a plan change, grant or downgrade reaches other isolates within that window,
+ * and this isolate at once through `invalidateAccountEntitlements`.
+ * Usage-metered checks (MCP calls, media, relay minutes) must keep calling
+ * `getAccountEntitlements` so a stale usage snapshot can never admit overage.
+ */
+const PLAN_GATE_TTL_MS = 20_000;
+const planGateCache = new TtlCache<AccountEntitlements>(PLAN_GATE_TTL_MS, PLAN_GATE_TTL_MS, 512);
+
+export function cachedAccountEntitlements(env: Env, accountId: string): Promise<AccountEntitlements> {
+  return planGateCache.get(accountId, () => getAccountEntitlements(env, accountId));
+}
+
+export function invalidateAccountEntitlements(accountId?: string): void {
+  if (accountId === undefined) planGateCache.clear();
+  else planGateCache.delete(accountId);
+}
+
 /** Materialize a plan's canonical caps onto an account row (preserving non-destructive downgrade). */
 export async function applyPlanToAccount(env: Env, accountId: string, plan: PlanId): Promise<void> {
   const q = planSpec(plan).quotas;
@@ -336,6 +358,7 @@ export async function applyPlanToAccount(env: Env, accountId: string, plan: Plan
       q.paygAllowed ? 1 : 0,
       accountId,
     ).run();
+  invalidateAccountEntitlements(accountId);
 }
 
 /** Atomically increment monthly coalesced usage counters in D1 (never called per relay packet). */

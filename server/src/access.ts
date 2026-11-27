@@ -50,13 +50,13 @@ export function localAgentGrant(t: Tendril, agentId: string): LocalAgentGrant | 
     const row = t.db.one<Omit<LocalAgentGrant, 'scopes'> & { scopes: string }>(
       'SELECT agent_id,handle,bio,public_key,wrap_key,scopes,revision,granted_by,granted_at FROM agent_grants WHERE agent_id=?', agentId);
     return row ? Object.freeze({ ...row, scopes: JSON.parse(row.scopes) as AgentScope[] }) : null;
-  });
+  }, ['agent_grants']);
 }
 
 // Cache immutable row snapshots only within this live object. Db invalidates
 // every snapshot on local writes and rollback; time-dependent checks stay below.
 const localSession = (t: Tendril, hash: string) => t.db.cached(`access:session:${hash}`, () =>
-  t.db.one<{ account_id: string; role: Role; expires_at: number }>("SELECT account_id,role,expires_at FROM page_sessions WHERE hash=?", hash));
+  t.db.one<{ account_id: string; role: Role; expires_at: number }>("SELECT account_id,role,expires_at FROM page_sessions WHERE hash=?", hash), ['page_sessions']);
 
 /**
  * Resolves the agent named by the router's internal headers against the local
@@ -152,7 +152,7 @@ export async function readPageSession(t: Tendril, req: Request): Promise<PageSes
 function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "name">, key?: string): PagePrincipal | null {
   if (t.db.get("disabled", false)) return null;
   const link = t.db.cached(`access:link:${identity.linkId}`, () =>
-    t.db.one<{ key: string; role: Role; expires_at: number | null; created_by_agent: number }>("SELECT key,role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId));
+    t.db.one<{ key: string; role: Role; expires_at: number | null; created_by_agent: number }>("SELECT key,role,expires_at,created_by_agent FROM links WHERE id=?", identity.linkId), ['links']);
   if (!link || (key !== undefined && link.key !== key) || (link.role !== identity.role && !(link.role === "owner" && identity.role === "guest")) || link.expires_at !== null && link.expires_at <= t.now()) return null;
   if (identity.role === "display") {
     if (link.created_by_agent || !t.db.get("owner_account", null)) return null;
@@ -165,7 +165,7 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
     if (identity.role === "guest") {
       const targetLink = link.role === "owner" ? "__org__" : identity.linkId;
       if (!t.db.cached(`access:guest:${JSON.stringify([identity.accountId, targetLink])}`, () =>
-        t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, targetLink))) return null;
+        t.db.one("SELECT 1 FROM guest_accounts WHERE account_id=? AND link_id=? AND approved=1", identity.accountId, targetLink), ['guest_accounts'])) return null;
     }
   }
   return { kind: "page", name: identity.accountId ?? (identity.openPublic ? `public:${identity.linkId}` : identity.linkId), ...identity };

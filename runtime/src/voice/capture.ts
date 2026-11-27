@@ -1,12 +1,15 @@
-// Push-to-talk recording and in-browser Cactus Whistle transcription.
-// Uses direct 16 kHz PCM capture via AudioWorklet when available (avoiding mobile
-// MediaRecorder/decodeAudioData codec failures), falling back cleanly to MediaRecorder.
+// Push-to-talk recording and in-browser streaming Cactus Whistle transcription.
+// Uses direct 16 kHz PCM capture via AudioWorklet with live streaming partials when supported,
+// keeping MediaRecorder only as a legacy fallback when AudioWorklet fails to initialize.
 import type { RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 import { mediaRequestSettled } from "../sensors";
-import { decodeAudioToPcm16k, type SharedSpeechWorker } from "./shared-worker";
+import { SPEECH_LANGUAGES } from "./resources";
+import { decodeAudioToPcm16k, type SharedSpeechWorker, type SpeechStreamHandle, type SpeechStreamPartial } from "./shared-worker";
 
 export type CaptureMode = "local" | null;
 export type CaptureStage = "model" | "microphone_permission" | "recorder" | "transcription";
+
+const STREAM_CHUNK_SAMPLES = 8_000; // 500 ms @ 16 kHz per streaming pass
 
 /** Produce an actionable, user-safe message distinguishing OS/browser permission denial, policy, device, and stage failures. */
 export function classifyCaptureError(error: unknown, stage: CaptureStage, permissionState?: string | null): string {
@@ -65,6 +68,7 @@ async function probeMicrophonePermissionState(): Promise<string | null> {
 export interface CaptureHandlers {
   onConsent(): Promise<boolean>;
   onInterim(text: string): void;
+  onPartial?(partial: SpeechStreamPartial): void;
   onFinal(text: string): void;
   onState(listening: boolean): void;
   onError(message: string): void;
@@ -93,6 +97,7 @@ export class SpeechCapture {
   private session = 0;
   private maxTimer: ReturnType<typeof setTimeout> | null = null;
   private finishTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushResolve: (() => void) | null = null;
   private consented = false;
   private disposed = false;
   private offTracks: (() => void) | null = null;
@@ -104,6 +109,10 @@ export class SpeechCapture {
   private pcmChunks: Float32Array[] = [];
   private pcmTotalSamples = 0;
   private pcmActive = false;
+  private streamHandle: SpeechStreamHandle | null = null;
+  private streamPendingChunks: Float32Array[] = [];
+  private streamPendingSamples = 0;
+  private streamPushTail: Promise<void> = Promise.resolve();
   private sharedRelease: (() => void) | null = null;
   private initAbort: AbortController | null = null;
   private transcribeAbort: AbortController | null = null;
@@ -118,6 +127,20 @@ export class SpeechCapture {
 
   get microphoneActive(): boolean { return this.listening; }
   get busy(): boolean { return this.starting || this.requesting || !!this.recorder || this.pcmActive || this.processing; }
+
+  private missingCapabilities(): string[] {
+    const missing: string[] = [];
+    if (!this.speech) missing.push("on-device speech model");
+    if (!navigator.mediaDevices?.getUserMedia) missing.push("microphone capture");
+    const hasWorklet = !!this.workletUrl && typeof AudioContext !== "undefined" && typeof AudioWorkletNode !== "undefined";
+    if (!hasWorklet) {
+      if (typeof AudioWorkletNode === "undefined") missing.push("AudioWorklet");
+      if (typeof MediaRecorder === "undefined") missing.push("MediaRecorder");
+      if (!window.OfflineAudioContext) missing.push("OfflineAudioContext");
+    }
+    if (!window.Worker) missing.push("Web Workers");
+    return missing;
+  }
 
   private call(action: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<any> {
     if (!this.worker) return Promise.reject(new Error("Speech worker unavailable"));
@@ -203,12 +226,7 @@ export class SpeechCapture {
   /** Warm transcription without opening the microphone. */
   async prepare(): Promise<void> {
     if (!this.mode) {
-      const missing: string[] = [];
-      if (!this.speech) missing.push("on-device speech model");
-      if (!navigator.mediaDevices?.getUserMedia) missing.push("microphone capture");
-      if (typeof MediaRecorder === "undefined") missing.push("MediaRecorder");
-      if (!window.OfflineAudioContext) missing.push("OfflineAudioContext");
-      if (!window.Worker) missing.push("Web Workers");
+      const missing = this.missingCapabilities();
       const detail = missing.length ? ` (missing ${missing.join(", ")})` : "";
       throw new Error(`On-device speech capture is unavailable in this browser${detail}. You can type instead.`);
     }
@@ -216,14 +234,9 @@ export class SpeechCapture {
   }
 
   async start(): Promise<void> {
-    if (this.disposed || this.recorder || this.starting || this.requesting) return;
+    if (this.disposed || this.recorder || this.pcmActive || this.starting || this.requesting) return;
     if (!this.mode) {
-      const missing: string[] = [];
-      if (!this.speech) missing.push("on-device speech model");
-      if (!navigator.mediaDevices?.getUserMedia) missing.push("microphone capture");
-      if (typeof MediaRecorder === "undefined") missing.push("MediaRecorder");
-      if (!window.OfflineAudioContext) missing.push("OfflineAudioContext");
-      if (!window.Worker) missing.push("Web Workers");
+      const missing = this.missingCapabilities();
       this.h.onError(`On-device speech capture is unavailable in this browser${missing.length ? ` (missing ${missing.join(", ")})` : ""}. You can type instead.`);
       return;
     }
@@ -235,8 +248,8 @@ export class SpeechCapture {
     let permissionTimer: ReturnType<typeof setTimeout> | null = null;
     let stage: CaptureStage = "model";
     try {
-      const language = this.lang().split("-")[0].toLowerCase();
-      if (!["en", "de", "fr", "es", "it", "nl", "pl"].includes(language)) throw new Error("Speech currently supports English, German, French, Spanish, Italian, Dutch and Polish. Choose one in page settings or type instead.");
+      const language = this.lang().split("-")[0]!.toLowerCase();
+      if (!SPEECH_LANGUAGES.includes(language)) throw new Error("Speech currently supports English, German, French, Spanish, Italian, Dutch and Polish. Choose one in page settings or type instead.");
       await Promise.race([this.load(), cancelled]);
       if (this.cancelled || session !== this.session) return;
       this.h.onInterim("Waiting for microphone permission…");
@@ -267,8 +280,8 @@ export class SpeechCapture {
             }
           };
 
-          // Prefer direct 16 kHz PCM capture via AudioWorklet (immune to mobile MediaRecorder codec issues).
-          const startedPcm = await this.tryStartPcmCapture(stream, session);
+          // Prefer direct 16 kHz PCM capture via AudioWorklet with live streaming partials.
+          const startedPcm = await this.tryStartPcmCapture(stream, session, language);
           if (this.cancelled || session !== this.session || this.disposed) {
             this.releaseStream();
             return;
@@ -292,7 +305,8 @@ export class SpeechCapture {
           this.listening = true;
           this.h.onState(true);
           this.h.onInterim("");
-          this.maxTimer = setTimeout(() => this.stop(), 30_000);
+          // Streaming sessions support longer dictation (2 minutes); batch capture stays bounded at 30s.
+          this.maxTimer = setTimeout(() => this.stop(), this.streamHandle?.native ? 120_000 : 30_000);
         } catch (error) {
           this.releaseStream(); this.recorder = null;
           throw error;
@@ -346,11 +360,10 @@ export class SpeechCapture {
         analyser.getByteTimeDomainData(samples);
         let sum = 0;
         for (let i = 0; i < samples.length; i++) {
-          const v = (samples[i] - 128) / 128;
+          const v = (samples[i]! - 128) / 128;
           sum += v * v;
         }
         const rms = Math.sqrt(sum / samples.length);
-        // Scale conversational speech (~0.02..0.28 RMS) smoothly onto 0..1.
         const level = Math.min(1, Math.max(0, (rms - 0.01) * 4));
         try { this.h.onLevel?.(level); } catch { /* ignore meter listener errors */ }
       }, 65);
@@ -365,7 +378,30 @@ export class SpeechCapture {
     try { this.h.onLevel?.(0); } catch { /* ignore */ }
   }
 
-  private async tryStartPcmCapture(stream: MediaStream, session: number): Promise<boolean> {
+  private flushStreamBuffer(session: number): void {
+    const handle = this.streamHandle;
+    if (!handle || !this.streamPendingSamples) return;
+    const chunks = this.streamPendingChunks;
+    const total = this.streamPendingSamples;
+    this.streamPendingChunks = [];
+    this.streamPendingSamples = 0;
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+    this.streamPushTail = this.streamPushTail.then(async () => {
+      if (this.cancelled || session !== this.session || this.streamHandle !== handle) return;
+      try {
+        const partial = await handle.push(merged);
+        if (this.cancelled || session !== this.session) return;
+        if (partial.text) {
+          this.h.onPartial?.(partial);
+          this.h.onInterim(partial.text);
+        }
+      } catch { /* Non-fatal chunk error; stop() will finalize or report. */ }
+    });
+  }
+
+  private async tryStartPcmCapture(stream: MediaStream, session: number, language: string): Promise<boolean> {
     if (!this.workletUrl || typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") return false;
     let ctx: AudioContext | null = null;
     try {
@@ -383,17 +419,51 @@ export class SpeechCapture {
       });
       this.pcmChunks = [];
       this.pcmTotalSamples = 0;
-      const maxSamples = 16_000 * 30;
+      this.streamPendingChunks = [];
+      this.streamPendingSamples = 0;
+      this.streamPushTail = Promise.resolve();
+      this.streamHandle = null;
+
+      if (this.sharedWorker?.supportsStreaming) {
+        try {
+          const handle = await this.sharedWorker.startStream(language);
+          if (!this.cancelled && session === this.session && !this.disposed) {
+            this.streamHandle = handle;
+          } else {
+            void handle.cancel();
+            void ctx.close().catch(() => {});
+            return true;
+          }
+        } catch {
+          this.streamHandle = null;
+        }
+      }
+
+      const maxSamples = this.streamHandle?.native ? 16_000 * 120 : 16_000 * 30;
       node.port.onmessage = (event: MessageEvent) => {
         if (session !== this.session || this.cancelled) return;
         const msg = event.data;
+        if (msg?.type === "capture-flushed") {
+          const resolve = this.flushResolve;
+          this.flushResolve = null;
+          resolve?.();
+          return;
+        }
         if (msg?.type === "pcm" && msg.samples && typeof msg.samples.byteLength === "number") {
           const chunk = new Float32Array(msg.samples);
           const remaining = maxSamples - this.pcmTotalSamples;
           if (remaining > 0) {
             const take = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
-            this.pcmChunks.push(take);
             this.pcmTotalSamples += take.length;
+            if (this.streamHandle?.native) {
+              this.streamPendingChunks.push(take);
+              this.streamPendingSamples += take.length;
+              if (this.streamPendingSamples >= STREAM_CHUNK_SAMPLES) {
+                this.flushStreamBuffer(session);
+              }
+            } else {
+              this.pcmChunks.push(take);
+            }
           }
           if (typeof msg.level === "number") {
             try { this.h.onLevel?.(msg.level); } catch { /* ignore */ }
@@ -420,6 +490,9 @@ export class SpeechCapture {
 
   private teardownPcm(): void {
     this.pcmActive = false;
+    const resolve = this.flushResolve;
+    this.flushResolve = null;
+    resolve?.();
     try { this.pcmNode?.port.postMessage({ type: "close" }); } catch {}
     try { this.pcmSource?.disconnect(); } catch {}
     try { this.pcmNode?.disconnect(); } catch {}
@@ -445,22 +518,39 @@ export class SpeechCapture {
       this.clearTimers();
       this.pcmActive = false;
       this.processing = true; this.processingSession = session;
+      const flushed = new Promise<void>(resolve => {
+        const timer = setTimeout(() => {
+          if (this.flushResolve === done) this.flushResolve = null;
+          resolve();
+        }, 45);
+        const done = () => { clearTimeout(timer); resolve(); };
+        this.flushResolve = done;
+      });
       try { this.pcmNode?.port.postMessage({ type: "capture", sequence: session, enabled: false }); } catch {}
-      // Give the worklet one micro-window (~35ms) to flush trailing samples before tearing down.
-      setTimeout(() => {
+      void flushed.then(async () => {
+        const handle = this.streamHandle;
         const chunks = this.pcmChunks;
         const total = this.pcmTotalSamples;
         this.pcmChunks = [];
         this.pcmTotalSamples = 0;
+        if (handle?.native) {
+          this.flushStreamBuffer(session);
+        }
         this.releaseStream();
         if (this.cancelled || session !== this.session) return;
+        if (handle?.native) {
+          this.streamHandle = null;
+          await this.finalizeNativeStream(handle, total, session);
+          return;
+        }
         const merged = new Float32Array(total);
         let offset = 0;
         for (const c of chunks) { merged.set(c, offset); offset += c.length; }
         void this.transcribePcm(merged, session);
-      }, 35);
+      });
       return;
     }
+    if (this.processing) return;
     const rec = this.recorder;
     if (!rec) { this.cancel(); return; }
     this.clearTimers();
@@ -477,10 +567,42 @@ export class SpeechCapture {
     }
   }
 
+  private async finalizeNativeStream(handle: SpeechStreamHandle, totalSamples: number, session: number): Promise<void> {
+    if (this.cancelled || session !== this.session) { void handle.cancel(); return; }
+    if (!totalSamples) {
+      void handle.cancel();
+      this.processing = false;
+      this.h.onError("No audio was recorded. Try again or type instead.");
+      return;
+    }
+    this.processing = true; this.processingSession = session;
+    const ac = new AbortController();
+    this.transcribeAbort = ac;
+    try {
+      await this.streamPushTail;
+      if (this.cancelled || session !== this.session) { void handle.cancel(); return; }
+      const text = await handle.stop({ signal: ac.signal });
+      if (this.cancelled || session !== this.session) return;
+      if (text) this.h.onFinal(text);
+      else this.h.onError("I didn't catch that. Try again or type instead.");
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+      if (!this.cancelled && session === this.session) this.h.onError(`On-device transcription failed${detail}. You can type instead.`);
+    } finally {
+      if (this.transcribeAbort === ac) this.transcribeAbort = null;
+      if (this.processingSession === session) this.processing = false;
+      if (session === this.session) this.h.onInterim("");
+    }
+  }
+
   cancel(): void {
     ++this.session; this.cancelled = true; this.cancelStart?.();
     this.clearTimers();
     this.pcmChunks = []; this.pcmTotalSamples = 0;
+    this.streamPendingChunks = []; this.streamPendingSamples = 0;
+    const activeStream = this.streamHandle;
+    this.streamHandle = null;
+    if (activeStream) void activeStream.cancel();
     const recorder = this.recorder; this.recorder = null;
     try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch { /* All tracks are stopped below. */ }
     this.releaseStream();

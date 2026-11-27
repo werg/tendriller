@@ -4,35 +4,49 @@ declare const sampleRate: number;
 declare class AudioWorkletProcessor { readonly port: MessagePort; }
 declare function registerProcessor(name: string, processor: typeof AudioWorkletProcessor): void;
 
+const CAPTURE_FRAME_SAMPLES = 2048; // 128 ms @ 16 kHz
+
 class VoicePcmProcessor extends AudioWorkletProcessor {
   private mode: "wake" | "continuous" | "capture" = "wake";
   private enabled = false;
   private closed = false;
   private sequence = 0;
   private levelCounter = 0;
-  private captureBuffer: number[] = [];
+  // Pre-allocated typed ring slab eliminates audio-thread GC pressure from boxed number[].
+  private captureSlab = new Float32Array(CAPTURE_FRAME_SAMPLES);
+  private captureOffset = 0;
   private readonly resampler = new PcmResampler(sampleRate);
   private readonly segmenter = new PcmVoiceSegmenter();
   private continuous = new ContinuousPcmSegmenter();
+
   constructor() {
     super();
     this.port.onmessage = event => {
       const value = event.data;
-      if (value?.type === "close") { this.closed = true; this.enabled = false; this.captureBuffer = []; }
-      else if (value?.type === "listen" && Number.isSafeInteger(value.sequence)) {
-        this.mode = "wake"; this.sequence = value.sequence; this.enabled = value.enabled === true;
-        this.resampler.reset(); this.segmenter.reset();
+      if (value?.type === "close") {
+        this.closed = true;
+        this.enabled = false;
+        this.captureOffset = 0;
+      } else if (value?.type === "listen" && Number.isSafeInteger(value.sequence)) {
+        this.mode = "wake";
+        this.sequence = value.sequence;
+        this.enabled = value.enabled === true;
+        this.resampler.reset();
+        this.segmenter.reset();
       } else if (value?.type === "capture" && Number.isSafeInteger(value.sequence)) {
-        if (value.enabled === false && this.mode === "capture" && this.captureBuffer.length > 0) {
-          const out = new Float32Array(this.captureBuffer);
-          this.captureBuffer = [];
-          this.port.postMessage({ type: "pcm", sequence: this.sequence, samples: out.buffer }, [out.buffer]);
+        if (value.enabled === false && this.mode === "capture") {
+          this.flushCaptureSlab();
+          this.port.postMessage({ type: "capture-flushed", sequence: this.sequence });
         }
-        this.mode = "capture"; this.sequence = value.sequence; this.enabled = value.enabled === true;
-        this.captureBuffer = [];
+        this.mode = "capture";
+        this.sequence = value.sequence;
+        this.enabled = value.enabled === true;
+        this.captureOffset = 0;
         this.resampler.reset();
       } else if (value?.type === "continuous" && Number.isSafeInteger(value.sequence)) {
-        this.mode = "continuous"; this.sequence = value.sequence; this.enabled = value.enabled === true;
+        this.mode = "continuous";
+        this.sequence = value.sequence;
+        this.enabled = value.enabled === true;
         this.continuous = new ContinuousPcmSegmenter({
           maxSegmentMs: typeof value.maxSegmentMs === "number" ? value.maxSegmentMs : undefined,
           silenceMs: typeof value.silenceMs === "number" ? value.silenceMs : undefined,
@@ -52,6 +66,14 @@ class VoicePcmProcessor extends AudioWorkletProcessor {
       }
     };
   }
+
+  private flushCaptureSlab(): void {
+    if (this.captureOffset <= 0) return;
+    const out = this.captureSlab.slice(0, this.captureOffset);
+    this.captureOffset = 0;
+    this.port.postMessage({ type: "pcm", sequence: this.sequence, samples: out.buffer }, [out.buffer]);
+  }
+
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     // The graph must stay connected for Safari; its output is always silence.
     for (const output of outputs) for (const channel of output) channel.fill(0);
@@ -62,14 +84,16 @@ class VoicePcmProcessor extends AudioWorkletProcessor {
     if (this.mode === "capture") {
       let sum = 0;
       for (let i = 0; i < resampled.length; i++) {
-        const s = Math.max(-1, Math.min(1, resampled[i]!));
-        this.captureBuffer.push(s);
+        const raw = resampled[i]!;
+        const s = raw > 1 ? 1 : raw < -1 ? -1 : raw;
+        this.captureSlab[this.captureOffset++] = s;
         sum += s * s;
-      }
-      if (this.captureBuffer.length >= 2048) {
-        const out = new Float32Array(this.captureBuffer);
-        this.captureBuffer = [];
-        this.port.postMessage({ type: "pcm", sequence: this.sequence, samples: out.buffer }, [out.buffer]);
+        if (this.captureOffset >= CAPTURE_FRAME_SAMPLES) {
+          const out = this.captureSlab;
+          this.captureSlab = new Float32Array(CAPTURE_FRAME_SAMPLES);
+          this.captureOffset = 0;
+          this.port.postMessage({ type: "pcm", sequence: this.sequence, samples: out.buffer }, [out.buffer]);
+        }
       }
       if (++this.levelCounter >= 8 && resampled.length > 0) {
         this.levelCounter = 0;

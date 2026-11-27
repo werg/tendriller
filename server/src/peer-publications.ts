@@ -8,10 +8,7 @@
  * and late-revocation reconciliation obey the exact same CRDT semantics as every replica.
  */
 import { bytesToHex, decodeRecord, type FinalityCheckpoint } from '@chronolog/authority';
-import {
-  decodeSignedOperation, genesisLogId, verifySignedOperation,
-  type KernelOperationInput,
-} from '@chronolog/peer-session/kernel';
+import type { KernelOperationInput } from '@chronolog/peer-session/kernel';
 import { sha256Hex } from './ids';
 import { authorityRecordBytes } from '../../contract/authority.mjs';
 import { assertFilePath } from '../../contract/index.mjs';
@@ -19,14 +16,14 @@ import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import { requireAgentScope, type Principal } from './access';
 import {
   activeLogId, authorityAccount, authorityError, freshAuthorityAccess, listCheckpointRows,
-  listPublicCasRows, listPublicOpRows, readControlState, readStoredGenesisBytes,
+  listPublicCasRows, listPublicOpRows, readControlState, readStoredGenesisBytes, storedKernelOp,
   reconcileHostEffects, replayBlindHostControl, verifyPublicControlOp, withAuthorityMutation,
   type ControlRelease,
 } from './authority';
 import type { HostAppConfig } from '../../contract/authority.mjs';
 import { notifyDiscoveryWatchers } from './discovery';
 import { createVersion, storeContent, type VersionFile } from './files';
-import { getAccountEntitlements } from './billing/entitlements';
+import { cachedAccountEntitlements } from './billing/entitlements';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
@@ -44,7 +41,7 @@ async function storeSuppliedAssets(
   if (supplied.size === 0) return;
   const owner = t.db.get<string | null>('owner_account', null);
   const pageLimit = owner
-    ? (await getAccountEntitlements(t.env, owner, t.now()).catch(() => null))?.quotas.pageStorageBytes
+    ? (await cachedAccountEntitlements(t.env, owner).catch(() => null))?.quotas.pageStorageBytes
     : undefined;
   const entries = [...supplied.entries()];
   for (let i = 0; i < entries.length; i += ASSET_UPLOAD_CONCURRENCY) {
@@ -89,7 +86,10 @@ export async function exchangePeerPublication(
   action: 'read' | 'publish',
   input: unknown,
 ): Promise<unknown> {
-  return withAuthorityMutation(t, async () => {
+  // A receipt read observes committed state only, so it need not wait behind
+  // an in-flight publication that is still uploading assets.
+  const run = action === 'read' ? <T>(work: () => Promise<T>) => work() : <T>(work: () => Promise<T>) => withAuthorityMutation(t, work);
+  return run(async () => {
     await freshAuthorityAccess(t, principal);
     const genesisBytes = readStoredGenesisBytes(t);
     const state = genesisBytes ? await readControlState(t) : null;
@@ -229,13 +229,8 @@ export async function exchangePeerPublication(
     }
 
     // Replay the candidate publication op through TopicKernel BEFORE writing assets or versions!
-    const existingOps = listPublicOpRows(t);
-    const allOps: KernelOperationInput[] = [];
-    for (const row of existingOps) {
-      const s = decodeSignedOperation(row.raw);
-      const { core, opId } = await verifySignedOperation(s);
-      allOps.push({ opId, core });
-    }
+    // Stored control ops were verified when inserted.
+    const allOps: KernelOperationInput[] = listPublicOpRows(t).map(storedKernelOp);
     allOps.push(parsed.kernelInput);
     const checkpoints = listCheckpointRows(t).map(r => decodeRecord<FinalityCheckpoint>(r.raw));
     const nextState = await replayBlindHostControl({

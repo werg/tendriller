@@ -65,6 +65,18 @@ const samples = samplesFromWav(wav);
 const spoken = await request({ action: 'transcribe', samples: samples.slice().buffer, language: 'en' });
 const errorRate = wordErrorRate(fixture.transcript, spoken.response.text || '');
 assert.ok(errorRate <= fixture.max_word_error_rate, `Unexpected model transcript: ${spoken.response.text}`);
+const streamStart = await request({ action: 'stream-start', sessionId: 'qualify-1', language: 'en' });
+assert.equal(streamStart.response.native, true, 'pinned Cactus WASM must support native streaming');
+const partials = [];
+for (let offset = 0; offset < samples.length; offset += 8000) {
+  const chunk = samples.slice(offset, Math.min(samples.length, offset + 8000));
+  const step = await request({ action: 'stream-chunk', sessionId: 'qualify-1', samples: chunk.buffer });
+  if (step.response.text) partials.push(step.response.text);
+}
+assert.ok(partials.length >= 1, 'streaming must emit at least one partial transcript before stop');
+const streamFinal = await request({ action: 'stream-stop', sessionId: 'qualify-1' });
+const streamWer = wordErrorRate(fixture.transcript, streamFinal.response.text || '');
+assert.ok(streamWer <= Math.max(0.25, fixture.max_word_error_rate), `Unexpected streaming transcript: ${streamFinal.response.text}`);
 const positive = await request({ action: 'detect', samples: samples.slice().buffer, language: 'en', phrase: 'Please check' });
 assert.equal(positive.response.matched, true); assert.match(positive.response.command, /sensor.*temperature/i); assert.equal(positive.response.text, undefined);
 const negative = await request({ action: 'detect', samples: samples.slice().buffer, language: 'en', phrase: 'Hey Tendril' });

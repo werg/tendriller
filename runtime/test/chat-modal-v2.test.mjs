@@ -381,10 +381,14 @@ test('built-in chat respects custom reducer topic mapping declared via agentMess
   mounted.textarea.dispatch('input');
   mounted.sendBtn.dispatch('click');
   await flush(25);
+  let feed = (await session.query('agentFeed', null)).value;
+  for (let i = 0; i < 40 && feed.messages.length < 1; i++) {
+    await new Promise(r => setTimeout(r, 10));
+    feed = (await session.query('agentFeed', null)).value;
+  }
 
   assert.equal(mounted.statusStrip.hidden, true);
   assert.match(mounted.feed.textContent, /Message on custom reducer topic/);
-  const feed = (await session.query('agentFeed', null)).value;
   assert.equal(feed.messages.length, 1);
   assert.equal(feed.messages[0].text, 'Message on custom reducer topic');
 });

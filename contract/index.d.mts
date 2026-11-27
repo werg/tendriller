@@ -440,8 +440,8 @@ export interface RuntimeServices {
   documentUrl(reference: string): string;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
-  /** Lazily load the optional on-device voice & ASR module (`createVoice`, `transcribeAudio`, `bindDictation`, `createStreamTranscriber`). */
-  loadVoice(): Promise<Record<string, any>>;
+  /** Lazily load the optional on-device voice & streaming ASR module (`dictate`, `bindDictation`, `transcribeAudio`, `createVoice`, `createStreamTranscriber`). */
+  loadVoice(): Promise<import("./voice.mjs").VoiceModule>;
   /** Publication lifecycle, offline persistence, URL-addressable facets, and live hot-swappable slots. */
   publication: {
     saveOffline(): Promise<{ id: string; status: "ready" }>;

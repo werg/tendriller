@@ -3,10 +3,13 @@ import type { WakeState } from "./wakeword";
 import { matchWakePhrase } from "./wakeword";
 import { MAX_WAKE_SAMPLES, PCM_RATE } from "./pcm";
 import { mediaRequestSettled } from "../sensors";
+import { SPEECH_LANGUAGES } from "./resources";
+import type { SharedSpeechWorker } from "./shared-worker";
 
 type SpeechResource = NonNullable<RuntimeArtifactFeatures["speech"]>;
 export interface LocalWakeSettings {
   phrase: string; lang: string; workerUrl: string; workletUrl: string; speech: SpeechResource;
+  sharedWorker?: SharedSpeechWorker;
 }
 export interface LocalWakeHandlers {
   onState(state: WakeState, detail?: string): void;
@@ -14,7 +17,7 @@ export interface LocalWakeHandlers {
   onCommand(text: string): void;
   isOutputSpeaking?(): boolean;
 }
-const LANGUAGES = new Set(["en", "de", "fr", "es", "it", "nl", "pl"]);
+const LANGUAGES = new Set(SPEECH_LANGUAGES);
 const SESSION_MS = 5 * 60_000;
 const INFERENCE_MS = 10_000;
 const INFERENCE_BUDGET_MS = 20_000; // Wall time per fixed minute, a conservative CPU proxy.
@@ -44,6 +47,9 @@ export class LocalWakeCapture {
   private source: MediaStreamAudioSourceNode | null = null;
   private worklet: AudioWorkletNode | null = null;
   private worker: Worker | null = null;
+  private sharedWorker: SharedSpeechWorker | null = null;
+  private sharedRelease: (() => void) | null = null;
+  private inferenceAbort: AbortController | null = null;
   private requestSettled: Promise<void> = Promise.resolve();
   private requesting = false;
   private pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
@@ -163,23 +169,42 @@ export class LocalWakeCapture {
       if (!current()) return false;
       if (context.state !== "running" || !context.audioWorklet) throw new Error("AudioWorklet is unavailable or audio is blocked. Tap Start again or type.");
       context.addEventListener("statechange", this.interrupted);
-      const worker = this.worker = new Worker(settings.workerUrl);
-      worker.onmessage = event => {
-        if (!current() || this.worker !== worker) return;
-        const { id, progress, error, ...result } = event.data ?? {};
-        if (progress) { if (this.initializing) this.handlers.onState("loading", String(progress)); return; }
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        clearTimeout(pending.timer); this.pending.delete(id);
-        if (error) pending.reject(new Error(String(error))); else pending.resolve(result);
-      };
-      worker.onerror = () => { if (current()) this.stop("error", "The on-device speech worker failed. Tap Start to retry or type."); };
-      worker.onmessageerror = () => { if (current()) this.stop("error", "The on-device speech worker returned an invalid response."); };
       const speech = settings.speech;
-      await Promise.all([
-        this.call("init", { engine: speech.engine, modelUrl: speech.url, modelSha256: speech.sha256, modelSize: speech.size }, 120_000),
-        this.deadline(context.audioWorklet.addModule(settings.workletUrl), 30_000, "Microphone processing could not load."),
-      ]);
+      if (settings.sharedWorker) {
+        this.sharedWorker = settings.sharedWorker;
+        this.sharedRelease = settings.sharedWorker.retain();
+        const ac = new AbortController();
+        this.inferenceAbort = ac;
+        await Promise.all([
+          this.deadline(
+            settings.sharedWorker.ensureInit(speech, {
+              onProgress: progress => { if (current() && this.initializing) this.handlers.onState("loading", progress); },
+              signal: ac.signal,
+            }),
+            120_000,
+            "On-device speech took too long. Listening stopped to limit device work.",
+          ),
+          this.deadline(context.audioWorklet.addModule(settings.workletUrl), 30_000, "Microphone processing could not load."),
+        ]);
+        if (this.inferenceAbort === ac) this.inferenceAbort = null;
+      } else {
+        const worker = this.worker = new Worker(settings.workerUrl);
+        worker.onmessage = event => {
+          if (!current() || this.worker !== worker) return;
+          const { id, progress, error, ...result } = event.data ?? {};
+          if (progress) { if (this.initializing) this.handlers.onState("loading", String(progress)); return; }
+          const pending = this.pending.get(id);
+          if (!pending) return;
+          clearTimeout(pending.timer); this.pending.delete(id);
+          if (error) pending.reject(new Error(String(error))); else pending.resolve(result);
+        };
+        worker.onerror = () => { if (current()) this.stop("error", "The on-device speech worker failed. Tap Start to retry or type."); };
+        worker.onmessageerror = () => { if (current()) this.stop("error", "The on-device speech worker returned an invalid response."); };
+        await Promise.all([
+          this.call("init", { engine: speech.engine, modelUrl: speech.url, modelSha256: speech.sha256, modelSize: speech.size }, 120_000),
+          this.deadline(context.audioWorklet.addModule(settings.workletUrl), 30_000, "Microphone processing could not load."),
+        ]);
+      }
       if (!current()) return false;
       this.handlers.onState("starting", "Waiting for microphone permission…");
       if (!current()) return false;
@@ -253,9 +278,28 @@ export class LocalWakeCapture {
     this.commandTimer = null;
     this.handlers.onState("transcribing", commandWindow ? "Transcribing your command on this device…" : "Checking the wake phrase on this device…");
     try {
-      const result = await this.call(commandWindow ? "transcribe" : "detect", {
-        samples, language: this.settings.lang, phrase: this.settings.phrase,
-      }, Math.min(INFERENCE_MS, INFERENCE_BUDGET_MS - this.inferenceMs), [samples]);
+      const budgetTimeout = Math.min(INFERENCE_MS, INFERENCE_BUDGET_MS - this.inferenceMs);
+      let result: any;
+      if (this.sharedWorker) {
+        const pcm = new Float32Array(samples);
+        const ac = new AbortController();
+        this.inferenceAbort = ac;
+        try {
+          if (commandWindow) {
+            const text = await this.sharedWorker.transcribe(pcm, this.settings.lang, { signal: ac.signal, timeoutMs: budgetTimeout });
+            result = { text };
+          } else {
+            result = await this.sharedWorker.detect(pcm, this.settings.lang, this.settings.phrase, { signal: ac.signal, timeoutMs: budgetTimeout });
+          }
+        } finally {
+          pcm.fill(0);
+          if (this.inferenceAbort === ac) this.inferenceAbort = null;
+        }
+      } else {
+        result = await this.call(commandWindow ? "transcribe" : "detect", {
+          samples, language: this.settings.lang, phrase: this.settings.phrase,
+        }, budgetTimeout, [samples]);
+      }
       this.inferenceMs += Date.now() - now;
       if (!this.active || generation !== this.generation) return;
       if (window.speechSynthesis?.speaking || this.handlers.isOutputSpeaking?.()) {
@@ -312,6 +356,8 @@ export class LocalWakeCapture {
     if (this.context) void this.context.close().catch(() => {});
     if (this.primed) void this.primed.close().catch(() => {});
     this.context = this.primed = null; this.primedResume = null;
+    this.inferenceAbort?.abort(); this.inferenceAbort = null;
+    this.sharedRelease?.(); this.sharedRelease = null; this.sharedWorker = null;
     this.worker?.terminate(); this.worker = null;
     for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(new Error("Listening stopped")); }
     for (const cancel of this.deadlines) cancel();

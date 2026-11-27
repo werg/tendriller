@@ -3,7 +3,7 @@ import type { RuntimeApi, RuntimeArtifactFeatures } from "../../../contract/inde
 import { createSpeechOutput, type SpeechMediaSessionOptions } from "./output";
 import { createPreferences } from "./preferences";
 import { SpeechCapture, classifyCaptureError } from "./capture";
-import { getSharedSpeechWorker, decodeAudioToPcm16k } from "./shared-worker";
+import { getSharedSpeechWorker, decodeAudioToPcm16k, type SpeechStreamPartial } from "./shared-worker";
 import { WakeWordCapture, type WakeMode, type WakeState } from "./wakeword";
 import { LocalWakeCapture } from "./local-wake";
 import { acquireMicrophoneSession, type MicrophoneSession } from "./microphone";
@@ -37,6 +37,8 @@ export interface VoiceOptions {
   consentMode?: VoiceConsentMode;
   consent?(request: Readonly<VoiceConsent>): boolean | Promise<boolean>;
   transcript(text: string): void;
+  /** Optional live streaming partial updates while speaking (confirmed + pending tail). */
+  partial?(partial: SpeechStreamPartial): void;
   status?(status: VoiceStatus): void;
   /** Normalized 0..1 live microphone RMS level while recording. */
   level?(level: number): void;
@@ -56,8 +58,11 @@ export type { StreamTranscriber, StreamTranscriberOptions, StreamTranscriptSegme
 export { ContinuousPcmSegmenter, PcmResampler, PcmVoiceSegmenter } from "./pcm";
 export type { ContinuousPcmSegment } from "./pcm";
 export { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES, SPEECH_LANGUAGES } from "./resources";
-export { transcribeAudio, bindDictation } from "./dictation";
-export type { TranscribeAudioOptions, BindDictationOptions, DictationBinding } from "./dictation";
+export { dictate, transcribeAudio, bindDictation } from "./dictation";
+export type { TranscriptEvent, DictationOptions, DictationStream, TranscribeAudioOptions, BindDictationOptions, DictationBinding } from "./dictation";
+export { SPEECH_ENGINE_CATALOG, UnsupportedLanguageError, resolveSpeechLanguage, isBrowserLocalAvailable } from "./asr-engine";
+export type { AsrEngineId, AsrEngineDescriptor } from "./asr-engine";
+export type { SpeechStreamPartial } from "./shared-worker";
 export { classifyCaptureError, decodeAudioToPcm16k };
 
 type InputSession = { kind: "capture" | WakeMode; epoch: number; abort: AbortController; lease?: MicrophoneSession; released: boolean };
@@ -222,6 +227,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
           if (!message && captureStatus.state === "error") return;
           reportCapture(capture?.listening ? "recording" : message ? "working" : "idle", message);
         },
+        onPartial: options.partial ? partial => { if (!disposed) try { options.partial?.(partial); } catch { /* ignore */ } } : undefined,
         onFinal(text) {
           const session = input;
           if (!session || session.kind !== "capture" || !current(session)) return;
@@ -348,7 +354,15 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
         if (model) {
           const speech = await getResources(session.abort.signal);
           if (!current(session)) return false;
-          started = await local.start({ phrase, lang: requested.lang, speech, workerUrl: runtime.assetUrl("voice-worker.js"), workletUrl: runtime.assetUrl("voice-pcm-worklet.js") });
+          const workerUrl = runtime.assetUrl("voice-worker.js");
+          started = await local.start({
+            phrase,
+            lang: requested.lang,
+            speech,
+            workerUrl,
+            workletUrl: runtime.assetUrl("voice-pcm-worklet.js"),
+            sharedWorker: getSharedSpeechWorker(workerUrl, speech.sha256),
+          });
         } else {
           if (requested.mode === "local" && await WakeWordCapture.localAvailability(requested.lang) !== "available") throw new Error("The browser's on-device language pack is not installed or unavailable. Install it explicitly, choose the pinned model, or type.");
           if (!current(session)) return false;

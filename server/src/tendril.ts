@@ -654,12 +654,12 @@ export class Tendril extends DurableObject<Env> {
     return this.db.cached('links:main-row', () => {
       const row = this.db.one<Link>("SELECT * FROM links WHERE id = 'l_main'");
       return row ? Object.freeze(row) : null;
-    });
+    }, ['links']);
   }
 
   mainPageUrl(options?: { fallback?: boolean }): string {
     const key = this.db.cached('links:main-key', () =>
-      this.db.one<{ key: string }>("SELECT key FROM links WHERE id = 'l_main'")!.key);
+      this.db.one<{ key: string }>("SELECT key FROM links WHERE id = 'l_main'")!.key, ['links']);
     return pageUrl(this.env, this.tid, key, options?.fallback ? null : this.activeSubdomain());
   }
 
@@ -984,7 +984,7 @@ export class Tendril extends DurableObject<Env> {
 
   storageUsed(): number {
     return this.db.cached('files:stored-size', () =>
-      this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0);
+      this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0, ['stored_files']);
   }
 
   checkLocalStorage(additional: number, pageLimit: number = RESOURCE_LIMITS.page_bytes): void {
@@ -1109,7 +1109,7 @@ export class Tendril extends DurableObject<Env> {
       if (!row) return null;
       const expected_email = this.db.get<string | null>(`link_email:${row.id}`, null);
       return Object.freeze({ ...row, expected_email });
-    });
+    }, ['links', 'meta:link_email:']);
     if (!l || !safeEqual(l.key_hash, hash)) return null;
     if (l.expires_at !== null && l.expires_at < this.now()) return null;
     return l;

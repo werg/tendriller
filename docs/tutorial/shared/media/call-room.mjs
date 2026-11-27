@@ -34,7 +34,7 @@ export function createMediaRoom({
   persistTranscript = false,
   agentAudio = 'ask', // 'ask' | 'allow' | 'deny'
   allowSyntheticGesture = false,
-  loadVoice = () => import(runtime.assetUrl('voice.mjs')),
+  loadVoice = () => (typeof runtime?.loadVoice === 'function' ? runtime.loadVoice() : import(runtime.assetUrl('voice.mjs'))),
   onChange,
   onUtterance,
   onAgentAudioRequest,
