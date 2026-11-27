@@ -108,14 +108,32 @@ it('shares a pending asynchronous read and retries it after failure', async () =
   });
 });
 
-it('rejects existing storage whose revision matches but is missing required tables', async () => {
+it('rejects existing storage whose revision matches but is missing core required tables', async () => {
   await isolatedDatabase(storage => {
     const db = new Db(storage);
     db.init();
-    expect(REQUIRED_TABLES).toContain('v2_mailbox_envelopes');
-    storage.sql.exec('DROP TABLE v2_mailbox_envelopes');
+    expect(REQUIRED_TABLES).toContain('v2_public_ops');
+    storage.sql.exec('DROP TABLE v2_public_ops');
     expect(() => new Db(storage).init()).toThrow(StorageSchemaError);
-    expect(() => new Db(storage).init()).toThrow('missing required tables (v2_mailbox_envelopes)');
+    expect(() => new Db(storage).init()).toThrow('missing required tables (v2_public_ops)');
+  });
+});
+
+it('upgrades pre-mailbox revision 15 storage in place without losing existing data', async () => {
+  await isolatedDatabase(storage => {
+    const db = new Db(storage);
+    db.init();
+    db.set('owner_account', 'acct_existing');
+    storage.sql.exec('DROP TABLE v2_mailbox_envelopes');
+    storage.sql.exec('DROP TABLE v2_mailbox_ops');
+    storage.sql.exec('DROP TABLE v2_mailbox_cas');
+
+    const upgraded = new Db(storage);
+    upgraded.init();
+    expect(upgraded.get('owner_account', null)).toBe('acct_existing');
+    expect(upgraded.all('SELECT digest FROM v2_mailbox_envelopes')).toEqual([]);
+    expect(upgraded.all('SELECT op_id FROM v2_mailbox_ops')).toEqual([]);
+    expect(upgraded.all('SELECT hash FROM v2_mailbox_cas')).toEqual([]);
   });
 });
 

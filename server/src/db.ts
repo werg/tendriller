@@ -58,6 +58,14 @@ export const REQUIRED_TABLES: readonly string[] = Object.freeze(
   [...SCHEMA.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)/gi)].map(match => match[1]!),
 );
 
+// Additive tables introduced within STORAGE_SCHEMA_REVISION 15; existing rev-15 DOs
+// deployed before blind mailbox support upgrade cleanly in place on init().
+const ADDITIVE_REV15_TABLES: Readonly<Record<string, string>> = Object.freeze({
+  v2_mailbox_envelopes: 'CREATE TABLE IF NOT EXISTS v2_mailbox_envelopes (digest TEXT PRIMARY KEY, epoch INTEGER NOT NULL, author TEXT NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL)',
+  v2_mailbox_ops: 'CREATE TABLE IF NOT EXISTS v2_mailbox_ops (op_id TEXT PRIMARY KEY, author TEXT NOT NULL, author_ts INTEGER NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL)',
+  v2_mailbox_cas: 'CREATE TABLE IF NOT EXISTS v2_mailbox_cas (hash TEXT PRIMARY KEY, partition TEXT NOT NULL, bytes BLOB NOT NULL, stored_at INTEGER NOT NULL)',
+});
+
 type Bindable = string | number | null | ArrayBuffer;
 const MISSING = Symbol('missing metadata');
 const MAX_CACHED_ENTRIES = 256;
@@ -101,7 +109,13 @@ export class Db {
         const existingTables = new Set(objects.filter(object => object.type === 'table').map(object => object.name));
         const missing = REQUIRED_TABLES.filter(table => !existingTables.has(table));
         if (missing.length > 0) {
-          throw new StorageSchemaError(`stored revision ${STORAGE_SCHEMA_REVISION} is missing required tables (${missing.join(', ')})`);
+          const missingCore = missing.filter(table => !Object.hasOwn(ADDITIVE_REV15_TABLES, table));
+          if (missingCore.length > 0) {
+            throw new StorageSchemaError(`stored revision ${STORAGE_SCHEMA_REVISION} is missing required tables (${missingCore.join(', ')})`);
+          }
+          for (const table of missing) {
+            this.run(ADDITIVE_REV15_TABLES[table]!);
+          }
         }
         return;
       }
