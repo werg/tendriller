@@ -244,10 +244,13 @@ export function participateApplication(session, { peers, openDirectConnection,
 
   function scheduleMailboxSync() {
     if (signal.aborted || mergingFromMailbox || typeof peers.syncMailbox !== 'function') return;
-    if (Date.now() < mailboxCooldownUntil) return;
+    // Live connected peers replicate directly over WebRTC/relay at zero host cost;
+    // only push to the blind store-and-forward mailbox on fact changes when no peer link is open.
+    if (links.size > 0 || Date.now() < mailboxCooldownUntil) return;
     if (mailboxTimer !== undefined) return;
     mailboxTimer = setTimeout(() => {
       mailboxTimer = undefined;
+      if (links.size > 0) return;
       void syncMailbox({ force: true });
     }, 250);
     mailboxTimer.unref?.();
