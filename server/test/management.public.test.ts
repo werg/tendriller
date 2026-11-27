@@ -57,7 +57,7 @@ it('requires a new signed release instead of an unsigned version-selection form'
   const response = await req(h.page_url + '_tendril/manage', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=select-version&head_revision=1&version=1' });
   expect(response.status).toBe(400);
   const html = await (await req(h.page_url + '_tendril/manage')).text();
-  expect(html).toContain('new signed Chronolog publication');
+  expect(html).toContain('rolling back publishes a fresh signed release');
   expect(html).not.toContain('name="version"');
   expect(await inDO(h.id, t => t.db.get('current', 0))).toBe(0);
 });
