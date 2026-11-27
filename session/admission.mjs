@@ -119,7 +119,7 @@ function buildAuthorityTopic(authority, identity, wrapKey) {
  */
 export async function createPageGenesis({
   identity, wrapKey, hostKey, accounts = [], mode = 'attested', ownerGrant = DEFAULT_OWNER_GRANT,
-  authority = undefined, admission = undefined, privateChain = undefined, imports, topics, finalitySchedule, frozenReducers, salt,
+  subject = 'device', authority = undefined, admission = undefined, privateChain = undefined, imports, topics, finalitySchedule, frozenReducers, salt,
 }) {
   if (!HEX.test(identity?.publicKey ?? '') || !HEX.test(wrapKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
@@ -154,6 +154,19 @@ export async function createPageGenesis({
     salt,
   });
   if (!hostAttested) {
+    if (subject && Array.isArray(created.genesis.initialTopics?.$permissions?.members) && created.genesis.initialTopics.$permissions.members[0]) {
+      const genesis = structuredClone(created.genesis);
+      genesis.initialTopics.$permissions.members[0] = { ...genesis.initialTopics.$permissions.members[0], subject };
+      const { encodeGenesisBlock } = await import('@chronolog/peer-session');
+      const genesisBytes = encodeGenesisBlock(genesis);
+      return {
+        chainId: bytesToHex(genesisChainId(genesisBytes)),
+        genesis,
+        genesisBytes,
+        casNodes: created.casNodes,
+        epoch0Key: created.epoch0Key,
+      };
+    }
     return {
       chainId: created.chainId,
       genesis: created.genesis,
@@ -164,6 +177,9 @@ export async function createPageGenesis({
   }
   // Embed full Tendriller admission policy into initial $permissions.admission and re-encode deterministically.
   const genesis = structuredClone(created.genesis);
+  if (subject && Array.isArray(genesis.initialTopics?.$permissions?.members) && genesis.initialTopics.$permissions.members[0]) {
+    genesis.initialTopics.$permissions.members[0] = { ...genesis.initialTopics.$permissions.members[0], subject };
+  }
   genesis.initialTopics.$permissions = {
     ...genesis.initialTopics.$permissions,
     admission: { hostKey, mode, accounts: [...accounts], grant, invites: [] },
@@ -186,7 +202,7 @@ export async function createPageGenesis({
  * retries after an uncertain network reply resend the exact same bytes.
  */
 export async function openPageGenesis({
-  store, identity, wrapKey, peers, applicationId, create = true, ownerGrant, authority, imports, topics, privateChain, finalitySchedule, signal,
+  store, identity, wrapKey, peers, applicationId, create = true, subject = 'device', ownerGrant, authority, imports, topics, privateChain, finalitySchedule, signal,
 }) {
   const readCachedIntent = async (...keys) => {
     for (const k of keys) {
@@ -256,6 +272,7 @@ export async function openPageGenesis({
       hostKey: metadata.hostAttestationKey,
       accounts: metadata.admissionAccounts,
       ownerGrant,
+      subject,
       authority,
       imports,
       topics,
@@ -399,7 +416,7 @@ export function createAdmission(session, {
         ...(meta?.activation ? { activation: meta.activation } : {}),
         via: isCreator ? 'creator' : (meta?.via ?? 'attested'),
         label: m.label ?? (isCreator ? 'Page creator' : m.subject === 'agent' ? 'Agent' : 'Browser device'),
-        subject: m.subject ?? 'device',
+        subject: isCreator ? 'creator' : (m.subject ?? 'device'),
         self: m.publicKey === identity.publicKey,
       });
     });

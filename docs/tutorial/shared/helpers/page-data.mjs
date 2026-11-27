@@ -26,6 +26,7 @@ export async function initializePageData(context, { imports, topics, browserFirs
         ...(authority === undefined ? {} : { authority }),
         finalitySchedule,
         create: !browserFirst,
+        subject: 'agent',
         ...(ownerGrant === undefined ? {} : { ownerGrant }),
         signal: context.signal,
       });
