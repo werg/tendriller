@@ -52,6 +52,7 @@ export async function createOwnerPage(
     files?: readonly SeedFile[];
     rewriteConfigJson?: boolean;
     authorityHint?: { mode: 'attested' | 'open'; openRead?: boolean; openWrite?: boolean } | null;
+    blueprint?: Record<string, unknown> | null;
     activitySummary?: string;
   } = {},
 ): Promise<AllocatedOwnerPage> {
@@ -117,6 +118,7 @@ export async function createOwnerPage(
           files: options.files ?? [],
           rewriteConfigJson: options.rewriteConfigJson === true,
           authorityHint: options.authorityHint ?? null,
+          ...(options.blueprint ? { blueprint: options.blueprint } : {}),
           activitySummary: options.activitySummary ?? null,
         }),
       }));
@@ -192,5 +194,105 @@ export async function remixExistingPage(
     files: seedFiles,
     rewriteConfigJson: true,
     activitySummary: `Remixed from page ${source.id} (fresh isolated Chronolog log)`,
+  });
+}
+
+function visibilityAuthorityHint(vis: string): { mode: 'open'; openRead: boolean; openWrite: boolean } | null {
+  if (!['private', 'public-read', 'public-write'].includes(vis)) {
+    throw new HttpError(400, 'invalid_visibility', 'Choose visibility private, public-read, or public-write.');
+  }
+  return vis === 'public-write'
+    ? { mode: 'open', openRead: true, openWrite: true }
+    : vis === 'public-read'
+      ? { mode: 'open', openRead: true, openWrite: false }
+      : null;
+}
+
+/**
+ * Launch a fresh, isolated page directly from a portable, secret-free
+ * `tendriller-page-blueprint/v1` JSON document. Strictly verifies blueprint format
+ * and strips any forbidden secret/state fields. Optionally clones UI assets from
+ * `sourcePageId` (owned or public), rewriting `configuration.json` with the
+ * validated blueprint and fresh `applicationId`.
+ */
+export async function createPageFromBlueprint(
+  env: Env,
+  accountId: string,
+  options: {
+    blueprint: unknown;
+    sourcePageId?: string;
+    name?: string;
+    visibility?: 'private' | 'public-read' | 'public-write';
+  },
+): Promise<AllocatedOwnerPage> {
+  const bp = options.blueprint as Record<string, any> | null;
+  if (!bp || typeof bp !== 'object' || Array.isArray(bp) || bp.format !== 'tendriller-page-blueprint/v1') {
+    throw new HttpError(400, 'invalid_blueprint', 'Expected a valid tendriller-page-blueprint/v1 JSON document.');
+  }
+  if (!bp.reducers || typeof bp.reducers !== 'object' || !bp.reducers.topics || typeof bp.reducers.topics !== 'object') {
+    throw new HttpError(400, 'invalid_blueprint', 'Blueprint must include reducers.topics.');
+  }
+  const imports = bp.reducers.imports && typeof bp.reducers.imports === 'object' ? bp.reducers.imports as Record<string, string> : {};
+  const topics = bp.reducers.topics as Record<string, unknown>;
+  const casModules = Array.isArray(bp.casModules) ? bp.casModules : [];
+  if (casModules.length > 64) throw new HttpError(400, 'invalid_blueprint', 'Blueprint contains too many CAS modules.');
+  const cleanModules: Array<{ hash: string; bytesBase64: string }> = [];
+  for (const mod of casModules) {
+    if (!mod || typeof mod !== 'object' || typeof mod.hash !== 'string' || !/^[0-9a-f]{64}$/.test(mod.hash) || typeof mod.bytesBase64 !== 'string' || mod.bytesBase64.length > 512 * 1024) {
+      throw new HttpError(400, 'invalid_blueprint', 'Invalid CAS module entry in blueprint.');
+    }
+    cleanModules.push({ hash: mod.hash, bytesBase64: mod.bytesBase64 });
+  }
+  const schemas = Array.isArray(bp.schemas) ? bp.schemas.slice(0, 16) : [];
+  const cleanBlueprint = {
+    format: 'tendriller-page-blueprint/v1',
+    title: typeof bp.title === 'string' ? bp.title.slice(0, 80) : 'Blueprint Page',
+    description: typeof bp.description === 'string' ? bp.description.slice(0, 400) : '',
+    reducers: { imports, topics },
+    casModules: cleanModules,
+    schemas,
+  };
+
+  let entry = 'index.html';
+  let seedFiles: SeedFile[] = [];
+  if (options.sourcePageId && /^[a-z2-7]{12}$/.test(options.sourcePageId)) {
+    const srcRes = await pageStub(env, options.sourcePageId).fetch(new Request('https://tendril.internal/remix-source', {
+      method: 'GET',
+      headers: { 'x-account-id': accountId },
+    }));
+    if (!srcRes.ok) {
+      const errBody = await srcRes.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+      throw new HttpError(srcRes.status, errBody?.error?.code ?? 'remix_unavailable', errBody?.error?.message ?? 'Source page UI cannot be copied');
+    }
+    const source = await srcRes.json() as {
+      id: string;
+      entry: string;
+      files: Array<{ path: string; hash: string; type: string; size: number }>;
+    };
+    entry = source.entry;
+    for (const file of source.files) {
+      const obj = await env.FILES.get(`t/${source.id}/files/${file.hash}`);
+      if (!obj) throw new HttpError(409, 'remix_asset_missing', `Source asset ${file.path} is no longer in host cache.`);
+      const bytes = new Uint8Array(await obj.arrayBuffer());
+      if (bytes.byteLength !== file.size || await sha256Hex(bytes) !== file.hash) {
+        throw new HttpError(500, 'remix_asset_corrupt', `Integrity check failed while copying ${file.path}`);
+      }
+      seedFiles.push({ path: file.path, type: file.type, bytesBase64: bytesToBase64(bytes) });
+    }
+  }
+
+  const vis = options.visibility ?? (bp.authority?.mode === 'open'
+    ? (bp.authority.openWrite ? 'public-write' : 'public-read')
+    : 'private');
+  const authorityHint = visibilityAuthorityHint(vis);
+  const pageName = (options.name?.trim() || cleanBlueprint.title || 'Blueprint Page').slice(0, 80);
+  return createOwnerPage(env, accountId, {
+    name: pageName,
+    entry,
+    files: seedFiles,
+    rewriteConfigJson: seedFiles.length > 0,
+    authorityHint,
+    blueprint: cleanBlueprint,
+    activitySummary: `Created page from portable PageBlueprint "${cleanBlueprint.title}"`,
   });
 }

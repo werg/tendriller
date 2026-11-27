@@ -428,6 +428,7 @@ export class Tendril extends DurableObject<Env> {
             applicationId: appId,
             page_url: pageUrlValue,
             ...(authorityHint ? { authority: authorityHint } : {}),
+            ...(body.blueprint && typeof body.blueprint === "object" ? { blueprint: body.blueprint } : {}),
           };
           bytes = new TextEncoder().encode(JSON.stringify(nextConfig, null, 2) + "\n");
         } else {
