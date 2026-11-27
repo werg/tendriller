@@ -383,7 +383,7 @@
     "items": {
       "claude-code": {
         "kind": "Terminal coding agent",
-        "summary": "Runs in your terminal with shell access, Node 22.15+ (zero native C++ builds), and optional MCP — ideal for building, publishing, and evolving a live Tendriller page directly.",
+        "summary": "Runs in your terminal with shell access, Node 22.15+, and optional MCP — ideal for building, publishing, and evolving a live Tendriller page directly.",
         "prompt": "Read {base}/docs/BUILD_AN_APP.md and build me a live Tendriller dashboard tied to you@example.com — give it a shared SQL database for our project tasks, let me invite teammates, and let me talk to the page to reshape views and controls.",
         "steps": [
           "Open Claude Code in a fresh folder (with Node 22.15+ installed) and paste the prompt pointing at {host} and your email.",
@@ -396,7 +396,7 @@
         "summary": "Builds and deploys a full local-first Tendriller workspace straight from your shell or Codex app, with optional account-linked MCP support.",
         "prompt": "Follow {base}/docs/BUILD_AN_APP.md and launch a Tendriller page tied to you@example.com — include a shared SQL database, camera capture, and a voice-enabled dashboard I can reshape with new requests.",
         "steps": [
-          "Start Codex in a workspace directory (with Node 22.15+ available — no C++ build tools needed) and send the prompt referencing {host} and your email.",
+          "Start Codex in a workspace directory (with Node 22.15+ available) and send the prompt referencing {host} and your email.",
           "Codex verifies host readiness, installs the exact release kit, initializes your page, and publishes the signed browser interface.",
           "Tap the returned URL on any device, sign in via GitHub or Google, and keep iterating with Codex as your requirements change."
         ]
