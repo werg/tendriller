@@ -45,6 +45,18 @@ Key additions for agents and MCP assistants:
 
 Reference: [/docs/STATE_MODELS.md](https://tendriller.dev/docs/STATE_MODELS.md)
 
+<a id="2026-11-27-backend-administration"></a>
+
+### 2026-11-27 · [Feature] Backend administration for complimentary premium and service usage
+
+Core `0.3.0-rc.17` · Slug `2026-11-27-backend-administration` · Changelog only
+
+Adds scoped operator APIs and a CLI for expiring, audited Pro/Team grants, plus aggregate daily service usage and inventory without page analytics.
+
+Complimentary grants remain separate from Polar subscriptions, apply to application and atomic database quota checks, and keep testing usage exempt from later PAYG charges. Service analytics collect fixed global MCP, relay and media counters plus inventory snapshots with 90-day retention. The backend-only /api/admin/v1 API requires independent expiring operator credentials and provides a boundary for a future private admin tendril. No browser UI or page-content access is added.
+
+Reference: [/docs/ADMINISTRATION.md](https://tendriller.dev/docs/ADMINISTRATION.md)
+
 <a id="2026-11-26-realtime-sfu-billing-and-self-host"></a>
 
 ### 2026-11-26 · [Feature] Cloudflare Realtime SFU/TURN, plan headroom APIs & self-hosting

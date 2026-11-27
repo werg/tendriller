@@ -30,6 +30,8 @@ interface SfuPeerEntry {
   tracks: SfuTrackRef[];
   createdAt: number;
   lastActivityAt: number;
+  /** Server clock at the start of the next coalesced usage interval. */
+  lastUsageAt: number;
   reportedBytes: number;
 }
 
@@ -185,7 +187,8 @@ export async function handleRealtimeSfu(
   if (!ownerAccount) {
     throw new HttpError(403, "claim_required", "Claim this page before using SFU media routing.");
   }
-  const ent = await getAccountEntitlements(t.env, ownerAccount, t.now());
+  const authorizedAt = t.now();
+  const ent = await getAccountEntitlements(t.env, ownerAccount, authorizedAt);
 
   if (action === "room") {
     if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
@@ -210,13 +213,19 @@ export async function handleRealtimeSfu(
     if (!entry || entry.route !== route) {
       throw new HttpError(403, "forbidden", "Unknown or unowned SFU session.");
     }
-    entry.lastActivityAt = t.now();
+    const recordedAt = t.now();
+    const mediaIntervalStart = entry.lastUsageAt;
+    entry.lastActivityAt = recordedAt;
+    entry.lastUsageAt = recordedAt;
     entry.reportedBytes += Math.floor(delta);
     if (delta > 0) {
-      await recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(delta) }, t.now());
+      // We cannot split coalesced bytes at an exact grant boundary. Waive the
+      // whole interval if it overlaps complimentary access, rather than bill
+      // previously authorized test traffic merely because its report was late.
+      await recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(delta) }, recordedAt, { mediaIntervalStart });
     }
     const updated = await getAccountEntitlements(t.env, ownerAccount, t.now());
-    const allowed = canConsumeMedia(updated).allowed;
+    const allowed = updated.quotas.sfuEnabled && canConsumeMedia(updated).allowed;
     return json({
       ok: true,
       continueSfu: allowed,
@@ -239,7 +248,9 @@ export async function handleRealtimeSfu(
     const tracks = Array.isArray(body.tracks) ? body.tracks : [];
     const finalBytes = Number(body.bytesReceivedDelta ?? 0);
     if (Number.isFinite(finalBytes) && finalBytes > 0 && finalBytes <= MAX_USAGE_REPORT_BYTES) {
-      t.ctx.waitUntil(recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(finalBytes) }, t.now()));
+      const recordedAt = t.now(), mediaIntervalStart = entry.lastUsageAt;
+      entry.lastUsageAt = recordedAt;
+      t.ctx.waitUntil(recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(finalBytes) }, recordedAt, { mediaIntervalStart }));
     }
     let result: Record<string, unknown> = { ok: true };
     if (tracks.length > 0 && sfuConfigured(t.env)) {
@@ -331,6 +342,7 @@ export async function handleRealtimeSfu(
       tracks: [],
       createdAt: now,
       lastActivityAt: now,
+      lastUsageAt: authorizedAt,
       reportedBytes: 0,
     });
     return json({ ...created, maxPeers: ent.quotas.sfuMaxPeers, maxHeight: ent.quotas.sfuMaxHeight }, 201);

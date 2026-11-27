@@ -48,6 +48,8 @@ export interface Env {
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   ADMIN_IDENTITIES?: string;
+  /** Operator-only API credentials: JSON array of IDs, SHA-256 token hashes, scopes and issuedAt/expiresAt (epoch ms). */
+  ADMIN_API_CREDENTIALS_JSON?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   BUDGET_WEBHOOK_SECRET?: string;
   BUDGET_PAUSE_POLICY_ID?: string;

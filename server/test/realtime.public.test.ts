@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { applyPlanToAccount, getAccountEntitlements, recordAccountUsage } from "../src/billing/entitlements";
 import { GB } from "../src/billing/plans";
+import { createPremiumGrant, revokePremiumGrant } from "../src/billing/premium-grants";
 import { handleRealtimeIce, handleRealtimeSfu } from "../src/realtime";
 import { agentPrincipal, create, inDO } from "./helpers";
 
@@ -156,5 +157,62 @@ describe("Cloudflare Realtime TURN & SFU brokering and entitlements", () => {
     // Close session cleans up room
     const closeRes = await runSfu("close", "PUT", { sessionId: "cf_sess_1", tracks: [{ mid: "0" }], endSession: true });
     expect(closeRes.status).toBe(200);
+  });
+
+  it("waives SFU report and close intervals spanning grant revocation without exempting later paid traffic", async () => {
+    const h = await create();
+    await applyPlanToAccount(env, h.account!, "pro");
+    const id = crypto.randomUUID();
+    const now = await inDO(h.id, t => t.now());
+    await createPremiumGrant(env, "operator:testing", { id, accountId: h.account!, plan: "team", reason: "Video testing", expiresAt: now + 60_000 }, now);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ sessionId: "cf_test_session" }), { status: 201 }));
+    const advance = (ms: number) => inDO(h.id, t => { t.skew += ms; return t.now(); });
+    const run = (action: string, body: unknown) => inDO(h.id, async t => {
+      const previous = t.env;
+      t.env = { ...previous, CF_REALTIME_APP_ID: "test-app", CF_REALTIME_API_TOKEN: "test-token" };
+      try {
+        const url = new URL(`https://tendril.internal/peers/sfu/${action}`);
+        return await handleRealtimeSfu(t, new Request(url, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } }), url, action, agentPrincipal(t, h));
+      } finally { t.env = previous; }
+    });
+    expect((await run("sessions", { peerId: "ab".repeat(32), callId: "test-call" })).status).toBe(201);
+    await revokePremiumGrant(env, "operator:testing", id, "Testing complete", await advance(1000));
+    await advance(1000);
+    const overlap = await run("usage", { sessionId: "cf_test_session", bytesReceivedDelta: 1000 });
+    expect(await overlap.json()).toMatchObject({ continueSfu: true }); // Underlying paid Pro remains valid.
+    await advance(1000);
+    await run("usage", { sessionId: "cf_test_session", bytesReceivedDelta: 2000 });
+    let ent = await getAccountEntitlements(env, h.account!);
+    expect(ent.usage.mediaBytes).toBe(3000);
+    expect(ent.usage.complimentaryMediaBytes).toBe(1000);
+
+    const secondId = crypto.randomUUID(), secondAt = await advance(1000);
+    await createPremiumGrant(env, "operator:testing", { id: secondId, accountId: h.account!, plan: "team", reason: "Final video test", expiresAt: secondAt + 60_000 }, secondAt);
+    await revokePremiumGrant(env, "operator:testing", secondId, "Complete", await advance(1000));
+    await advance(1000);
+    expect((await run("close", { sessionId: "cf_test_session", bytesReceivedDelta: 500, endSession: true })).status).toBe(200);
+    await expect.poll(async () => (await getAccountEntitlements(env, h.account!)).usage.mediaBytes).toBe(3500);
+    ent = await getAccountEntitlements(env, h.account!);
+    expect(ent.usage.complimentaryMediaBytes).toBe(1500);
+  });
+
+  it("keeps late SFU test bytes complimentary at expiry and tells a Free account to stop SFU", async () => {
+    const h = await create();
+    const now = await inDO(h.id, t => t.now());
+    await createPremiumGrant(env, "operator:testing", { id: crypto.randomUUID(), accountId: h.account!, plan: "pro", reason: "Short video test", expiresAt: now + 1000 }, now);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ sessionId: "cf_expiry_test" }), { status: 201 }));
+    const run = (action: string, body: unknown) => inDO(h.id, async t => {
+      const previous = t.env;
+      t.env = { ...previous, CF_REALTIME_APP_ID: "test-app", CF_REALTIME_API_TOKEN: "test-token" };
+      try {
+        const url = new URL(`https://tendril.internal/peers/sfu/${action}`);
+        return await handleRealtimeSfu(t, new Request(url, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } }), url, action, agentPrincipal(t, h));
+      } finally { t.env = previous; }
+    });
+    expect((await run("sessions", { peerId: "cd".repeat(32), callId: "expiry-test" })).status).toBe(201);
+    await inDO(h.id, t => { t.skew += 2000; });
+    const report = await run("usage", { sessionId: "cf_expiry_test", bytesReceivedDelta: 1024 });
+    expect(await report.json()).toMatchObject({ continueSfu: false });
+    expect((await getAccountEntitlements(env, h.account!)).usage).toMatchObject({ mediaBytes: 1024, complimentaryMediaBytes: 1024 });
   });
 });

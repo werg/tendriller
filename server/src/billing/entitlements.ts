@@ -3,6 +3,8 @@ import type { Env } from "../env";
 import { HttpError } from "../http";
 import { publicBase } from "../urls";
 import { currentUsagePeriod, estimateOverageCents, isPlanId, planSpec, type PlanId, type PlanQuotas } from "./plans";
+import { activePremiumGrant, type PremiumGrant } from "./premium-grants";
+import { recordServiceUsage } from "../admin/analytics";
 
 export const PAST_DUE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PAYG_SPEND_CAP_CENTS = 2500;
@@ -43,6 +45,9 @@ export interface UsageSnapshot {
   relayMs: number;
   relayBytes: number;
   mediaBytes: number;
+  /** Exempt usage stays exempt after a grant expires or a paid subscription begins. */
+  complimentaryMcpCalls: number;
+  complimentaryMediaBytes: number;
   reportedMediaOverageMb: number;
   reportedMcpOverageCalls: number;
 }
@@ -50,6 +55,9 @@ export interface UsageSnapshot {
 export interface AccountEntitlements {
   accountId: string;
   plan: PlanId;
+  /** Underlying billing tier is never rewritten by a complimentary grant. */
+  billingPlan: PlanId;
+  premiumGrant: Pick<PremiumGrant, "id" | "plan" | "expiresAt"> | null;
   /** True when global service_state caps are NULL (localhost / self-hosted unlimited mode) or account plan is unlimited. */
   unlimitedHost: boolean;
   billingConfigured: boolean;
@@ -117,6 +125,8 @@ interface UsageRow {
   relay_ms: number;
   relay_bytes: number;
   media_bytes: number;
+  complimentary_mcp_calls: number;
+  complimentary_media_bytes: number;
   reported_media_overage_mb: number;
   reported_mcp_overage_calls: number;
 }
@@ -130,10 +140,11 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
   let account: AccountRow | null = null;
   let sub: SubRow | null = null;
   let usageRow: UsageRow | null = null;
+  let premium: PremiumGrant | null = null;
 
   if (env.ACCOUNTS) {
     try {
-      const [sc, acc, s, u] = await Promise.all([
+      const [sc, acc, s, u, g] = await Promise.all([
         env.ACCOUNTS.prepare("SELECT account_page_cap, account_resident_cap, account_storage_cap FROM service_state WHERE id = 1")
           .first<ServiceCapRow>().catch(() => null),
         env.ACCOUNTS.prepare(`SELECT plan, page_cap, resident_cap, storage_cap, agent_cap, guest_cap, version_retention_cap,
@@ -143,14 +154,17 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
         env.ACCOUNTS.prepare(`SELECT provider, customer_id, subscription_id, plan_id, billing_interval, status,
           period_start, period_end, cancel_at_period_end, grace_until FROM subscriptions WHERE account_id = ?`)
           .bind(accountId).first<SubRow>().catch(() => null),
-        env.ACCOUNTS.prepare(`SELECT mcp_calls, relay_ms, relay_bytes, media_bytes,
+        env.ACCOUNTS.prepare(`SELECT mcp_calls, relay_ms, relay_bytes, media_bytes, complimentary_mcp_calls, complimentary_media_bytes,
           reported_media_overage_mb, reported_mcp_overage_calls FROM usage_periods WHERE account_id = ? AND period = ?`)
           .bind(accountId, period).first<UsageRow>().catch(() => null),
+        // If grant storage is unavailable, never invent a premium entitlement.
+        activePremiumGrant(env, accountId, now).catch(() => null),
       ]);
       serviceCaps = sc;
       account = acc;
       sub = s;
       usageRow = u;
+      premium = g;
     } catch {
       /* fall back to defaults if schema is partially initialized */
     }
@@ -187,7 +201,8 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
   }
 
   const unlimitedHost = serviceUnlimited || plan === "unlimited";
-  const effectivePlan: PlanId = unlimitedHost ? "unlimited" : plan;
+  let effectivePlan: PlanId = unlimitedHost ? "unlimited" : plan;
+  const billingPlan = effectivePlan;
   const base = planSpec(effectivePlan).quotas;
 
   // Materialized columns on `accounts` can override plan defaults (e.g. comps/beta);
@@ -218,6 +233,29 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
     quotas.residents = account?.resident_cap ?? base.residents;
     quotas.storageBytes = account?.storage_cap ?? base.storageBytes;
   }
+  // NULL service caps are authoritative per dimension, including a partially
+  // unlimited host, matching the effective_account_limits SQL view.
+  if (serviceCaps?.account_page_cap === null) quotas.pages = null;
+  if (serviceCaps?.account_resident_cap === null) quotas.residents = null;
+  if (serviceCaps?.account_storage_cap === null) quotas.storageBytes = null;
+
+  // A grant supplies at least its canonical caps, without lowering a paid plan
+  // or a larger existing operator override. It never modifies billing columns.
+  if (premium && !unlimitedHost) {
+    const granted = planSpec(premium.plan).quotas;
+    const rank: Record<PlanId, number> = { free: 0, pro: 1, team: 2, unlimited: 3 };
+    if (rank[premium.plan] > rank[effectivePlan]) effectivePlan = premium.plan;
+    const nullable = ["pages", "residents", "storageBytes", "agents", "guestsPerPage", "versionRetention",
+      "mcpPages", "mcpCallsPerMonth", "mcpStoreBytes", "mediaBytesPerMonth", "relayMsPerMonth", "relayConcurrentSessions", "customSubdomains"] as const;
+    for (const key of nullable) quotas[key] = quotas[key] === null || granted[key] === null ? null : Math.max(quotas[key], granted[key]);
+    for (const key of ["pageStorageBytes", "mcpSandboxTimeoutMs", "sfuMaxPeers", "sfuMaxHeight", "relayLifetimeMs"] as const)
+      quotas[key] = Math.max(quotas[key], granted[key]);
+    for (const key of ["sfuEnabled", "hostBrokeredOAuth", "teamOrgOAuth", "customDomain"] as const)
+      quotas[key] = quotas[key] || granted[key];
+  }
+  // Test access has bounded included allowances and cannot authorize overage.
+  // A pre-existing paid opt-in is retained in accounts and resumes afterwards.
+  if (premium) quotas.paygAllowed = false;
 
   const usage: UsageSnapshot = {
     period,
@@ -226,21 +264,28 @@ export async function getAccountEntitlements(env: Env, accountId: string, now = 
     relayMs: usageRow?.relay_ms ?? 0,
     relayBytes: usageRow?.relay_bytes ?? 0,
     mediaBytes: usageRow?.media_bytes ?? 0,
+    complimentaryMcpCalls: usageRow?.complimentary_mcp_calls ?? 0,
+    complimentaryMediaBytes: usageRow?.complimentary_media_bytes ?? 0,
     reportedMediaOverageMb: usageRow?.reported_media_overage_mb ?? 0,
     reportedMcpOverageCalls: usageRow?.reported_mcp_overage_calls ?? 0,
   };
 
-  const paygEnabled = !unlimitedHost && base.paygAllowed && Boolean(account?.payg_enabled);
+  const paygEnabled = !unlimitedHost && quotas.paygAllowed && Boolean(account?.payg_enabled);
   const paygSpendCapCents = account?.payg_spend_cap_cents === undefined
     ? DEFAULT_PAYG_SPEND_CAP_CENTS
     : account.payg_spend_cap_cents;
 
-  const est = estimateOverageCents(effectivePlan, { mediaBytes: usage.mediaBytes, mcpCalls: usage.mcpCalls });
+  const est = estimateOverageCents(billingPlan, {
+    mediaBytes: Math.max(0, usage.mediaBytes - usage.complimentaryMediaBytes),
+    mcpCalls: Math.max(0, usage.mcpCalls - usage.complimentaryMcpCalls),
+  });
   const withinSpendCap = paygEnabled && (paygSpendCapCents === null || est.totalCents < paygSpendCapCents);
 
   return {
     accountId,
     plan: effectivePlan,
+    billingPlan,
+    premiumGrant: premium ? { id: premium.id, plan: premium.plan, expiresAt: premium.expiresAt } : null,
     unlimitedHost,
     billingConfigured: configured,
     quotas,
@@ -299,28 +344,42 @@ export async function recordAccountUsage(
   accountId: string,
   delta: { mcpCalls?: number; relayMs?: number; relayBytes?: number; mediaBytes?: number },
   now = Date.now(),
+  /** Trusted server observation interval, never a client-supplied timestamp. */
+  options: { mediaIntervalStart?: number } = {},
 ): Promise<void> {
   if (!env.ACCOUNTS || !accountId) return;
-  const mcpCalls = Math.max(0, Math.floor(delta.mcpCalls ?? 0));
-  const relayMs = Math.max(0, Math.floor(delta.relayMs ?? 0));
-  const relayBytes = Math.max(0, Math.floor(delta.relayBytes ?? 0));
-  const mediaBytes = Math.max(0, Math.floor(delta.mediaBytes ?? 0));
+  const counters = [delta.mcpCalls ?? 0, delta.relayMs ?? 0, delta.relayBytes ?? 0, delta.mediaBytes ?? 0];
+  if (counters.some(value => !Number.isSafeInteger(value) || value < 0)) return;
+  const [mcpCalls, relayMs, relayBytes, mediaBytes] = counters;
   if (!mcpCalls && !relayMs && !relayBytes && !mediaBytes) return;
+  const mediaStart = options.mediaIntervalStart ?? now;
+  if (!Number.isSafeInteger(now) || !Number.isSafeInteger(mediaStart) || mediaStart > now) return;
   const { period } = currentUsagePeriod(now);
   try {
     await env.ACCOUNTS.prepare(`INSERT INTO usage_periods
-      (account_id, period, mcp_calls, relay_ms, relay_bytes, media_bytes, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (account_id, period, mcp_calls, relay_ms, relay_bytes, media_bytes, updated_at, complimentary_mcp_calls, complimentary_media_bytes)
+      SELECT ?, ?, ?, ?, ?, ?, ?,
+        CASE WHEN EXISTS(SELECT 1 FROM premium_grants WHERE account_id = ? AND created_at <= ? AND expires_at > ?
+          AND (revoked_at IS NULL OR revoked_at > ?)) THEN ? ELSE 0 END,
+        CASE WHEN EXISTS(SELECT 1 FROM premium_grants WHERE account_id = ? AND created_at <= ? AND expires_at > ?
+          AND (revoked_at IS NULL OR revoked_at > ?)) THEN ? ELSE 0 END
+      WHERE true
       ON CONFLICT(account_id, period) DO UPDATE SET
         mcp_calls = mcp_calls + excluded.mcp_calls,
         relay_ms = relay_ms + excluded.relay_ms,
         relay_bytes = relay_bytes + excluded.relay_bytes,
         media_bytes = media_bytes + excluded.media_bytes,
+        complimentary_mcp_calls = complimentary_mcp_calls + excluded.complimentary_mcp_calls,
+        complimentary_media_bytes = complimentary_media_bytes + excluded.complimentary_media_bytes,
         updated_at = excluded.updated_at`)
-      .bind(accountId, period, mcpCalls, relayMs, relayBytes, mediaBytes, now).run();
+      .bind(accountId, period, mcpCalls, relayMs, relayBytes, mediaBytes, now,
+        accountId, now, now, now, mcpCalls, accountId, now, mediaStart, mediaStart, mediaBytes).run();
   } catch {
     /* Non-fatal if account was deleted concurrently */
+    return;
   }
+  // Only fixed numeric counters cross into service analytics; never accountId.
+  try { await recordServiceUsage(env, { mcpCalls, relayMs, relayBytes, mediaBytes }, now); } catch { /* Analytics cannot fail an operation. */ }
 }
 
 /** Acquire a bounded concurrent relay lease for an account; returns false when over cap. */
@@ -399,7 +458,8 @@ export function quotaError(input: QuotaErrorInput): HttpError {
 export function canConsumeMcpCall(ent: AccountEntitlements): { allowed: boolean; isOverage: boolean } {
   const cap = ent.quotas.mcpCallsPerMonth;
   if (ent.unlimitedHost || cap === null) return { allowed: true, isOverage: false };
-  if (ent.usage.mcpCalls < cap) return { allowed: true, isOverage: false };
+  const used = ent.usage.mcpCalls - (ent.premiumGrant ? 0 : ent.usage.complimentaryMcpCalls);
+  if (used < cap) return { allowed: true, isOverage: false };
   if (ent.overage.withinSpendCap) return { allowed: true, isOverage: true };
   return { allowed: false, isOverage: true };
 }
@@ -408,7 +468,8 @@ export function canConsumeMcpCall(ent: AccountEntitlements): { allowed: boolean;
 export function canConsumeMedia(ent: AccountEntitlements): { allowed: boolean; isOverage: boolean } {
   const cap = ent.quotas.mediaBytesPerMonth;
   if (ent.unlimitedHost || cap === null) return { allowed: true, isOverage: false };
-  if (ent.usage.mediaBytes < cap) return { allowed: true, isOverage: false };
+  const used = ent.usage.mediaBytes - (ent.premiumGrant ? 0 : ent.usage.complimentaryMediaBytes);
+  if (used < cap) return { allowed: true, isOverage: false };
   if (ent.overage.withinSpendCap) return { allowed: true, isOverage: true };
   return { allowed: false, isOverage: true };
 }

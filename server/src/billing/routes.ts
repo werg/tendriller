@@ -833,12 +833,12 @@ export async function routeBillingDashboard(req: Request, env: Env, url: URL): P
       sameOrigin(req, env);
       await requireWritesOpen(env);
       const ent = await getAccountEntitlements(env, session.accountId);
-      if (!ent.quotas.paygAllowed) {
-        throw new HttpError(402, "plan_required", "Pay-as-you-go overage requires Pro or Team.");
-      }
       const raw = new TextDecoder().decode(await readBody(req, 4096));
       const { isJson, params } = parseFormOrJson(req, raw);
       const enabled = params.payg_enabled === true || params.payg_enabled === "1" || params.payg_enabled === "true" || params.payg_enabled === "on";
+      if (enabled && !ent.quotas.paygAllowed) {
+        throw new HttpError(402, "plan_required", "Pay-as-you-go overage requires a paid Pro or Team plan without an active complimentary grant.");
+      }
       const uncapped = params.uncapped === true || params.uncapped === "1" || params.uncapped === "true" || params.uncapped === "on" || params.spend_cap_cents === null;
       let capCents: number | null = DEFAULT_PAYG_SPEND_CAP_CENTS;
       if (uncapped) {

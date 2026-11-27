@@ -2,12 +2,19 @@
 
 Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendriller/engine`) with a filtered Chronolog authority and publication participant and optional account-linked `/mcp` gateway. Application execution stays on enrolled peers.
 
+For the backend-only operator API, expiring complimentary Pro/Team access, and
+aggregate service usage, see [service administration](ADMINISTRATION.md). Its
+independent operator credentials are configured through the optional
+`ADMIN_API_CREDENTIALS_JSON` Worker secret; ordinary admin sessions and broadcast
+tokens do not authorize it. Keep the scheduled handler enabled for inventory
+snapshots and 90-day analytics retention.
+
 ## Fresh storage baseline
 
 Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 15** (consolidated page, Chronolog v2 public control ops/CAS/checkpoints, host admission attestations, invite redemptions, publication, agent handle/wrap key and hosted MCP participant tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
-1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the ordered `server/migrations/0001_accounts.sql` (accounts, OAuth, assistant connections), `0002_agents.sql` (agents, page grants, join codes), `0003_broadcasts.sql` (Ed25519-signed system broadcasts, signing keys, and fleet version inventory), `0004_account_limits.sql` (configurable per-account caps in `service_state`), `0005_billing_and_tiers.sql` (per-account plan caps, Polar.sh subscriptions, idempotent billing events, coalesced monthly usage periods, and relay leases), and `0006_oauth_connections_and_groups.sql` (outbound OAuth connections, custom BYO providers, and verified GitHub/Google org groups) migrations (exported as `@tendriller/engine/{accounts,agents,broadcasts,limits,billing,oauth-groups}-schema`). Verify `d1_migrations` records all six; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
+1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and all ordered migrations in `server/migrations/`: `0001_accounts.sql` through `0008_custom_subdomains.sql` establish accounts, agents, broadcasts, limits, billing, OAuth/groups, and domain routing; `0009_premium_grants.sql` adds complimentary grants, mandatory audit triggers, billing exemptions and effective quota guards; `0010_operational_analytics.sql` adds aggregate usage and inventory. The engine exports `@tendriller/engine/{accounts,agents,broadcasts,limits,billing,oauth-groups,custom-domains,custom-subdomains,premium-grants,analytics}-schema`. Verify `d1_migrations` records all ten; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This baseline does not convert legacy storage. An existing current-baseline D1 with migrations 0001–0008 can apply 0009–0010 normally; no reset or new Durable Object namespace is needed for these two additions.
    - Public deployments serving hosted MCP (QuickJS-NG + `sqlite-cas.wasm`) should run on **Cloudflare Workers Paid ($5/mo)** so invocations are not bounded by the Free plan’s 10 ms CPU cap.
    - Optional managed billing secrets (Polar.sh MoR): `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_SERVER` (`production` or `sandbox`), `POLAR_PRODUCTS_JSON`, `POLAR_METERS_JSON`.
    - Optional Cloudflare Realtime SFU & TURN secrets: `CF_REALTIME_APP_ID`, `CF_REALTIME_API_TOKEN`, `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN`. Leave both unset on private/self-hosted hosts if unused; see [Self-hosting](SELF_HOSTING.md).
