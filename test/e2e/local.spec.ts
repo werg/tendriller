@@ -59,7 +59,7 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
     expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(false);
     // Unsaved input defers the switch until it is no longer being edited.
     await page.locator('#draft').fill('unsaved');
-    await publish(handle, '<h1 id="release">three</h1><input id="draft">');
+    const third = await publish(handle, '<h1 id="release">three</h1><input id="draft">');
     await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable), { timeout: 15_000 }).toBe(true);
     await page.waitForTimeout(1500);
     await expect(page.locator('#release')).toHaveText('two');
@@ -78,14 +78,14 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
     await new Promise(resolve => setTimeout(resolve, 3000));
     await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
     await expect(page.locator('#release')).toHaveText('resumed', { timeout: 20_000 });
-    // Pinning is explicit: the immutable release URL stays on that release.
-    await page.goto(new URL(`_publications/${first.version}/`, localPageUrl(handle)).href);
-    await expect(page.locator('#release')).toHaveText('one');
+    // Pinning is explicit: the immutable release URL stays on that retained release even as a newer one publishes.
+    await page.goto(new URL(`_publications/${third.version}/`, localPageUrl(handle)).href);
+    await expect(page.locator('#release')).toHaveText('three');
     expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
     await publish(handle, '<h1 id="release">four</h1><input id="draft">');
     await page.waitForTimeout(3000);
-    await expect(page.locator('#release')).toHaveText('one');
-    expect((await selectedPublication(handle, first.opId))?.opId).toEqual(first.opId);
+    await expect(page.locator('#release')).toHaveText('three');
+    expect((await selectedPublication(handle, third.opId))?.opId).toEqual(third.opId);
   } finally { await deletePage(handle); }
 });
 
