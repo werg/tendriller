@@ -51,18 +51,22 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     expect(pricingHtml).toContain("Team");
     expect(pricingHtml).toContain("Self-Hosted");
     expect(pricingHtml).toContain("$12 / mo");
-    expect(pricingHtml).toContain("20</strong> active pages");
-    expect(pricingHtml).toContain("5</strong> resident pages");
+    expect(pricingHtml).toContain("20</strong> pages");
+    expect(pricingHtml).toContain("1,000</strong> pages");
+    expect(pricingHtml).toContain("Compare all plans");
     expect(pricingHtml).toContain("Team OAuth tie-ins");
+    expect(pricingHtml).toContain("Custom page domains");
+    expect(pricingHtml).toContain("data-theme-toggle");
 
     const home = await req("/", { anonymous: true });
     expect(home.status).toBe(200);
     const homeHtml = await home.text();
     expect(homeHtml).toContain("Zero lock-in");
+    expect(homeHtml).toContain("data-theme-toggle");
     expect(homeHtml).toContain("/self-host");
     expect(homeHtml).toContain('href="/pricing"');
     expect(homeHtml).toContain('id="pricing"');
-    expect(homeHtml).toContain("Free to start. Pay only for cloud media &amp; scale.");
+    expect(homeHtml).toContain("Room to grow");
     expect(homeHtml).toContain("/pricing.md");
 
     const discovery = await req("/.well-known/tendriller.json", { anonymous: true });
@@ -96,7 +100,7 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
       billingUrl: `${BASE}/dashboard/billing`,
       pricingUrl: `${BASE}/pricing`,
       selfHostUrl: `${BASE}/self-host`,
-      quotas: expect.objectContaining({ pages: 20, residents: 5, agents: 5, sfuEnabled: false }),
+      quotas: expect.objectContaining({ pages: 20, residents: 20, agents: 5, sfuEnabled: false }),
       usage: expect.objectContaining({ mcpCalls: 0, mediaBytes: 0, relayMs: 0 }),
     });
   });
@@ -142,7 +146,7 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     const ent = await getAccountEntitlements(billingEnv, h.account!);
     expect(ent.plan).toBe("pro");
     expect(ent.quotas.pages).toBe(100);
-    expect(ent.quotas.residents).toBe(25);
+    expect(ent.quotas.residents).toBe(100);
     expect(ent.quotas.mcpCallsPerMonth).toBe(15_000);
     expect(ent.quotas.sfuEnabled).toBe(true);
 
@@ -161,7 +165,7 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
       POLAR_PRODUCTS_JSON: PRODUCTS,
     };
 
-    // Activate Pro and create 7 resident pages (> Free cap of 5)
+    // Activate Pro and create 22 resident pages (> Free cap of 20)
     await sendSignedWebhook(billingEnv, {
       type: "subscription.active",
       data: {
@@ -172,9 +176,9 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
         customer: { id: "cus_grace", external_id: h.account },
       },
     });
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 22; i++) {
       await env.ACCOUNTS.prepare("INSERT INTO tendrils (id, owner_account, created_at, lifetime) VALUES (?, ?, ?, 'resident')")
-        .bind(`g${crypto.randomUUID().replace(/-/g, "").slice(0, 11).replace(/[^a-z2-7]/g, "a")}`, h.account!, Date.now()).run();
+        .bind(`g${String(i).padStart(2, "0")}${crypto.randomUUID().replace(/-/g, "").slice(0, 9).replace(/[^a-z2-7]/g, "a")}`, h.account!, Date.now()).run();
     }
 
     // Mark past_due -> stays Pro during 7-day grace window
@@ -208,13 +212,13 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
 
     const postDowngrade = await getAccountEntitlements(billingEnv, h.account!);
     expect(postDowngrade.plan).toBe("free");
-    expect(postDowngrade.quotas.residents).toBe(5);
+    expect(postDowngrade.quotas.residents).toBe(20);
 
-    // All 7 existing resident pages still exist (never deleted on downgrade!)
+    // All 22 existing resident pages still exist (never deleted on downgrade!)
     const existingResidents = await env.ACCOUNTS.prepare(
       "SELECT COUNT(*) AS n FROM tendrils WHERE owner_account = ? AND lifetime = 'resident' AND state = 'active'",
     ).bind(h.account!).first<{ n: number }>();
-    expect(existingResidents!.n).toBeGreaterThanOrEqual(7);
+    expect(existingResidents!.n).toBeGreaterThanOrEqual(22);
   });
 
   it("supports /dashboard/billing PAYG toggle, removable spend cap, Polar checkout/portal, and metered usage flush", async () => {
@@ -321,5 +325,67 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     // Second reconciliation emits 0 duplicate events
     const second = await reconcileBillingAndUsage(billingEnv);
     expect(second.flushedEvents).toBe(0);
+  });
+
+  it("redirects signed-in users from / and /auth to /dashboard, supports /?home=1, and shows contextual upgrade card on /dashboard", async () => {
+    const h = await create();
+
+    // Signed-in GET / -> 302 /dashboard (with Vary: Cookie)
+    const rootRes = await route(new Request(`${BASE}/`, {
+      method: "GET",
+      headers: { Cookie: h.session! },
+    }), env);
+    expect(rootRes.status).toBe(302);
+    expect(rootRes.headers.get("Location")).toBe("/dashboard");
+    expect(rootRes.headers.get("Vary")).toBe("Cookie");
+
+    // Signed-in GET /?home=1 -> 200 landing page with signed-in Dashboard link
+    const explicitHome = await route(new Request(`${BASE}/?home=1`, {
+      method: "GET",
+      headers: { Cookie: h.session! },
+    }), env);
+    expect(explicitHome.status).toBe(200);
+    const homeHtml = await explicitHome.text();
+    expect(homeHtml).toContain("Room to grow");
+    expect(homeHtml).toContain('href="/dashboard"');
+
+    // Signed-in GET /auth -> 302 /dashboard (or requested return_to)
+    const authRes = await route(new Request(`${BASE}/auth?return_to=%2Fdashboard%2Fbilling`, {
+      method: "GET",
+      headers: { Cookie: h.session! },
+    }), env);
+    expect(authRes.status).toBe(302);
+    expect(authRes.headers.get("Location")).toBe("/dashboard/billing");
+
+    // Dashboard on Free plan shows "Want more tendrils?" upgrade card and Home link
+    const dashFree = await route(new Request(`${BASE}/dashboard`, {
+      method: "GET",
+      headers: { Cookie: h.session! },
+    }), env);
+    expect(dashFree.status).toBe(200);
+    const dashFreeHtml = await dashFree.text();
+    expect(dashFreeHtml).toContain('href="/?home=1"');
+    expect(dashFreeHtml).toContain("Want more tendrils?");
+    expect(dashFreeHtml).toContain("Upgrade to Pro");
+
+    // Dashboard on Pro plan shifts prompt to Team upgrade
+    await applyPlanToAccount(env, h.account!, "pro");
+    const dashPro = await route(new Request(`${BASE}/dashboard`, {
+      method: "GET",
+      headers: { Cookie: h.session! },
+    }), env);
+    const dashProHtml = await dashPro.text();
+    expect(dashProHtml).toContain("Need room for a bigger team?");
+    expect(dashProHtml).toContain("Upgrade to Team");
+
+    // Dashboard on Team plan does not show an upgrade card
+    await applyPlanToAccount(env, h.account!, "team");
+    const dashTeam = await route(new Request(`${BASE}/dashboard`, {
+      method: "GET",
+      headers: { Cookie: h.session! },
+    }), env);
+    const dashTeamHtml = await dashTeam.text();
+    expect(dashTeamHtml).not.toContain("Want more tendrils?");
+    expect(dashTeamHtml).not.toContain("Need room for a bigger team?");
   });
 });

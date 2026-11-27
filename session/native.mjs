@@ -8,6 +8,7 @@ const OWNER_PROTOCOL = 'chronolog/authored-session/owner/v1';
 import { createNativeFrames as frames } from './native-transport.mjs';
 import { transportCauseSummary } from './transport-causes.mjs';
 import { acquireAtomicLock, connectLocalIpc, ensurePrivateDirectory, isWindows, listenLocalIpc, readPrivateJson, writePrivateJsonAtomic } from './ipc.mjs';
+import { retainPublicationBlobs } from './publication-blobs.mjs';
 
 const PROTOCOL = 'tendriller.native-owner.v1';
 const KEY = /^td_n_[a-f0-9]{64}$/u;
@@ -279,6 +280,7 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
                 assets.some(asset => !publicationAsset(asset?.hash, asset?.bytes)))
               throw failure('SUPERVISOR_PROTOCOL_INVALID');
             value = await control.publish(publication, assets);
+            void retainPublicationBlobs(owner.session, assets).catch(() => {});
           } else if (method === 'publishStage') {
             const [stageId, hash, slice, done] = args;
             if (typeof stageId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(stageId) ||
@@ -303,6 +305,7 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
             if (!stage || [...stage.assets.values()].some(asset => !asset.done)) throw failure('SUPERVISOR_PROTOCOL_INVALID');
             const assets = [...stage.assets.entries()].map(([hash, asset]) => ({ hash, bytes: asset.parts.join('') }));
             value = await control.publish(checkedPublication(publication), assets);
+            void retainPublicationBlobs(owner.session, assets).catch(() => {});
           } else if (method === 'publishAbort') {
             discardStage(args[0]); value = { aborted: true };
           } else throw failure('SUPERVISOR_CONTROL_METHOD_UNKNOWN');

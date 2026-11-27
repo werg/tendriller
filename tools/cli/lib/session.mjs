@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { pack } from './pack.mjs';
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
+import { retainPublicationBlobs } from '@tendriller/core/publication-blobs';
 
 function invocationFailure(error, signal) {
   // A watch classifies intentional cancellation itself; its remaining failures
@@ -205,15 +206,26 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       const deltaAssets = uniqueFiles
         .filter(file => !knownHashes.has(`${file.sha256}:${file.size}`))
         .map(file => ({ hash: file.sha256, bytes: file.bytes.toString('base64') }));
+      let receipt;
       try {
-        return await control.publish(publication, deltaAssets);
+        receipt = await control.publish(publication, deltaAssets);
       } catch (error) {
         const missing = error?.code === 'peer_publication_content_missing' || error?.cause?.code === 'peer_publication_content_missing' ||
           /peer_publication_content_missing/u.test(error?.message ?? '');
         if (!missing || deltaAssets.length === uniqueFiles.length) throw error;
         const fullAssets = uniqueFiles.map(file => ({ hash: file.sha256, bytes: file.bytes.toString('base64') }));
-        return await control.publish(publication, fullAssets);
+        receipt = await control.publish(publication, fullAssets);
       }
+      // Best-effort local blob seeding so this agent can serve historical assets
+      // to connected Chronolog peers if the host later prunes this version.
+      try {
+        await retainPublicationBlobs(
+          session,
+          uniqueFiles.map(file => ({ hash: file.sha256, bytes: file.bytes })),
+          { signal },
+        );
+      } catch { /* Never fail a committed publish if blob retention is unavailable. */ }
+      return receipt;
     } catch (error) {
       const committed = error.outcome === 'committed' && error.receipt?.publication?.id === publication?.id;
       error.publication = { operationId: publication?.payload?.operationId ?? operationId,

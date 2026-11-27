@@ -1,8 +1,92 @@
 import { brandBase as defaultBrandBase, brandHead, brandLink, brandStyle } from "../brand";
 
+const DARK_ROOT_VARS = `
+  --paper:#0e1612;
+  --paper-2:#141f1a;
+  --surface:#17241e;
+  --surface-2:#1d2d26;
+  --surface-3:#24362e;
+  --ink:#f3efe4;
+  --muted:#a5bab0;
+  --faint:#7d9589;
+  --line:#253830;
+  --line-strong:#354d42;
+  --green:#6ed39f;
+  --green-2:#82dead;
+  --green-soft:rgba(110,211,159,.14);
+  --orange:#f07b4d;
+  --orange-hover:#f58f67;
+  --orange-soft:rgba(240,123,77,.15);
+  --stage:radial-gradient(60% 78% at 24% 48%,#47341c 0%,#282b1e 48%,#13231d 100%);
+  --stage-ink:#fff9ec;
+  --stage-muted:#d7dfd0;
+  --stage-border:rgba(255,244,218,.12);
+  --stage-eyebrow:#f5cb78;
+  --stage-pill-bg:rgba(255,248,232,.09);
+  --stage-pill-border:rgba(255,248,232,.18);
+  --stage-pill-ink:#f8dfa5;
+  --stage-btn-bg:rgba(255,248,232,.11);
+  --stage-btn-hover:rgba(255,248,232,.19);
+  --stage-btn-border:rgba(255,248,232,.25);
+  --stage-btn-hover-border:rgba(243,181,68,.55);
+  --stage-link:#f5d590;
+  --stage-link-hover:#fff3d1;
+  --stage-ribbon-bg:rgba(8,16,13,.38);
+  --stage-ribbon-border:rgba(255,244,218,.11);
+  --stage-ribbon-ink:#c9d6c8;
+  --stage-ribbon-label:#f5d590;
+  --stage-stat-bg:rgba(255,248,232,.07);
+  --stage-stat-border:rgba(255,248,232,.15);
+  --stage-code-ink:#9be6be;
+  --stage-code-bg:rgba(255,249,236,.1);
+  --stage-code-border:rgba(255,249,236,.18);
+  --stage-glow-1:rgba(243,181,68,.20);
+  --stage-glow-2:rgba(223,95,50,.18);
+  --stage-glow-3:rgba(74,191,134,.16);
+  --warn:#f2b866;
+  --warn-soft:rgba(242,184,102,.1);
+  --warn-border:rgba(242,184,102,.3);
+  --danger:#f47c7c;
+  --danger-hover:#ef4444;
+  --danger-soft:rgba(244,124,124,.1);
+  --danger-border:rgba(244,124,124,.3);
+  --ring:rgba(110,211,159,.35);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+  --shadow:0 2px 6px rgba(0,0,0,.35),0 16px 36px -14px rgba(0,0,0,.55);
+  --shadow-lg:0 4px 12px rgba(0,0,0,.45),0 30px 64px -18px rgba(0,0,0,.7);
+  --accent-2:#3ccf8e;
+`;
+
+/** Helper to scope dark-mode rules to both explicit `data-theme="dark"` and OS preference when not overridden to light. */
+export function darkCss(rules: string): string {
+  const scoped = rules
+    .split("}")
+    .map((block) => {
+      const trimmed = block.trim();
+      if (!trimmed) return "";
+      const idx = trimmed.indexOf("{");
+      if (idx === -1) return "";
+      const sel = trimmed.slice(0, idx).trim();
+      const body = trimmed.slice(idx + 1).trim();
+      return { sel, body };
+    })
+    .filter((b): b is { sel: string; body: string } => Boolean(b));
+  const explicit = scoped
+    .map(({ sel, body }) =>
+      sel.split(",").map((s) => `:root[data-theme="dark"] ${s.trim()}`).join(",") + `{${body}}`
+    )
+    .join("");
+  const media = scoped
+    .map(({ sel, body }) =>
+      sel.split(",").map((s) => `:root:not([data-theme="light"]) ${s.trim()}`).join(",") + `{${body}}`
+    )
+    .join("");
+  return `${explicit}@media(prefers-color-scheme:dark){${media}}`;
+}
+
 /**
  * Shared visual foundation (tokens, reset, sticky frosted topbar, typography,
- * dark mode, and footer) used across every Tendriller-owned HTML surface:
+ * light/dark theme support, and footer) used across every Tendriller-owned HTML surface:
  * homepage, agent platform guides, dashboard, sign-in, page settings, status,
  * moderation/report flows, holding/review screens, and legal pages.
  */
@@ -26,9 +110,32 @@ export const baseThemeCss = `
   --orange-hover:#c84e23;
   --orange-soft:#fdebe2;
   --amber:#f3b544;
-  --stage:radial-gradient(60% 78% at 24% 48%,#47341c 0%,#282b1e 48%,#13231d 100%);
-  --stage-ink:#fff9ec;
-  --stage-muted:#d7dfd0;
+  --stage:linear-gradient(135deg,#fffcf4 0%,#f5efe0 54%,#eaf2eb 100%);
+  --stage-ink:#17251f;
+  --stage-muted:#475c52;
+  --stage-border:#d7ceb8;
+  --stage-eyebrow:#c85225;
+  --stage-pill-bg:rgba(22,92,67,.08);
+  --stage-pill-border:rgba(22,92,67,.2);
+  --stage-pill-ink:#165c43;
+  --stage-btn-bg:rgba(255,253,248,.82);
+  --stage-btn-hover:#fffdf8;
+  --stage-btn-border:#c9c0a9;
+  --stage-btn-hover-border:#165c43;
+  --stage-link:#165c43;
+  --stage-link-hover:#0f4531;
+  --stage-ribbon-bg:rgba(22,92,67,.055);
+  --stage-ribbon-border:rgba(22,92,67,.13);
+  --stage-ribbon-ink:#3b5247;
+  --stage-ribbon-label:#165c43;
+  --stage-stat-bg:rgba(255,253,248,.78);
+  --stage-stat-border:rgba(22,92,67,.14);
+  --stage-code-ink:#165c43;
+  --stage-code-bg:rgba(22,92,67,.08);
+  --stage-code-border:rgba(22,92,67,.18);
+  --stage-glow-1:rgba(243,181,68,.22);
+  --stage-glow-2:rgba(223,95,50,.11);
+  --stage-glow-3:rgba(22,92,67,.11);
   --warn:#94570f;
   --warn-soft:#fdf4e3;
   --warn-border:#efd39c;
@@ -39,7 +146,7 @@ export const baseThemeCss = `
   --ring:rgba(22,92,67,.28);
   --shadow-sm:0 1px 2px rgba(20,32,25,.06);
   --shadow:0 2px 4px rgba(20,32,25,.05),0 14px 32px -12px rgba(20,32,25,.11);
-  --shadow-lg:0 4px 10px rgba(15,24,19,.10),0 28px 60px -18px rgba(15,24,19,.30);
+  --shadow-lg:0 4px 10px rgba(15,24,19,.08),0 24px 52px -18px rgba(15,24,19,.18);
   --radius:20px;
   --radius-sm:13px;
   --radius-xs:9px;
@@ -64,6 +171,9 @@ export const baseThemeCss = `
   color:var(--ink);
   accent-color:var(--green);
 }
+:root[data-theme="light"]{color-scheme:light}
+:root[data-theme="dark"]{color-scheme:dark;${DARK_ROOT_VARS}}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){${DARK_ROOT_VARS}}}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html{scroll-behavior:smooth}
@@ -110,6 +220,21 @@ a:hover{text-decoration-thickness:2px}
   transition:background .15s,border-color .15s,transform .1s;
 }
 .topbar .nav-pill:hover,.topbar .nav-link:hover{background:var(--surface-2);border-color:var(--green);color:var(--ink)}
+.topbar-right{display:flex;align-items:center;gap:clamp(.45rem,1.2vw,.85rem);min-width:0}
+.topbar .theme-toggle{
+  display:none;align-items:center;justify-content:center;flex:none;
+  width:2.1rem;height:2.1rem;min-height:0;padding:0;border-radius:999px;
+  background:var(--surface);border:1px solid var(--line-strong);color:var(--muted);
+  box-shadow:var(--shadow-sm);cursor:pointer;
+  transition:background .15s,border-color .15s,color .15s,transform .08s;
+}
+html[data-theme-ready] .topbar .theme-toggle{display:inline-flex}
+.topbar .theme-toggle:hover{background:var(--surface-2);border-color:var(--green);color:var(--ink)}
+.topbar .theme-toggle:active{transform:translateY(1px)}
+.topbar .theme-toggle .icon{width:1.05rem;height:1.05rem;vertical-align:0}
+.topbar .theme-toggle .icon-sun{display:none}
+.topbar .theme-toggle .icon-moon{display:block}
+${darkCss(`.topbar .theme-toggle .icon-sun{display:block}.topbar .theme-toggle .icon-moon{display:none}`)}
 
 main{max-width:54rem;margin:0 auto;padding:clamp(1.25rem,3vw,2.2rem) clamp(1rem,3.5vw,2.2rem) 3.5rem}
 main.medium{max-width:62rem}
@@ -139,6 +264,7 @@ footer a:hover{color:var(--ink);text-decoration:underline}
   .topbar .brand img{width:28px;height:28px}
   .topbar nav{gap:.55rem;font-size:.84rem}
   .topbar .nav-pill,.topbar .nav-link{padding:.34rem .72rem;font-size:.82rem}
+  .topbar .theme-toggle{width:1.9rem;height:1.9rem}
 }
 @media(max-width:540px){.topbar nav a.hide-xs{display:none}}
 @media(max-width:390px){
@@ -150,38 +276,6 @@ footer a:hover{color:var(--ink);text-decoration:underline}
 @media(prefers-reduced-motion:reduce){
   html{scroll-behavior:auto}
   *,*::before,*::after{animation:none!important;transition:none!important}
-}
-@media(prefers-color-scheme:dark){
-  :root{
-    --paper:#0e1612;
-    --paper-2:#141f1a;
-    --surface:#17241e;
-    --surface-2:#1d2d26;
-    --surface-3:#24362e;
-    --ink:#f3efe4;
-    --muted:#a5bab0;
-    --faint:#7d9589;
-    --line:#253830;
-    --line-strong:#354d42;
-    --green:#6ed39f;
-    --green-2:#82dead;
-    --green-soft:rgba(110,211,159,.14);
-    --orange:#f07b4d;
-    --orange-hover:#f58f67;
-    --orange-soft:rgba(240,123,77,.15);
-    --warn:#f2b866;
-    --warn-soft:rgba(242,184,102,.1);
-    --warn-border:rgba(242,184,102,.3);
-    --danger:#f47c7c;
-    --danger-hover:#ef4444;
-    --danger-soft:rgba(244,124,124,.1);
-    --danger-border:rgba(244,124,124,.3);
-    --ring:rgba(110,211,159,.35);
-    --shadow-sm:0 1px 2px rgba(0,0,0,.35);
-    --shadow:0 2px 6px rgba(0,0,0,.35),0 16px 36px -14px rgba(0,0,0,.55);
-    --shadow-lg:0 4px 12px rgba(0,0,0,.45),0 30px 64px -18px rgba(0,0,0,.7);
-    --accent-2:#3ccf8e;
-  }
 }
 `;
 
@@ -205,13 +299,13 @@ small{font-size:.84rem}
 .row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
 .cluster{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
 .hero{position:relative;overflow:hidden;padding:clamp(1.4rem,3.8vw,2.3rem);border-radius:calc(var(--radius) + 4px);background:var(--surface);border:1px solid var(--line-strong);box-shadow:var(--shadow);margin-bottom:1.5rem}
-.hero.dark{background:var(--stage);color:var(--stage-ink);border-color:rgba(255,244,218,.12);box-shadow:var(--shadow-lg)}
-.hero.dark::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(520px 280px at 90% 10%,rgba(243,181,68,.20),transparent 68%),radial-gradient(460px 260px at 14% 70%,rgba(223,95,50,.18),transparent 66%),radial-gradient(520px 260px at 0% 120%,rgba(74,191,134,.16),transparent 70%)}
+.hero.dark{background:var(--stage);color:var(--stage-ink);border-color:var(--stage-border);box-shadow:var(--shadow-lg)}
+.hero.dark::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(520px 280px at 90% 10%,var(--stage-glow-1),transparent 68%),radial-gradient(460px 260px at 14% 70%,var(--stage-glow-2),transparent 66%),radial-gradient(520px 260px at 0% 120%,var(--stage-glow-3),transparent 70%)}
 .hero.dark>*{position:relative}
-.hero.dark .eyebrow{color:#f5cb78}
+.hero.dark .eyebrow{color:var(--stage-eyebrow)}
 .hero.dark .lead,.hero.dark .muted{color:var(--stage-muted)}
-.hero.dark .button.secondary,.hero.dark button.secondary{background:rgba(255,248,232,.11);border-color:rgba(255,248,232,.24);color:var(--stage-ink)}
-.hero.dark .button.secondary:hover,.hero.dark button.secondary:hover{background:rgba(255,248,232,.19);border-color:rgba(243,181,68,.55)}
+.hero.dark .button.secondary,.hero.dark button.secondary{background:var(--stage-btn-bg);border-color:var(--stage-btn-border);color:var(--stage-ink)}
+.hero.dark .button.secondary:hover,.hero.dark button.secondary:hover{background:var(--stage-btn-hover);border-color:var(--stage-btn-hover-border)}
 .hero.dark .button.primary-on-dark{background:var(--orange);color:#fff9f4}
 .hero.dark .button.primary-on-dark:hover{background:var(--orange-hover)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,19rem),1fr));gap:1rem;margin:1rem 0 1.5rem}
@@ -294,7 +388,7 @@ details.disclosure.danger summary{color:var(--danger)}
 .notice.danger{background:var(--danger-soft);border-color:var(--danger-border)}
 .inline-form{display:inline-flex;margin:0}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,9.5rem),1fr));gap:.75rem;margin-top:1.4rem}
-.stat{padding:.85rem 1rem;border-radius:var(--radius-sm);background:rgba(255,248,232,.07);border:1px solid rgba(255,248,232,.15)}
+.stat{padding:.85rem 1rem;border-radius:var(--radius-sm);background:var(--stage-stat-bg);border:1px solid var(--stage-stat-border)}
 .stat strong{display:block;font-size:1.5rem;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .stat span{font-size:.8rem;color:var(--stage-muted)}
 .avatar{display:grid;place-items:center;flex:none;width:2.75rem;height:2.75rem;border-radius:13px;font-weight:760;font-size:1.15rem;color:#fff;background:linear-gradient(135deg,var(--av1,#1f8c5e),var(--av2,#17694a));box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 4px 10px -4px rgba(0,0,0,.35)}
@@ -368,15 +462,17 @@ dialog.sheet[open]{animation:pop .2s ease-out}
   .sheet-head,.sheet-body{padding-left:1rem;padding-right:1rem}
   .qr-frame{margin:0 auto}
 }
-@media(prefers-color-scheme:dark){
+${darkCss(`
   .button,button{color:#081b12}
   .button.cta,button.cta{color:#1d110a}
   .button.secondary,button.secondary{color:var(--ink)}
   .button.ghost,button.ghost{color:var(--muted)}
   .button.danger,button.danger{color:#fca5a5}
   .button.danger:hover,button.danger:hover{color:#fff}
+  .topbar .theme-toggle{background:var(--surface);color:var(--muted);border-color:var(--line-strong)}
+  .topbar .theme-toggle:hover{background:var(--surface-2);color:var(--ink);border-color:var(--green)}
   .qr-frame{border-color:transparent}
-}
+`)}
 `;
 
 export const serviceStyle = `<style>${baseThemeCss}${serviceComponentsCss}</style>`;
@@ -420,6 +516,8 @@ const ICONS: Record<string, string> = {
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/>',
   terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
 };
 
 /** Decorative inline icon; it inherits the surrounding text color. */
@@ -454,10 +552,15 @@ export interface ShellOptions {
   brandBase?: string;
   referrer?: string;
   script?: string;
+  /** Set false on strict no-inline-script pages (e.g. per-page settings or Turnstile reports). Defaults to true. */
+  themeToggle?: boolean;
 }
 
-const DEFAULT_NAV = `<nav aria-label="Main navigation"><a class="hide-sm" href="/pricing">Pricing</a><a class="hide-sm" href="/agents">Platforms</a><a class="hide-xs" href="/docs/BUILD_AN_APP.md">Agent instructions</a><a class="nav-pill" href="/dashboard">Dashboard</a></nav>`;
-const DEFAULT_FOOTER = `<span>Tendriller</span><span class="foot-links"><a href="/pricing">Pricing</a><a href="/self-host">Self-host</a><a href="/agents">Platforms</a><a href="/dashboard">Dashboard</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></span>`;
+const DEFAULT_NAV = `<nav aria-label="Main navigation"><a class="hide-sm" href="/?home=1">Home</a><a class="hide-sm" href="/pricing">Pricing</a><a class="hide-sm" href="/agents">Platforms</a><a class="hide-xs" href="/docs/BUILD_AN_APP.md">Agent instructions</a><a class="nav-pill" href="/dashboard">Dashboard</a></nav>`;
+const DEFAULT_FOOTER = `<span>Tendriller</span><span class="foot-links"><a href="/?home=1">Home</a><a href="/pricing">Pricing</a><a href="/self-host">Self-host</a><a href="/agents">Platforms</a><a href="/dashboard">Dashboard</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></span>`;
+const THEME_BOOT_SCRIPT = `<script>(()=>{try{const t=localStorage.getItem('tendriller-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch{}document.documentElement.dataset.themeReady='1';})()</script>`;
+const THEME_TOGGLE_BTN = `<button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle color theme" title="Switch light / dark theme"><svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS.sun}</svg><svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS.moon}</svg></button>`;
+const THEME_TOGGLE_SCRIPT = `<script>(()=>{const btn=document.querySelector('[data-theme-toggle]');if(!btn)return;const mq=window.matchMedia('(prefers-color-scheme:dark)');const eff=()=>{const t=document.documentElement.dataset.theme;return t==='dark'||t==='light'?t:(mq.matches?'dark':'light');};const sync=()=>{const d=eff()==='dark';btn.setAttribute('aria-label',d?'Switch to light mode':'Switch to dark mode');btn.setAttribute('title',d?'Switch to light mode':'Switch to dark mode');btn.setAttribute('aria-pressed',String(d));};sync();btn.addEventListener('click',()=>{const next=eff()==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{localStorage.setItem('tendriller-theme',next);}catch{}sync();});mq.addEventListener?.('change',()=>{if(!document.documentElement.dataset.theme)sync();});})()</script>`;
 
 /** Renders a complete HTML document using Tendriller's unified theme, sticky topbar, and footer. */
 export function renderShell(options: ShellOptions): string {
@@ -469,21 +572,24 @@ export function renderShell(options: ShellOptions): string {
   const headerBrand = options.brand ?? brandLink;
   const nav = options.nav ?? DEFAULT_NAV;
   const footerHtml = options.footer === "" ? "" : `<footer>${options.footer ?? DEFAULT_FOOTER}</footer>`;
+  const withToggle = options.themeToggle !== false;
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${referrer}<title>${titleText}</title>${options.head ?? ""}${brandHead(options.brandBase ?? defaultBrandBase)}<style>${css}</style>${brandStyle}</head><body><header class="topbar"><div class="topbar-inner${widthClass}">${headerBrand}${nav}</div></header><main${mainClass}>${options.body}${footerHtml}</main>${options.script ?? ""}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${referrer}<title>${titleText}</title>${options.head ?? ""}${brandHead(options.brandBase ?? defaultBrandBase)}${withToggle ? THEME_BOOT_SCRIPT : ""}<style>${css}</style>${brandStyle}</head><body><header class="topbar"><div class="topbar-inner${widthClass}">${headerBrand}<div class="topbar-right">${nav}${withToggle ? THEME_TOGGLE_BTN : ""}</div></div></header><main${mainClass}>${options.body}${footerHtml}</main>${withToggle ? THEME_TOGGLE_SCRIPT : ""}${options.script ?? ""}</body></html>`;
 }
 
-export function servicePage(title: string, body: string, script = "", status = 200, options?: { wide?: boolean; medium?: boolean; nav?: string; footer?: string; remoteImages?: boolean; formAction?: string }): Response {
+export function servicePage(title: string, body: string, script = "", status = 200, options?: { wide?: boolean; medium?: boolean; brand?: string; nav?: string; footer?: string; remoteImages?: boolean; formAction?: string; extraCss?: string }): Response {
   // Keep Origin on same-origin navigation POSTs without sending a referrer
   // on cross-origin requests. The forms still require the expected Origin.
   const html = renderShell({
     title,
     body,
     script,
+    extraCss: options?.extraCss,
     width: options?.wide ? "wide" : options?.medium ? "medium" : "narrow",
+    brand: options?.brand,
     nav: options?.nav,
     footer: options?.footer,
   });
   const formAction = options?.formAction ?? "'self'";
-  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin", "Content-Security-Policy": `default-src 'none'; script-src ${script ? "'unsafe-inline'" : "'none'"}; style-src 'unsafe-inline'; img-src 'self'${options?.remoteImages ? " https:" : ""}; connect-src 'self'; form-action ${formAction}; base-uri 'none'` } });
+  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin", "Content-Security-Policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'${options?.remoteImages ? " https:" : ""}; connect-src 'self'; form-action ${formAction}; base-uri 'none'` } });
 }

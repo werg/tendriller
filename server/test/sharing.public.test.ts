@@ -105,13 +105,13 @@ it('owners can delete a resident page from the dashboard or page settings, freei
   const cookie = await serviceCookie(h.id);
   const owner = await inDO(h.id, t => t.db.get<string>('owner_account', ''));
   await env.ACCOUNTS!.prepare("UPDATE tendrils SET lifetime = 'resident' WHERE id = ?").bind(h.id).run();
-  for (let i = 0; i < 4; i++) await env.ACCOUNTS!.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
+  for (let i = 0; i < 19; i++) await env.ACCOUNTS!.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
     .bind(crypto.randomUUID(), owner, Date.now()).run();
   await expect(env.ACCOUNTS!.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
-    .bind(crypto.randomUUID(), owner, Date.now()).run()).rejects.toThrow('account_residents_full');
+    .bind(crypto.randomUUID(), owner, Date.now()).run()).rejects.toThrow('account_tendrils_full');
   const html = await (await req('/dashboard', { headers: { Cookie: cookie } })).text();
   expect(html).toContain(`data-delete="${h.id}"`);
-  expect(html).toContain('You have reached 5 resident pages');
+  expect(html).toContain('You have reached 20 resident pages');
 
   const form = { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded', Origin: BASE };
   expect((await req(`/dashboard/t/${h.id}/delete`, { method: 'POST', headers: form, body: 'confirm=wrong' })).status).toBe(400);

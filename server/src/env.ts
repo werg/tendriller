@@ -92,4 +92,13 @@ export interface Env {
   CF_TURN_API_TOKEN?: string;
   /** Optional Cloudflare Realtime API base URL override (defaults to https://rtc.live.cloudflare.com/v1). */
   CF_REALTIME_API_BASE?: string;
+  /** Optional Cloudflare for SaaS Custom Hostnames configuration for per-page custom domains (Team / Self-Hosted). */
+  CF_SAAS_ZONE_ID?: string;
+  CF_SAAS_API_TOKEN?: string;
+  /** Fallback CNAME target displayed in DNS instructions (defaults to PAGE_BASE_DOMAIN). */
+  CF_SAAS_FALLBACK_ORIGIN?: string;
+  /** Optional Cloudflare API base URL override for tests (defaults to https://api.cloudflare.com/client/v4). */
+  CF_SAAS_API_BASE?: string;
+  /** Optional DNS-over-HTTPS JSON endpoint override for self-hosted TXT verification (defaults to https://cloudflare-dns.com/dns-query). */
+  DNS_VERIFY_BASE?: string;
 }

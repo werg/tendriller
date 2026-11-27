@@ -106,13 +106,13 @@ const PLATFORM_EXTRA_CSS = `
 .ai-switch:hover{border-color:var(--green);background:var(--green-soft);color:var(--green)}
 .grid-2{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:1.25rem;align-items:start}
 .prompt-quote{margin:.2rem 0 1rem;padding:1rem 1.1rem;border-radius:11px;background:var(--paper);border:1px solid var(--line);font:500 .9rem/1.6 var(--mono);color:var(--ink);overflow-wrap:anywhere}
-.ai-box{margin-top:1.4rem;padding:1.4rem 1.5rem;border-radius:var(--radius);background:linear-gradient(135deg,#142b22 0%,#1c362a 100%);color:var(--stage-ink);border:1px solid rgba(255,244,218,.14);box-shadow:var(--shadow)}
-.ai-box h2{color:#fff9ec;margin-bottom:.4rem}
+.ai-box{margin-top:1.4rem;padding:1.4rem 1.5rem;border-radius:var(--radius);background:var(--stage);color:var(--stage-ink);border:1px solid var(--stage-border);box-shadow:var(--shadow)}
+.ai-box h2{color:var(--stage-ink);margin-bottom:.4rem}
 .ai-box p{color:var(--stage-muted);font-size:.94rem;margin:0 0 1rem}
-.ai-box code{background:rgba(255,249,236,.1);border-color:rgba(255,249,236,.18);color:#9be6be}
+.ai-box code{background:var(--stage-code-bg);border-color:var(--stage-code-border);color:var(--stage-code-ink)}
 .ai-links{display:flex;flex-wrap:wrap;gap:.55rem}
-.ai-links a{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem .8rem;border-radius:9px;background:rgba(255,249,236,.09);border:1px solid rgba(255,249,236,.18);color:#fff9ec;font-size:.86rem;font-weight:640;text-decoration:none}
-.ai-links a:hover{background:rgba(255,249,236,.16);border-color:rgba(243,181,68,.6)}
+.ai-links a{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem .8rem;border-radius:9px;background:var(--stage-btn-bg);border:1px solid var(--stage-btn-border);color:var(--stage-ink);font-size:.86rem;font-weight:640;text-decoration:none}
+.ai-links a:hover{background:var(--stage-btn-hover);border-color:var(--stage-btn-hover-border)}
 .plat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.9rem;list-style:none;margin:0;padding:0}
 .plat-item{display:flex;flex-direction:column;gap:.75rem;padding:1.2rem;border-radius:var(--radius-sm);background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow-sm)}
 .plat-item-top{display:flex;align-items:center;gap:.7rem}

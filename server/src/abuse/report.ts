@@ -13,6 +13,7 @@ export async function reportPage(req: Request, env: Env, url: URL): Promise<Resp
     const html = renderShell({
       title: "Report a page",
       referrer: "no-referrer",
+      themeToggle: false,
       head: `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`,
       body: `<section class="card"><span class="eyebrow">Safety</span><h1>Report a Tendriller page</h1>
       <form method="post"><div class="field"><label class="field-label" for="report-url">Page URL</label><input id="report-url" name="url" type="url" required value="${escape(prefill.slice(0, 2048))}"></div>

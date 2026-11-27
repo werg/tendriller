@@ -4,7 +4,7 @@ import { servicePage } from "./accounts/ui";
 import { schemaDocument } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
-import { routeAuth } from "./accounts/auth";
+import { routeAuth, serviceSession } from "./accounts/auth";
 import { routeIntegrationOAuth } from "./accounts/integration-oauth";
 import { handleOutboundCallback, routeOutboundOAuthApi } from "./oauth-outbound/routes";
 import { routeGroupsApi } from "./groups/org-groups";
@@ -15,6 +15,7 @@ import { adminAccount, adminPage, appealPage } from "./abuse/admin";
 import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, getChangelog, listActiveBroadcasts, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast, validAudienceParam } from "./broadcasts";
 import { budgetWebhook } from "./budget";
 import { polarWebhookRoute, pricingPage, routeBillingDashboard, selfHostPage } from "./billing/routes";
+import { resolveCustomDomainRequest, routeCustomDomains } from "./custom-domains";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, json, readJson, toErrorResponse, withCors } from "./http";
 import { escapeHtml, landingPage } from "./inject";
@@ -61,9 +62,13 @@ export async function route(req: Request, env: Env, context?: CacheContext): Pro
   const host = new URL(req.url).hostname.toLowerCase();
   const pagesDomain = env.PAGE_BASE_DOMAIN?.toLowerCase();
   const serviceHost = new URL(publicBase(env)).hostname.toLowerCase();
-  const onPagesDomain = host !== serviceHost && !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
+  const onStandardPagesDomain = host !== serviceHost && !!pagesDomain && (host === pagesDomain || host.endsWith(`.${pagesDomain}`));
+  const customDomain = !onStandardPagesDomain && host !== serviceHost
+    ? await resolveCustomDomainRequest(new URL(req.url), env)
+    : null;
+  const onPagesDomain = onStandardPagesDomain || Boolean(customDomain);
   let res: Response;
-  try { res = await routeInner(req, env, onPagesDomain, context); }
+  try { res = await routeInner(req, env, onPagesDomain, customDomain, context); }
   catch (err) { res = toErrorResponse(err); }
   const preview = isBranchPreview(env);
   if (onPagesDomain || preview) {
@@ -78,14 +83,27 @@ export async function route(req: Request, env: Env, context?: CacheContext): Pro
   return res;
 }
 
-async function routeInner(req: Request, env: Env, onPagesDomain: boolean, context?: CacheContext): Promise<Response> {
+async function routeInner(
+  req: Request,
+  env: Env,
+  onPagesDomain: boolean,
+  customDomain: Awaited<ReturnType<typeof resolveCustomDomainRequest>>,
+  context?: CacheContext,
+): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
   const rootRuntime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
   const rootBrand = path === '/favicon.ico' || /^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path);
   const publicRead = (req.method === 'GET' || req.method === 'HEAD') && req.headers.get('Upgrade')?.toLowerCase() !== 'websocket';
-  if (onPagesDomain && !parsePageRoute(url, env)) {
+  if (customDomain) {
+    if (!customDomain.entitlementOk) {
+      return errorResponse(402, "plan_required", "This custom domain is paused because the account is no longer on the Team plan. Open the page from your Tendriller dashboard.");
+    }
+    if (!customDomain.page && (!publicRead || !(rootRuntime || rootBrand))) {
+      return errorResponse(404, "not_found", "Not found");
+    }
+  } else if (onPagesDomain && !parsePageRoute(url, env)) {
     // Old runtime releases missing from the static deployment still resolve
     // through R2 at the same public root URL. Reuse the page-host validator so
     // foreign preview labels and nested/unrecognised subdomains remain invalid.
@@ -104,8 +122,9 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return response;
   }
 
-  // Pages: P and everything under it.
-  const page = parsePageRoute(url, env);
+  // Pages: P and everything under it (standard subdomain or verified custom domain).
+  const page = customDomain ? customDomain.page : parsePageRoute(url, env);
+  const customHost = customDomain ? customDomain.record.hostname : null;
   if (page) {
     const shareTargetFallback = page.rest === "_tendril/share-target" && req.method === "POST";
     if (!shareTargetFallback && ((req.method !== "GET" && req.method !== "HEAD") || req.headers.get("Upgrade")?.toLowerCase() === "websocket") &&
@@ -118,7 +137,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
       return Response.redirect(to.toString(), 308);
     }
     if (page.rest === "_tendril/auth/session" && req.method === "GET") {
-      return redeemPageCode(env, page.id, page.key, url.searchParams.get("code") ?? "");
+      return redeemPageCode(env, page.id, page.key, url.searchParams.get("code") ?? "", customHost);
     }
     const rest = page.rest;
     // These platform bytes are already public on the service origin. Fetching
@@ -139,7 +158,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
       }));
       if (!check.ok && ![401, 403, 404].includes(check.status)) return check;
       await check.body?.cancel();
-      if (!check.ok) return pageAdmissionFailure(req, env, page, check.status === 403);
+      if (!check.ok) return pageAdmissionFailure(req, env, page, check.status === 403, customHost);
       if (resource) return immutableAsset(env, req, resource[1], resource[2], context);
       return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base, "Cache-Control": "private, max-age=300" });
     }
@@ -153,7 +172,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     const denied = response.headers.get(PAGE_ACCESS_HEADER);
     if (denied === "signin" || denied === "unavailable") {
       await response.body?.cancel();
-      return pageAdmissionFailure(req, env, page, denied === "unavailable");
+      return pageAdmissionFailure(req, env, page, denied === "unavailable", customHost);
     }
     return response;
   }
@@ -202,13 +221,27 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     });
   }
   if (path === "/self-host") return selfHostPage(req, env);
+  if (path === "/dashboard/domains" || path.startsWith("/dashboard/domains/")) return routeCustomDomains(req, env, url);
   if (path === "/dashboard/billing" || path.startsWith("/dashboard/billing/")) return routeBillingDashboard(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
-    return new Response(req.method === "HEAD" ? null : landingPage(publicBase(env)), {
-      headers: { "Content-Type": "text/html; charset=utf-8", Link: onboardingLinks(publicBase(env)) },
+    const explicitHome = url.searchParams.has("home");
+    const session = env.ACCOUNTS ? await serviceSession(req, env, true).catch(() => null) : null;
+    if (session && !explicitHome) {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "/dashboard", "Cache-Control": "private, no-store", Vary: "Cookie" },
+      });
+    }
+    return new Response(req.method === "HEAD" ? null : landingPage(publicBase(env), { signedIn: Boolean(session) }), {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": session ? "private, no-store" : "public, max-age=60",
+        Vary: "Cookie",
+        Link: onboardingLinks(publicBase(env)),
+      },
     });
   }
   if (path === "/agents" || path === "/agents/") {
@@ -323,12 +356,13 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   return errorResponse(404, "not_found", "Not found");
 }
 
-function pageAdmissionFailure(req: Request, env: Env, page: { id: string; key: string }, unavailable: boolean): Response {
+function pageAdmissionFailure(req: Request, env: Env, page: { id: string; key: string }, unavailable: boolean, customHost?: string | null): Response {
   if (unavailable) return new Response("This page is unavailable pending review.", {
     status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
   });
   if (req.method === "GET" || req.method === "HEAD") {
-    return new Response(null, { status: 302, headers: { Location: `${publicBase(env)}/auth/page?tendril=${page.id}&key=${page.key}`,
+    const hostParam = customHost ? `&host=${encodeURIComponent(customHost)}` : "";
+    return new Response(null, { status: 302, headers: { Location: `${publicBase(env)}/auth/page?tendril=${page.id}&key=${page.key}${hostParam}`,
       "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
   }
   return errorResponse(401, "unauthorized", "Page sign-in required");

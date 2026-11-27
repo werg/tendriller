@@ -15,6 +15,7 @@ import { brandMark } from "./brand";
 import { icon, renderShell } from "./accounts/ui";
 import { broadcastSummary, publicBroadcastKeys, recordPageVersion } from "./broadcasts";
 import { getAccountEntitlements } from "./billing/entitlements";
+import { DEFAULT_VERSION_RETENTION } from "./billing/plans";
 
 function scanContent(body: ArrayBuffer): number {
   const text = new TextDecoder().decode(body.slice(0, 1024 * 1024));
@@ -65,59 +66,103 @@ export function assertStoredContent(t: Tendril, files: Iterable<Pick<VersionFile
   }
 }
 
-/** Reserve deletion synchronously; references cannot be added while R2 is awaited. */
-export async function deleteUnreferencedContent(t: Tendril, hash: string, olderThan?: number): Promise<void> {
-  await contentOperation(t, hash, async () => {
+/** Reserve deletion synchronously; references cannot be added while R2 is awaited. Returns freed bytes. */
+export async function deleteUnreferencedContent(t: Tendril, hash: string, olderThan?: number): Promise<number> {
+  return contentOperation(t, hash, async () => {
     const file = t.transaction(() => {
-      const stored = t.db.one<{ size: number; created_at: number }>('SELECT size,created_at FROM stored_files WHERE hash=?', hash);
-      if (!stored || (olderThan !== undefined && stored.created_at >= olderThan)) return null;
+      const stored = t.db.one<{ size: number; created_at: number; status: string }>(
+        'SELECT size,created_at,status FROM stored_files WHERE hash=?',
+        hash,
+      );
+      if (!stored || stored.status !== 'ready' || (olderThan !== undefined && stored.created_at >= olderThan)) return null;
       if (t.db.one('SELECT 1 AS present FROM version_files WHERE hash=? LIMIT 1', hash)) return null;
       t.db.run("UPDATE stored_files SET status='deleting' WHERE hash=?", hash);
       return stored;
     });
-    if (!file) return;
+    if (!file) return 0;
     // On failure the reservation remains. Another upload or a later GC pass can
     // recover it without allowing a publication to refer to uncertain bytes.
     await t.env.FILES.delete(fileKey(t, hash));
     t.db.run("DELETE FROM stored_files WHERE hash=? AND status='deleting'", hash);
     await t.releaseGlobalBytes(file.size);
+    return file.size;
   });
 }
 
-/** Stores the bytes content-addressed in R2 (skipped if already present). */
+/**
+ * Evict the oldest non-current host publication version and immediately garbage-collect
+ * any content-addressed blobs that are no longer referenced. Never touches `servedVersion(t)`.
+ */
+export async function pruneOldestNonCurrentVersion(t: Tendril): Promise<{ prunedVersion: number | null; freedBytes: number }> {
+  const current = servedVersion(t);
+  const pruned = t.transaction(() => {
+    const oldest = t.db.one<{ version: number }>(
+      "SELECT version FROM versions WHERE version != ? ORDER BY version ASC LIMIT 1",
+      current,
+    );
+    if (!oldest) return null;
+    const hashes = t.db.all<{ hash: string }>(
+      "SELECT DISTINCT hash FROM version_files WHERE version = ?",
+      oldest.version,
+    ).map((r) => r.hash);
+    t.db.run("DELETE FROM version_files WHERE version = ?", oldest.version);
+    t.db.run("DELETE FROM versions WHERE version = ?", oldest.version);
+    t.db.run("DELETE FROM trusted_versions WHERE version = ?", oldest.version);
+    return { version: oldest.version, hashes };
+  });
+  if (!pruned) return { prunedVersion: null, freedBytes: 0 };
+  let freedBytes = 0;
+  for (const hash of pruned.hashes) {
+    freedBytes += await deleteUnreferencedContent(t, hash);
+  }
+  return { prunedVersion: pruned.version, freedBytes };
+}
+
+/** Stores the bytes content-addressed in R2 (skipped if already present), pruning oldest non-current versions under storage pressure. */
 export async function storeContent(t: Tendril, body: ArrayBuffer, type: string): Promise<{ hash: string; size: number }> {
   const hash = await sha256Hex(body);
   const owner = t.db.get<string | null>("owner_account", null);
   const pageLimit = owner
     ? (await getAccountEntitlements(t.env, owner, t.now()).catch(() => null))?.quotas.pageStorageBytes
     : undefined;
-  await contentOperation(t, hash, async () => {
-    const riskScore = scanContent(body);
-    const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, pageLimit);
-    let globalReserved = false;
-    let uploaded = false;
-    const key = fileKey(t, hash);
+
+  for (;;) {
     try {
-      if (reserved) {
-        await t.reserveGlobalBytes(body.byteLength);
-        globalReserved = true;
-      }
-      const head = await retryPublicationStorage(() => t.env.FILES.head(key));
-      if (!head) {
-        await retryPublicationStorage(() => t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }));
-        uploaded = true;
-      }
-      t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
+      await contentOperation(t, hash, async () => {
+        const riskScore = scanContent(body);
+        const reserved = t.reserveStoredFile(hash, body.byteLength, riskScore, pageLimit);
+        let globalReserved = false;
+        let uploaded = false;
+        const key = fileKey(t, hash);
+        try {
+          if (reserved) {
+            await t.reserveGlobalBytes(body.byteLength);
+            globalReserved = true;
+          }
+          const head = await retryPublicationStorage(() => t.env.FILES.head(key));
+          if (!head) {
+            await retryPublicationStorage(() => t.env.FILES.put(key, body, { httpMetadata: { contentType: type } }));
+            uploaded = true;
+          }
+          t.db.run("UPDATE stored_files SET status='ready' WHERE hash=?", hash);
+        } catch (err) {
+          if (reserved) {
+            t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
+            if (uploaded) { try { await t.env.FILES.delete(key); } catch { /* orphan sweep can retry */ } }
+            if (globalReserved) await t.releaseGlobalBytes(body.byteLength);
+          }
+          throw err;
+        }
+      });
+      return { hash, size: body.byteLength };
     } catch (err) {
-      if (reserved) {
-        t.db.run("DELETE FROM stored_files WHERE hash = ?", hash);
-        if (uploaded) { try { await t.env.FILES.delete(key); } catch { /* orphan sweep can retry */ } }
-        if (globalReserved) await t.releaseGlobalBytes(body.byteLength);
+      if (err instanceof HttpError && err.status === 413 && (err.code === "quota" || err.code === "quota_exceeded")) {
+        const { prunedVersion } = await pruneOldestNonCurrentVersion(t);
+        if (prunedVersion !== null) continue;
       }
       throw err;
     }
-  });
-  return { hash, size: body.byteLength };
+  }
 }
 
 async function retryPublicationStorage<T>(operation: () => Promise<T>): Promise<T> {
@@ -161,13 +206,14 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     owner ? t.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(owner).first<{ created_at: number }>() : Promise.resolve(null),
     owner ? getAccountEntitlements(t.env, owner, t.now()).catch(() => null) : Promise.resolve(null),
   ]);
-  const retentionCap = ent?.quotas.versionRetention ?? null;
+  const retentionCap = ent?.quotas.versionRetention ?? DEFAULT_VERSION_RETENTION;
   const shouldHold = riskScore >= 5 && !!account && account.created_at > t.now() - 7 * 24 * 60 * 60_000;
   if (shouldHold) {
     await t.hold("High static screening score on young account");
   }
   await options.beforeCommit();
   const publishedAt = t.now();
+  const prunedHashes = new Set<string>();
   const n = t.transaction(() => {
     assertStoredContent(t, files.values());
     const next = t.db.get<number>("latest", 0) + 1;
@@ -194,6 +240,9 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
         Math.max(0, retentionCap - 1),
       );
       for (const old of stale) {
+        for (const row of t.db.all<{ hash: string }>("SELECT DISTINCT hash FROM version_files WHERE version = ?", old.version)) {
+          prunedHashes.add(row.hash);
+        }
         t.db.run("DELETE FROM version_files WHERE version = ?", old.version);
         t.db.run("DELETE FROM versions WHERE version = ?", old.version);
         t.db.run("DELETE FROM trusted_versions WHERE version = ?", old.version);
@@ -201,6 +250,11 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     }
     return next;
   });
+  // Immediately garbage-collect blobs that belonged only to pruned versions so
+  // old JS bundles never linger in R2 or eat into account/page storage quotas.
+  for (const hash of prunedHashes) {
+    await deleteUnreferencedContent(t, hash).catch(() => {});
+  }
   t.afterCommit(() => recordPageVersion(t.env, t.tid, n, runtimeRelease.id, runtimeRelease.version, publishedAt));
   return n;
 }
@@ -256,6 +310,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       brand: brandMark("/_tendril/brand/", base),
       nav: `<a class="nav-link" href="${base}_tendril/manage">Page settings</a>`,
       footer: "",
+      themeToggle: false,
       body: `<section class="card danger"><span class="eyebrow" style="color:var(--danger)">${icon("shield")} Security review</span><h1>Review this page before opening it</h1><p class="lead">This version asks for passwords, sends data elsewhere, or contains another risky pattern. Tendriller never asks for passwords. Continue only if you trust the agent that made it.</p><form method="post" action="${base}_tendril/trust-version"><input type="hidden" name="version" value="${version}"><div class="actions"><button type="submit">Continue to page</button><a class="button secondary" href="${base}_tendril/manage">Page settings</a></div></form></section>`,
     });
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
