@@ -275,10 +275,137 @@ test('live waits only for text the person typed, then switches once it is sent o
   await expect.poll(() => reloads(page)).toBe(1);
 });
 
+test('live tells the user when an unsaved draft defers an update', async ({ page }) => {
+  const notice = await policy(page, '<textarea id="composer"></textarea>', false, 'live');
+  await mountUtility(page);
+  await page.locator('#composer').pressSequentially('unfinished draft');
+  await notice(2);
+  await page.clock.runFor(500);
+  expect(await reloads(page)).toBe(0);
+  const card = page.locator('tendril-utility').locator('[aria-label="Publication update"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('New version published');
+  await page.locator('#composer').fill('');
+  await expect.poll(() => reloads(page)).toBe(1);
+});
+
+test('a live update held by the app shows a notice and clears it on rollback', async ({ page }) => {
+  const notice = await policy(page, '<button>Outside</button>', false, 'live');
+  await mountUtility(page);
+  await page.evaluate(() => { (window as any).release = (window as any).updates.hold(); });
+  await notice(2); await page.clock.runFor(500);
+  const card = page.locator('tendril-utility').locator('[aria-label="Publication update"]');
+  await expect(card).toBeVisible();
+  await notice(1);
+  await expect(card).toBeHidden();
+  await page.clock.runFor(1000);
+  await expect(card).toBeHidden();
+  await page.evaluate(() => (window as any).release());
+  expect(await reloads(page)).toBe(0);
+});
+
 test('the careful policy is chosen by authored metadata read after the head is parsed', async ({ page }) => {
   const notice = await policy(page, '<meta name="tendriller-updates" content="careful"><textarea id="settings">saved</textarea>', false, null);
   expect(await page.evaluate(() => (window as any).updates.policy)).toBe('careful');
   await page.evaluate(() => { (document.querySelector('#settings') as HTMLTextAreaElement).value = 'app value'; });
   await notice(2); await page.clock.runFor(5000);
   expect(await reloads(page)).toBe(0);
+});
+
+test('live protects active typing inside a same-origin srcdoc iframe (textarea and nested contenteditable)', async ({ page }) => {
+  const notice = await policy(page, '<iframe id="frame"></iframe><button id="outside">Outside</button>', false, 'live');
+  await page.evaluate(() => {
+    const f = document.querySelector('#frame') as HTMLIFrameElement;
+    f.srcdoc = '<!doctype html><html><body><div id="rich" contenteditable="true"><p><span id="inner">hello</span></p></div><textarea id="note"></textarea></body></html>';
+  });
+  const frame = page.frameLocator('#frame');
+  await expect(frame.locator('#inner')).toBeVisible();
+  await frame.locator('#inner').click();
+  await page.keyboard.type(' world');
+  await notice(2);
+  await page.clock.runFor(5000);
+  expect(await reloads(page)).toBe(0);
+
+  // Blurring the contenteditable releases the live guard and switches cleanly.
+  await page.locator('#outside').click();
+  await expect.poll(() => reloads(page)).toBe(1);
+});
+
+test('careful inspects dirty controls inside same-origin iframes even after blur', async ({ page }) => {
+  const notice = await policy(page, '<iframe id="frame"></iframe><button id="outside">Outside</button>', false, 'careful');
+  await page.evaluate(() => {
+    const f = document.querySelector('#frame') as HTMLIFrameElement;
+    f.srcdoc = '<!doctype html><html><body><textarea id="note">initial</textarea></body></html>';
+  });
+  const frame = page.frameLocator('#frame');
+  await expect(frame.locator('#note')).toBeVisible();
+  await frame.locator('#note').fill('modified inside iframe');
+  await page.locator('#outside').click();
+  await notice(2);
+  await page.clock.runFor(5000);
+  expect(await reloads(page)).toBe(0);
+
+  await frame.locator('#note').fill('initial');
+  await page.locator('#outside').click();
+  await expect.poll(() => reloads(page)).toBe(1);
+});
+
+test('live defers reload during active IME composition and active pointer gestures, then switches once finished', async ({ page }) => {
+  const notice = await policy(page, '<div id="canvas" style="width:120px;height:120px"></div><input id="ime" />', false, 'live');
+  // 1. IME composition blocks reload until compositionend.
+  await page.evaluate(() => {
+    document.querySelector('#ime')!.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+  });
+  await notice(2);
+  await page.clock.runFor(5000);
+  expect(await reloads(page)).toBe(0);
+
+  // 2. While a pointer is held down (e.g. drawing or dragging), reload remains deferred even after compositionend.
+  await page.mouse.move(40, 40);
+  await page.mouse.down();
+  await page.evaluate(() => {
+    document.querySelector('#ime')!.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+  });
+  await page.clock.runFor(500);
+  expect(await reloads(page)).toBe(0);
+
+  await page.mouse.up();
+  await expect.poll(() => reloads(page)).toBe(1);
+});
+
+test('live protects a user-selected file input until cleared', async ({ page }) => {
+  const notice = await policy(page, '<input id="upload" type="file">', false, 'live');
+  await page.locator('#upload').setInputFiles({ name: 'photo.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') });
+  await notice(2);
+  await page.clock.runFor(5000);
+  expect(await reloads(page)).toBe(0);
+
+  await page.locator('#upload').setInputFiles([]);
+  await expect.poll(() => reloads(page)).toBe(1);
+});
+
+test('onBeforeReload flushes async drafts before switching and can veto a reload by returning false', async ({ page }) => {
+  const notice = await policy(page, '<button id="outside">Outside</button>', false, 'live');
+  await page.evaluate(() => {
+    const w = window as any;
+    w.flushed = 0;
+    w.allowReload = false;
+    w.updates.onBeforeReload(async () => {
+      w.flushed += 1;
+      await Promise.resolve();
+      return w.allowReload;
+    });
+  });
+  await notice(2);
+  await expect.poll(() => page.evaluate(() => (window as any).flushed)).toBe(1);
+  expect(await reloads(page)).toBe(0);
+
+  await page.evaluate(() => {
+    const w = window as any;
+    w.allowReload = true;
+    const release = w.updates.hold('flush');
+    release();
+  });
+  await expect.poll(() => reloads(page)).toBe(1);
+  expect(await page.evaluate(() => (window as any).flushed)).toBe(2);
 });

@@ -12,6 +12,7 @@ import { publicBase } from './urls';
 import { joinBlurb } from './sharing';
 import { routeAgentConnectionsApi } from './oauth-outbound/routes';
 import { checkSubdomainAvailability, setPageSubdomain, validateSubdomainForNewPage } from './subdomains';
+import { isEmojiIcon } from './pwa';
 
 export const HUB_PROTOCOL = 'tendriller.hub.v1';
 export { AGENT_HANDLE_RE };
@@ -385,10 +386,14 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
   if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: 'agent:' + agent.id })).success)
     throw new HttpError(429, 'rate_limited', 'Creation rate limit reached');
   const input = await body(req, 64 * 1024);
-  for (const key of Object.keys(input)) if (!['name', 'mode', 'application', 'subdomain'].includes(key))
+  for (const key of Object.keys(input)) if (!['name', 'mode', 'application', 'subdomain', 'icon', 'theme_color'].includes(key))
     throw new HttpError(400, 'bad_request', `Unknown page field ${key}`);
   if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 200)) throw new HttpError(400, 'bad_request', 'name must be a string');
   if (input.subdomain !== undefined && typeof input.subdomain !== 'string') throw new HttpError(400, 'invalid_subdomain', 'subdomain must be a string');
+  if (input.icon !== undefined && (typeof input.icon !== 'string' || input.icon.length > 512 || !(/^https:\/\/\S+$/.test(input.icon) || isEmojiIcon(input.icon))))
+    throw new HttpError(400, 'bad_request', 'icon must be a single emoji or an https URL');
+  if (input.theme_color !== undefined && (typeof input.theme_color !== 'string' || !/^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30})$/.test(input.theme_color)))
+    throw new HttpError(400, 'bad_request', 'theme_color must be a CSS color like #336699');
   if (input.application !== undefined && (!isPlainObject(input.application) || Object.keys(input.application).length !== 1 ||
       typeof input.application.id !== 'string' || !/^[0-9a-f]{64}$/.test(input.application.id)))
     throw new HttpError(400, 'bad_request', 'application must be { id: <64 lowercase hex> }');

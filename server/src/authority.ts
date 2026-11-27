@@ -146,6 +146,62 @@ export interface MaterializedControlState {
   readonly hasActiveFinality: boolean;
   readonly closedThroughMs: bigint | null;
   readonly everMembers: ReadonlySet<string>;
+  readonly referencedCasHashes: ReadonlySet<string>;
+}
+
+const CAS_URI_RE = /^cas:sha256-([0-9a-f]{64})$/u;
+const HEX64_RE = /^[0-9a-f]{64}$/u;
+
+function collectCasRefsFromValue(value: unknown, casMap: Map<string, Uint8Array>, out: Set<string>, depth = 0): void {
+  if (depth > 32 || value === null || value === undefined) return;
+  if (typeof value === 'string') {
+    const uriMatch = CAS_URI_RE.exec(value);
+    if (uriMatch) { out.add(uriMatch[1]!); return; }
+    if (HEX64_RE.test(value) && casMap.has(value)) out.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectCasRefsFromValue(item, casMap, out, depth + 1);
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      collectCasRefsFromValue(v, casMap, out, depth + 1);
+    }
+  }
+}
+
+/**
+ * Computes the exact set of public CAS hashes reachable from genesis, public control ops,
+ * and materialized public control topic states (excluding internal `seenOps` blobs).
+ */
+export function collectReferencedPublicCasHashes(
+  genesis: unknown,
+  publicOps: readonly KernelOperationInput[],
+  topics: Record<string, unknown>,
+  casMap: Map<string, Uint8Array>,
+): Set<string> {
+  const roots = new Set<string>();
+  collectCasRefsFromValue(genesis, casMap, roots);
+  for (const op of publicOps) collectCasRefsFromValue(op.core.updates, casMap, roots);
+  collectCasRefsFromValue(topics, casMap, roots);
+
+  const reachable = new Set<string>();
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const hash = queue.pop()!;
+    if (reachable.has(hash)) continue;
+    const raw = casMap.get(hash);
+    if (!raw) continue;
+    reachable.add(hash);
+    try {
+      const decoded = decodeCasNode(raw);
+      for (const link of decoded.links ?? []) {
+        if (typeof link === 'string' && !reachable.has(link) && casMap.has(link)) queue.push(link);
+      }
+    } catch { /* raw unframed module blob has no child links */ }
+  }
+  return reachable;
 }
 
 /** True once the page has either prepared configuration or an initialized v2 genesis. */
@@ -458,6 +514,9 @@ export async function replayBlindHostControl(input: {
     }
   }
 
+  const casMap = new Map(input.publicCas.map(n => [n.hash, n.bytes]));
+  const referencedCasHashes = collectReferencedPublicCasHashes(genesis, input.publicOps, topics, casMap);
+
   return {
     logId,
     genesis,
@@ -472,6 +531,7 @@ export async function replayBlindHostControl(input: {
     hasActiveFinality,
     closedThroughMs,
     everMembers,
+    referencedCasHashes,
   };
 }
 
@@ -709,10 +769,6 @@ export async function syncControlState(
       newCas.push(node);
     }
   }
-  if (casMap.size > MAX_PUBLIC_CAS_NODES) throw new HttpError(413, 'public_cas_limit');
-  let totalCasBytes = 0;
-  for (const b of casMap.values()) totalCasBytes += b.byteLength;
-  if (totalCasBytes > MAX_PUBLIC_CAS_TOTAL) throw new HttpError(413, 'public_cas_limit');
 
   const existingOpRows = listPublicOpRows(t);
   const opMap = new Map(existingOpRows.map(r => [r.op_id, r]));
@@ -764,11 +820,26 @@ export async function syncControlState(
   }
   if (existingCpRows.length + newCps.length > MAX_CHECKPOINTS) throw new HttpError(413, 'checkpoints_limit');
 
+  const referencedCas = state.referencedCasHashes;
+  const acceptedNewCas = newCas.filter(node => referencedCas.has(node.hash));
+  const staleExistingCas = existingCas.filter(node => !referencedCas.has(node.hash));
+  let totalReferencedBytes = 0;
+  for (const hash of referencedCas) {
+    const b = casMap.get(hash);
+    if (b) totalReferencedBytes += b.byteLength;
+  }
+  if (referencedCas.size > MAX_PUBLIC_CAS_NODES || totalReferencedBytes > MAX_PUBLIC_CAS_TOTAL) {
+    throw new HttpError(413, 'public_cas_limit');
+  }
+
   await freshAuthorityAccess(t, principal);
-  if (newCas.length > 0 || newOps.length > 0 || newCps.length > 0) {
+  if (acceptedNewCas.length > 0 || staleExistingCas.length > 0 || newOps.length > 0 || newCps.length > 0) {
     t.transaction(() => {
       authorityAccount(t, principal);
-      for (const node of newCas) {
+      for (const node of staleExistingCas) {
+        t.db.run('DELETE FROM v2_public_cas WHERE hash = ?', node.hash);
+      }
+      for (const node of acceptedNewCas) {
         const copy = new Uint8Array(node.bytes.byteLength); copy.set(node.bytes);
         t.db.run('INSERT OR IGNORE INTO v2_public_cas(hash, bytes) VALUES(?, ?)', node.hash, copy.buffer);
       }
@@ -841,6 +912,23 @@ interface StoredJoinRequest {
  * - On public logs (`privateLog: false`): stores Ed25519-verified public app ops + CAS nodes so anonymous
  *   visitors hydrate even when the creator is offline, while enforcing `openWriters` and `blockedAuthors`.
  */
+/**
+ * Detect upstream `TopicKernel.hashSeenOpsSet` blobs (canonical CBOR arrays of
+ * `"public:<author>:<opId>"` / `"encrypted:<author>:<opId>"` strings) which are
+ * never dereferenced from CAS and must never persist on the blind host.
+ */
+export function isSeenOpsCasBlob(encoded: Uint8Array): boolean {
+  try {
+    const node = decodeCasNode(encoded);
+    if (node.links.length !== 0 || node.bytes.length === 0) return false;
+    const payload = decodeRecord<unknown>(node.bytes);
+    if (!Array.isArray(payload) || payload.length === 0) return false;
+    return payload.every(item => typeof item === 'string' && /^(?:public|encrypted):[0-9a-f]{64}:/.test(item));
+  } catch {
+    return false;
+  }
+}
+
 async function syncMailbox(t: Tendril, principal: Principal, input: Record<string, any>) {
   const state = await readControlState(t);
   if (!state) throw new HttpError(409, 'application_uninitialized', 'Application genesis has not been initialized');
@@ -908,35 +996,51 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
   }
 
   // Validate incoming public CAS nodes only (hash-verified).
-  // Private SQLite-CAS pages are NEVER stored unencrypted on the blind host;
-  // private peers converge from AEAD `encryptedEnvelopes` and replay locally.
+  // Private logs NEVER store CAS in the blind mailbox: public control CAS flows
+  // through `syncControl` (reachability-filtered into `v2_public_cas`), and private
+  // state converges strictly from AEAD `encryptedEnvelopes` replayed locally.
+  // Public logs also reject/prune unreferenced `seenOps` blobs that upstream
+  // `TopicKernel.hashSeenOpsSet` writes to the `"public"` CAS partition.
   const rawCas = Array.isArray(input.casNodes) ? input.casNodes : [];
   if (rawCas.length > 128) throw new HttpError(400, 'too_many_cas_nodes');
-  const existingCasHashes = new Set(t.db.all<{ hash: string }>('SELECT hash FROM v2_mailbox_cas').map(r => r.hash));
-  const existingCasBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(bytes)), 0) AS total FROM v2_mailbox_cas')?.total ?? 0;
+  const existingCasRows = t.db.all<{ hash: string; bytes: ArrayBuffer | Uint8Array }>('SELECT hash, bytes FROM v2_mailbox_cas');
+  const existingCasHashes = new Set(existingCasRows.map(r => r.hash));
+  const staleMailboxCasHashes = state.genesis.privateLog
+    ? existingCasRows.map(r => r.hash)
+    : existingCasRows.filter(r => isSeenOpsCasBlob(asBytes(r.bytes))).map(r => r.hash);
+  const staleMailboxCasSet = new Set(staleMailboxCasHashes);
+  const existingCasBytes = existingCasRows
+    .filter(r => !staleMailboxCasSet.has(r.hash))
+    .reduce((sum, r) => sum + asBytes(r.bytes).byteLength, 0);
   const newCas: Array<{ hash: string; partition: 'public'; bytes: Uint8Array }> = [];
   let addedCasBytes = 0;
 
-  for (const item of rawCas) {
-    if (!item || typeof item !== 'object' || !hex(item.hash) || typeof item.bytes !== 'string' || !/^(?:[0-9a-f]{2})*$/.test(item.bytes)) {
-      throw new HttpError(400, 'mailbox_cas_invalid');
+  if (!state.genesis.privateLog) {
+    for (const item of rawCas) {
+      if (!item || typeof item !== 'object' || !hex(item.hash) || typeof item.bytes !== 'string' || !/^(?:[0-9a-f]{2})*$/.test(item.bytes)) {
+        throw new HttpError(400, 'mailbox_cas_invalid');
+      }
+      if (item.partition === 'private') continue;
+      if (item.bytes.length > MAX_PUBLIC_CAS_BYTES * 2) throw new HttpError(413, 'mailbox_cas_too_large');
+      const bytes = item.bytes.length === 0 ? new Uint8Array(0) : Uint8Array.from(item.bytes.match(/../g) as string[], (b: string) => parseInt(b, 16));
+      if (hashCasNode(bytes) !== item.hash && computeCasHash(bytes, []) !== item.hash) {
+        throw new HttpError(400, 'mailbox_cas_hash_mismatch');
+      }
+      if (isSeenOpsCasBlob(bytes)) continue;
+      if (existingCasHashes.has(item.hash) || newCas.some(c => c.hash === item.hash)) continue;
+      if (existingCasHashes.size - staleMailboxCasHashes.length + newCas.length >= MAX_MAILBOX_CAS_ITEMS) break;
+      if (existingCasBytes + addedCasBytes + bytes.byteLength > MAX_MAILBOX_CAS_TOTAL_BYTES) break;
+      newCas.push({ hash: item.hash, partition: 'public', bytes });
+      addedCasBytes += bytes.byteLength;
     }
-    if (item.partition === 'private') continue;
-    if (item.bytes.length > MAX_PUBLIC_CAS_BYTES * 2) throw new HttpError(413, 'mailbox_cas_too_large');
-    const bytes = item.bytes.length === 0 ? new Uint8Array(0) : Uint8Array.from(item.bytes.match(/../g) as string[], (b: string) => parseInt(b, 16));
-    if (hashCasNode(bytes) !== item.hash && computeCasHash(bytes, []) !== item.hash) {
-      throw new HttpError(400, 'mailbox_cas_hash_mismatch');
-    }
-    if (existingCasHashes.has(item.hash) || newCas.some(c => c.hash === item.hash)) continue;
-    if (existingCasHashes.size + newCas.length >= MAX_MAILBOX_CAS_ITEMS) break;
-    if (existingCasBytes + addedCasBytes + bytes.byteLength > MAX_MAILBOX_CAS_TOTAL_BYTES) break;
-    newCas.push({ hash: item.hash, partition: 'public', bytes });
-    addedCasBytes += bytes.byteLength;
   }
 
-  if (newEnvs.length > 0 || newOps.length > 0 || newCas.length > 0) {
+  if (newEnvs.length > 0 || newOps.length > 0 || newCas.length > 0 || staleMailboxCasHashes.length > 0) {
     await freshAuthorityAccess(t, principal);
     t.transaction(() => {
+      for (const hash of staleMailboxCasHashes) {
+        t.db.run('DELETE FROM v2_mailbox_cas WHERE hash = ?', hash);
+      }
       for (const e of newEnvs) {
         const copy = new Uint8Array(e.raw.byteLength); copy.set(e.raw);
         t.db.run('INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
@@ -952,8 +1056,10 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
         t.db.run('INSERT OR IGNORE INTO v2_mailbox_cas(hash, partition, bytes, stored_at) VALUES(?, ?, ?, ?)',
           c.hash, c.partition, copy.buffer, now);
       }
-      notifyDiscoveryWatchers(t);
-      if (newEnvs.length > 0) notifyMcpSyncWatchers(t);
+      if (newEnvs.length > 0 || newOps.length > 0 || newCas.length > 0) {
+        notifyDiscoveryWatchers(t);
+        if (newEnvs.length > 0) notifyMcpSyncWatchers(t);
+      }
     });
   }
 
@@ -975,14 +1081,16 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
         .map(r => authorityRecord(new Uint8Array(r.raw)))
     : [];
 
-  const casNodes = t.db.all<{ hash: string; partition: string; bytes: ArrayBuffer }>('SELECT hash, partition, bytes FROM v2_mailbox_cas ORDER BY stored_at ASC')
-    .filter(r => !knownCas.has(r.hash))
-    .slice(0, 512)
-    .map(r => ({
-      hash: r.hash,
-      partition: (r.partition === 'private' ? 'private' : 'public') as 'public' | 'private',
-      bytes: bytesToHex(new Uint8Array(r.bytes)),
-    }));
+  const casNodes = state.genesis.privateLog
+    ? []
+    : t.db.all<{ hash: string; partition: string; bytes: ArrayBuffer }>('SELECT hash, partition, bytes FROM v2_mailbox_cas ORDER BY stored_at ASC')
+        .filter(r => !knownCas.has(r.hash))
+        .slice(0, 512)
+        .map(r => ({
+          hash: r.hash,
+          partition: (r.partition === 'private' ? 'private' : 'public') as 'public' | 'private',
+          bytes: bytesToHex(new Uint8Array(r.bytes)),
+        }));
 
   return {
     logId,
@@ -1247,12 +1355,13 @@ async function initializeGenesis(
     }
   }
 
+  const acceptedGenesisCas = casNodes.filter(node => state.referencedCasHashes.has(node.hash));
   await freshAuthorityAccess(t, principal);
   t.transaction(() => {
     authorityAccount(t, principal);
     if (t.db.get(GENESIS_KEY, null) !== null) throw new HttpError(409, 'application_initialized');
     t.db.set(GENESIS_KEY, authorityRecord(genesisBytes));
-    for (const node of casNodes) {
+    for (const node of acceptedGenesisCas) {
       const copy = new Uint8Array(node.bytes.byteLength); copy.set(node.bytes);
       t.db.run('INSERT OR IGNORE INTO v2_public_cas(hash, bytes) VALUES(?, ?)', node.hash, copy.buffer);
     }

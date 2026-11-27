@@ -32,6 +32,7 @@ import { ACCESS_WRITE_INTERVAL, ACCOUNT_STORAGE_LIMIT, AD_HOC_IDLE, DAY, HOUR, P
 import { accountLimits } from './service-state';
 import { getAccountEntitlements, quotaError } from './billing/entitlements';
 import { handlePage, pageAccessDenied } from './page';
+import { isEmojiIcon } from './pwa';
 import { enforceOrgDepartureOnPage, matchingPageGroupRule } from './groups/org-groups';
 import { agentPageApi, barePageUrl, pageUrl, publicBase } from './urls';
 import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
@@ -331,6 +332,20 @@ export class Tendril extends DurableObject<Env> {
     const account = req.headers.get("x-account-id");
     const body = await readJson(req, 64 * 1024);
     const name = body.name === undefined ? "Tendril" : validName(body.name);
+    let icon: string | null = null;
+    if (body.icon !== undefined && body.icon !== null) {
+      if (typeof body.icon !== "string" || body.icon.length > 512 || !(/^https:\/\/\S+$/.test(body.icon) || isEmojiIcon(body.icon))) {
+        throw new HttpError(400, "bad_request", "icon must be a single emoji or an https URL");
+      }
+      icon = body.icon;
+    }
+    let themeColor: string | null = null;
+    if (body.theme_color !== undefined && body.theme_color !== null) {
+      if (typeof body.theme_color !== "string" || !/^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30})$/.test(body.theme_color)) {
+        throw new HttpError(400, "bad_request", "theme_color must be a CSS color like #336699");
+      }
+      themeColor = body.theme_color;
+    }
     const owner = account ? null : validIntendedOwner(body.owner);
     const label = account ? await this.env.ACCOUNTS.prepare("SELECT login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
       .bind(account).first<{ login: string }>() : null;
@@ -339,6 +354,8 @@ export class Tendril extends DurableObject<Env> {
     const grant = this.transaction(() => {
       this.db.set("id", id);
       this.db.set("name", name);
+      if (icon !== null) this.db.set("icon", icon);
+      if (themeColor !== null) this.db.set("theme_color", themeColor);
       if (owner) this.db.set("intended_owner", owner);
       if (account) {
         this.db.set("owner_account", account);

@@ -27,13 +27,15 @@ const pageAgent = object({
   granted_at: integer,
 }, ['id', 'handle', 'bio', 'public_key', 'kind', 'is_primary'], true);
 const pageSubdomain = { type: 'string', minLength: 3, maxLength: 45, pattern: '^[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])$' };
+const pageIcon = { type: 'string', minLength: 1, maxLength: 512 };
+const pageThemeColor = { type: 'string', minLength: 3, maxLength: 32, pattern: '^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30})$' };
 export const schemas = Object.freeze({
   agentRegistration: object({ owner: email, handle: agentHandle, bio: agentBio, publicKey, wrapKey: hexKey }, ['owner', 'handle', 'publicKey', 'wrapKey']),
   agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, handle: agentHandle, bio: agentBio, publicKey, wrapKey: hexKey }, ['code', 'handle', 'publicKey', 'wrapKey']),
   agentProfileUpdate: object({ handle: agentHandle, bio: agentBio }, []),
   agentCredential: object({ id: agentId, handle: agentHandle, bio: agentBio, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
     account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'handle', 'token'], true),
-  agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 }, mode: { enum: ['interactive', 'dashboard'] }, application, subdomain: pageSubdomain }),
+  agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 }, mode: { enum: ['interactive', 'dashboard'] }, application, subdomain: pageSubdomain, icon: pageIcon, theme_color: pageThemeColor }),
   pageAgent,
   pageAgentRoster: object({
     primary_agent_id: nullable(string),

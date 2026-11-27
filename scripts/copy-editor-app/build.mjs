@@ -12,6 +12,11 @@ export const NODE_PREVIEW_PLUGINS = [
         contents: 'export class DurableObject { constructor() {} }',
         loader: 'js',
       }));
+      build.onResolve({ filter: /^module$/ }, () => ({ path: 'module', namespace: 'tce-module-stub' }));
+      build.onLoad({ filter: /.*/, namespace: 'tce-module-stub' }, () => ({
+        contents: 'export function createRequire() { throw Error("stub"); }',
+        loader: 'js',
+      }));
       build.onLoad({ filter: /\.wasm$/ }, () => ({
         contents: 'export default null;',
         loader: 'js',
@@ -19,6 +24,23 @@ export const NODE_PREVIEW_PLUGINS = [
     },
   },
 ];
+
+export const SITE_PREVIEW_ENTRY_SOURCE = `
+  export { landingPage } from "./server/src/landing.ts";
+  export { AGENT_PLATFORMS, agentPlatformHtml, agentPlatformIndexHtml } from "./server/src/agent-platforms.ts";
+  export { signInBody } from "./server/src/accounts/auth.ts";
+  export { renderShell } from "./server/src/accounts/ui.ts";
+  export { renderPageAuthPromptHtml, renderMissingPageHtml, renderQuotaLimitHtml } from "./server/src/accounts/page.ts";
+  export { renderDashboardHtml, renderPageActivityHtml } from "./server/src/accounts/keys.ts";
+  export { renderOAuthConnectionsHtml } from "./server/src/accounts/oauth-connections.ts";
+  export { renderPricingPageHtml, renderSelfHostPageHtml, renderBillingDashboardHtml } from "./server/src/billing/routes.ts";
+  export { PLANS, currentUsagePeriod } from "./server/src/billing/plans.ts";
+  export { renderCustomDomainsHtml } from "./server/src/custom-domains.ts";
+  export { renderConnectionsPageHtml } from "./server/src/mcp-gateway.ts";
+  export { renderPageManagementHtml, renderPageDeletedHtml } from "./server/src/management.ts";
+  export { renderReportPageHtml } from "./server/src/abuse/report.ts";
+  export { renderStatusPageHtml } from "./server/src/router.ts";
+`;
 
 /**
  * Compiles Tendriller's actual live server renderers from `server/src/*.ts` + `server/src/site-copy.json`
@@ -31,22 +53,7 @@ export async function renderEditableSitePages({ repoRoot, displayOrigin, bundle 
 
   const siteBundle = await bundle({
     stdin: {
-      contents: `
-        export { landingPage } from "./server/src/landing.ts";
-        export { AGENT_PLATFORMS, agentPlatformHtml, agentPlatformIndexHtml } from "./server/src/agent-platforms.ts";
-        export { signInBody } from "./server/src/accounts/auth.ts";
-        export { renderShell } from "./server/src/accounts/ui.ts";
-        export { renderPageAuthPromptHtml, renderMissingPageHtml, renderQuotaLimitHtml } from "./server/src/accounts/page.ts";
-        export { renderDashboardHtml, renderPageActivityHtml } from "./server/src/accounts/keys.ts";
-        export { renderOAuthConnectionsHtml } from "./server/src/accounts/oauth-connections.ts";
-        export { renderPricingPageHtml, renderSelfHostPageHtml, renderBillingDashboardHtml } from "./server/src/billing/routes.ts";
-        export { PLANS, currentUsagePeriod } from "./server/src/billing/plans.ts";
-        export { renderCustomDomainsHtml } from "./server/src/custom-domains.ts";
-        export { renderConnectionsPageHtml } from "./server/src/mcp-gateway.ts";
-        export { renderPageManagementHtml, renderPageDeletedHtml } from "./server/src/management.ts";
-        export { renderReportPageHtml } from "./server/src/abuse/report.ts";
-        export { renderStatusPageHtml } from "./server/src/router.ts";
-      `,
+      contents: SITE_PREVIEW_ENTRY_SOURCE,
       resolveDir: repoRoot,
       loader: 'ts',
     },
@@ -502,6 +509,13 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       chunkNames: 'chunks/[name]-[hash]',
       assetNames: 'assets/[name]-[hash]',
       loader: { '.wasm': 'file' },
+      plugins: [{
+        name: 'browser-node-module-stub',
+        setup(b) {
+          b.onResolve({ filter: /^module$/ }, () => ({ path: 'module', namespace: 'tce-empty' }));
+          b.onLoad({ filter: /.*/, namespace: 'tce-empty' }, () => ({ contents: 'export function createRequire() { throw Error("Node-only"); }', loader: 'js' }));
+        },
+      }],
     });
     return fileURLToPath(output);
   } catch (cause) {

@@ -57,13 +57,13 @@
     },
     "pillars": {
       "eyebrow": "Go beyond the chat box",
-      "title": "You can talk to your dashboard",
+      "title": "A much richer interface",
       "lead": "",
       "items": [
         {
           "icon": "mic",
           "warm": true,
-          "title": "Holler at it and it changes",
+          "title": "Yell at your app and it actually changes",
           "body": "Ask by voice or text and watch your agent evolve the page itself — adding charts, rearranging buttons, showing annotated diagrams, or reading next steps aloud as your work shifts.",
           "tags": [
             "Live UI changes",
@@ -89,7 +89,7 @@
           "icon": "database",
           "warm": false,
           "title": "Real shared database state",
-          "body": "Not ephemeral chat memory — a genuine local-first database with built-in keyword and meaning search. Reopens instantly offline and syncs across your phone, laptop, and agent — even when your devices aren’t online at the same time.",
+          "body": "Storage that goes beyond a context window. A genuine local-first database with built-in keyword and meaning search, tied into the UI. Reopens instantly offline and syncs across your phone, laptop, and agent — even if your agent isn't online.",
           "tags": [
             "Shared SQL",
             "Offline search",
@@ -101,7 +101,7 @@
           "icon": "users",
           "warm": true,
           "title": "Invite others — or go public",
-          "body": "Share a private guest link, tie access to a **GitHub Org** or **Google Workspace** team, require multi-person sign-off, or publish a no-login public page or moderated community board — plus group video calls with on-device captions.",
+          "body": "Share a private guest link, tie access to a **GitHub Org** or **Google Workspace** team, require multi-person sign-off, or publish a no-login public page or moderated community board — plus you can build your own group video calls with per-speaker captions for your agents.",
           "tags": [
             "Guest invites",
             "Public pages",

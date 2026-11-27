@@ -523,10 +523,10 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
     <div class="hero-grid">
       <div class="hero-art">${brandLogo}</div>
       <div class="hero-copy">
-        ${h.hero.pill.trim() ? `<span class="hero-pill"><span class="live-dot" aria-hidden="true"></span><span${c("home.hero.pill", h.hero.pill)}>${txt(h.hero.pill)}</span></span>` : ""}
+        ${(editable || h.hero.pill.trim()) ? `<span class="hero-pill"><span class="live-dot" aria-hidden="true"></span><span${c("home.hero.pill", h.hero.pill)}>${txt(h.hero.pill)}</span></span>` : ""}
         <h1 id="hero-title"${c("home.hero.title", h.hero.title)}>${txt(h.hero.title)}</h1>
-        <p class="lead"${c("home.hero.lead", h.hero.lead)}>${txt(h.hero.lead)}</p>
-        <p class="sub"${c("home.hero.sub", h.hero.sub)}>${txt(h.hero.sub)}</p>
+        ${(editable || h.hero.lead.trim()) ? `<p class="lead"${c("home.hero.lead", h.hero.lead)}>${txt(h.hero.lead)}</p>` : ""}
+        ${(editable || h.hero.sub.trim()) ? `<p class="sub"${c("home.hero.sub", h.hero.sub)}>${txt(h.hero.sub)}</p>` : ""}
         <div class="actions">
           <a class="cta" href="#start"><span${c("home.hero.ctaPrimary", h.hero.ctaPrimary)}>${txt(h.hero.ctaPrimary)}</span></a>
           <a class="button" href="${base}/docs/BUILD_AN_APP.md">${icon("terminal")} <span${c("home.hero.ctaAgent", h.hero.ctaAgent)}>${txt(h.hero.ctaAgent)}</span></a>
@@ -547,8 +547,8 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
       <div class="agent-copy">
         <span class="eyebrow"${c("home.start.eyebrow", h.start.eyebrow)}>${txt(h.start.eyebrow)}</span>
         <h2 id="start-title"${c("home.start.title", h.start.title)}>${txt(h.start.title)}</h2>
-        <p${c("home.start.p1", h.start.p1)}>${txt(h.start.p1)}</p>
-        <p${c("home.start.p2", h.start.p2)}>${txt(h.start.p2)}</p>
+        ${(editable || h.start.p1.trim()) ? `<p${c("home.start.p1", h.start.p1)}>${txt(h.start.p1)}</p>` : ""}
+        ${(editable || h.start.p2.trim()) ? `<p${c("home.start.p2", h.start.p2)}>${txt(h.start.p2)}</p>` : ""}
       </div>
 
       <div class="prompt-card" aria-label="Example prompt for your agent">
@@ -590,7 +590,7 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
       <div class="section-head-copy">
         <span class="eyebrow"${c("home.pillars.eyebrow", h.pillars.eyebrow)}>${txt(h.pillars.eyebrow)}</span>
         <h2 id="pillars-title"${c("home.pillars.title", h.pillars.title)}>${txt(h.pillars.title)}</h2>
-        <p${c("home.pillars.lead", h.pillars.lead)}>${txt(h.pillars.lead)}</p>
+        ${(editable || h.pillars.lead.trim()) ? `<p${c("home.pillars.lead", h.pillars.lead)}>${txt(h.pillars.lead)}</p>` : ""}
       </div>
     </div>
     <div class="pillars">
@@ -643,7 +643,7 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
       <div class="section-head-copy">
         <span class="eyebrow"${c("home.ideas.eyebrow", h.ideas.eyebrow)}>${txt(h.ideas.eyebrow)}</span>
         <h2 id="ideas-title"${c("home.ideas.title", h.ideas.title)}>${txt(h.ideas.title)}</h2>
-        <p${c("home.ideas.lead", h.ideas.lead)}>${txt(h.ideas.lead)}</p>
+        ${(editable || h.ideas.lead.trim()) ? `<p${c("home.ideas.lead", h.ideas.lead)}>${txt(h.ideas.lead)}</p>` : ""}
       </div>
       <a class="cookbook-cta" href="https://cookbooks.tendriller.dev/"><span${c("home.ideas.cta", h.ideas.cta)}>${txt(h.ideas.cta)}</span> ${icon("arrow")}</a>
     </div>
@@ -661,7 +661,7 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
       <div class="section-head-copy">
         <span class="eyebrow"${c("home.access.eyebrow", h.access.eyebrow)}>${txt(h.access.eyebrow)}</span>
         <h2 id="access-title"${c("home.access.title", h.access.title)}>${txt(h.access.title)}</h2>
-        <p${c("home.access.lead", h.access.lead)}>${txt(h.access.lead)}</p>
+        ${(editable || h.access.lead.trim()) ? `<p${c("home.access.lead", h.access.lead)}>${txt(h.access.lead)}</p>` : ""}
       </div>
     </div>
     <div class="trust-grid">
@@ -687,7 +687,7 @@ export function landingPage(publicBase: string, options?: { editable?: boolean; 
       <div class="section-head-copy">
         <span class="eyebrow"${c("home.pricing.eyebrow", h.pricing.eyebrow)}>${txt(h.pricing.eyebrow)}</span>
         <h2 id="pricing-title"${c("home.pricing.title", h.pricing.title)}>${txt(h.pricing.title)}</h2>
-        <p${c("home.pricing.lead", h.pricing.lead)}>${txt(h.pricing.lead)}</p>
+        ${(editable || h.pricing.lead.trim()) ? `<p${c("home.pricing.lead", h.pricing.lead)}>${txt(h.pricing.lead)}</p>` : ""}
       </div>
       <div class="pricing-head-links">
         <a class="cookbook-cta" href="${base}/pricing"><span${c("home.pricing.ctaPricing", h.pricing.ctaPricing)}>${txt(h.pricing.ctaPricing)}</span> ${icon("arrow")}</a>

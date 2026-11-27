@@ -31,7 +31,7 @@ Workspace (one agent credential and signing key for many pages):
   workspace verify                                                                 Verify packages/, package-lock.json integrity & node_modules match composition.json
   workspace upgrade [--kit ARCHIVE_OR_DIR] [--check]                               Cleanly regenerate package-lock.json, run npm ci --ignore-scripts, and verify exact release archives
   workspace reenroll [--service URL] (--owner EMAIL | --code CODE | --credential FILE) [--handle H] [--bio B]  Re-enroll an existing workspace agent preserving signing/wrap keys and local data
-  page new <slug> [--name TITLE] [--subdomain NAME] Create a page (granted to this agent) and its pages/<slug>/ folder
+  page new <slug> [--name TITLE] [--icon EMOJI|URL] [--theme-color COLOR] [--subdomain NAME]  Create a page (granted to this agent) and its pages/<slug>/ folder
   page subdomain <slug> <name|--clear> [--reassign] [--swap]  Set, rename, move/swap, or clear a page's named subdomain (paid plans)
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
@@ -102,7 +102,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'], changelog: ['server', 'since', 'since-core', 'category', 'limit'],
-  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential', 'check'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role', 'add', 'remove', 'label'], agent: ['handle', 'bio'], connection: ['server', 'tier', 'custody', 'scopes', 'actions', 'page', 'label'], 'mcp-stdio': [],
+  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential', 'check'], page: ['name', 'icon', 'theme-color', 'subdomain', 'clear', 'reassign', 'swap', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role', 'add', 'remove', 'label'], agent: ['handle', 'bio'], connection: ['server', 'tier', 'custody', 'scopes', 'actions', 'page', 'label'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -223,9 +223,28 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     const [action, slug, id] = args;
     if (action === 'list' && args.length === 1) return describeWorkspace(workspace, { signal });
     if (action === 'new' && args.length === 2) {
-      const page = await workspace.createPage(slug, { name: flags.name ?? slug, ...(flags.subdomain ? { subdomain: String(flags.subdomain).trim().toLowerCase() } : {}) }, { signal });
-      return { slug, id: page.id, name: page.name, ...(page.subdomain ? { subdomain: page.subdomain } : {}), page_url: page.page_url, ...(page.bare_url ? { bare_url: page.bare_url } : {}), application: page.application, source: page.source,
-        next: `Write the page source in pages/${slug}/ (agent.mjs exports openPage), initialize it, publish, then give the owner page_url.` };
+      const icon = typeof flags.icon === 'string' && flags.icon.trim() ? flags.icon.trim() : undefined;
+      const theme_color = typeof flags['theme-color'] === 'string' && flags['theme-color'].trim() ? flags['theme-color'].trim() : undefined;
+      const page = await workspace.createPage(slug, {
+        name: flags.name ?? slug,
+        ...(flags.subdomain ? { subdomain: String(flags.subdomain).trim().toLowerCase() } : {}),
+        ...(icon ? { icon } : {}),
+        ...(theme_color ? { theme_color } : {}),
+      }, { signal });
+      return {
+        slug, id: page.id, name: page.name,
+        ...(icon ? { icon } : {}),
+        ...(theme_color ? { theme_color } : {}),
+        ...(page.subdomain ? { subdomain: page.subdomain } : {}),
+        page_url: page.page_url,
+        ...(page.bare_url ? { bare_url: page.bare_url } : {}),
+        application: page.application,
+        source: page.source,
+        ...(!icon ? {
+          warning: `No favicon set — without one, browsers and the dashboard fall back to a plain green initial letter. Choose a recognizable icon for this app before delivering: pass --icon <emoji|https-url> on page new, run 'tendril --page ${slug} meta \'{"icon":"✨"}\'', or ship a custom <link rel="icon"> in index.html.`,
+        } : {}),
+        next: `Write the page source in pages/${slug}/ (agent.mjs exports openPage), initialize it, publish, then give the owner page_url.${!icon ? ` Don't forget to set a recognizable favicon with tendril --page ${slug} meta '{"icon":"..."}'.` : ''}`,
+      };
     }
     if (action === 'subdomain' && (args.length === 2 || args.length === 3)) {
       if (flags.clear) {

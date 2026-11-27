@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tendriller Copy Editor</title>
+<link rel="icon" type="image/png" sizes="64x64" href="./brand/icon-64.png">
+<link rel="apple-touch-icon" sizes="180x180" href="./brand/icon-180.png">
 <style>
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;overflow:hidden;background:#0e1612;color:#f6f1e3;font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -47,6 +49,9 @@
   #tce-dock button:disabled{opacity:.5;cursor:default}
   #tce-dock button.tce-send{background:#df5f32;border-color:transparent;color:#fff}
   #tce-dock button.tce-send:hover{background:#c84e23}
+  #tce-dock button.tce-update{background:rgba(94,227,161,.20);border-color:#5ee3a1;color:#d6ffea}
+  #tce-dock button.tce-update:hover{background:rgba(94,227,161,.32)}
+  #tce-dock button[hidden]{display:none}
   #tce-dock button.active{background:rgba(110,211,159,.22);border-color:#6ed39f;color:#a8f0c8}
   .tce-badge{padding:2px 7px;border-radius:999px;font-size:11px;font-weight:750;background:rgba(223,95,50,.28);color:#ffcfb8}
   .tce-status{font-size:12px;color:#b7ccb9;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}
@@ -96,6 +101,7 @@
   <button type="button" id="tce-diff-btn">Edits <span class="tce-badge" id="tce-count">0</span></button>
   <input id="tce-note" type="text" placeholder="Note for agent (optional)…">
   <button type="button" id="tce-send" class="tce-send" disabled>Send to agent</button>
+  <button type="button" id="tce-update-btn" class="tce-update" hidden title="A newer build is ready — click to flush edits and reload">Update ready</button>
   <button type="button" id="tce-devices-btn" title="View admitted devices and access">Devices</button>
   <span class="tce-status" id="tce-status" role="status" aria-live="polite">Opening Chronolog…</span>
   <button type="button" id="tce-hide" title="Collapse dock">×</button>

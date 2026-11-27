@@ -14,6 +14,9 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rm
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { build as esbuild } from "esbuild";
+import { computeCopyEditorFingerprint, startCopyEditorSourceWatcher } from "./copy-editor-app/source-watch.mjs";
+import { monitorAgentProcess } from "../docs/tutorial/shared/helpers/daemon-health.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const COPY_JSON = join(ROOT, "server/src/site-copy.json");
@@ -32,6 +35,8 @@ const { values: flags } = parseArgs({
     "display-origin": { type: "string", default: "https://tendriller.dev" },
     republish: { type: "boolean", default: false },
     "no-agent": { type: "boolean", default: false },
+    "no-watch": { type: "boolean", default: false },
+    "watch-debounce-ms": { type: "string", default: "5000" },
     wait: { type: "boolean", default: false },
     after: { type: "string" },
     timeout: { type: "string", default: "3600" },
@@ -54,6 +59,8 @@ Options:
   --workspace <dir>           Override workspace directory
   --display-origin <origin>   Origin shown inside previewed pages (default: https://tendriller.dev)
   --no-agent                  Prepare & publish the page, print URL, and exit without running tendril agent run
+  --no-watch                  Disable automatic debounced rebuild/republish when server/src changes
+  --watch-debounce-ms <ms>    Debounce delay before validating & republishing source changes (default: 5000)
   --republish                 Rebuild from current server/src/site-copy.json and publish a new signed version
   --wait [--timeout <s>]      Wait for the next replicated Chronolog copy.submit batch and print JSON
   --inbox                     Print all received Chronolog batches
@@ -68,7 +75,24 @@ const workspaceDir = flags.workspace
   ? resolve(flags.workspace)
   : join(ROOT, ".tendriller-dev-host", "copy-editor-workspaces", `v2-${originSlug}`);
 const inboxPath = join(workspaceDir, ".tendriller", "copy-inbox.jsonl");
+const publishedHashPath = join(workspaceDir, ".tendriller", "copy-editor-published-hash.txt");
 const tendrilBin = join(workspaceDir, "node_modules/@tendriller/tools/bin/tendril.mjs");
+
+function readPublishedFingerprint() {
+  try {
+    return readFileSync(publishedHashPath, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function writePublishedFingerprint(hash) {
+  if (!hash) return;
+  try {
+    mkdirSync(dirname(publishedHashPath), { recursive: true });
+    writeFileSync(publishedHashPath, `${hash}\n`, "utf8");
+  } catch {}
+}
 
 function runCmd(cmd, args, { cwd = ROOT, env = process.env, capture = false } = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -184,6 +208,7 @@ function prepareWorkspaceSkeleton() {
 }
 
 function syncAppSource() {
+  cpSync(join(TUTORIAL_DIR, "shared"), join(workspaceDir, "shared"), { recursive: true, force: true });
   const targetDir = join(workspaceDir, "pages", PAGE_SLUG);
   mkdirSync(targetDir, { recursive: true });
   for (const name of readdirSync(APP_SRC)) {
@@ -219,9 +244,11 @@ function workspaceEnv() {
   };
 }
 
-async function ensureProvisionedPage({ republish = false } = {}) {
-  await ensureBuiltPackages();
-  prepareWorkspaceSkeleton();
+async function ensureProvisionedPage({ republish = false, refreshSkeleton = true } = {}) {
+  if (refreshSkeleton) {
+    await ensureBuiltPackages();
+    prepareWorkspaceSkeleton();
+  }
   await checkReadiness();
 
   const configPath = join(workspaceDir, "tendriller.json");
@@ -248,7 +275,7 @@ async function ensureProvisionedPage({ republish = false } = {}) {
   if (!config.pages?.[PAGE_SLUG]) {
     await runCmd(
       process.execPath,
-      [tendrilBin, "page", "new", PAGE_SLUG, "--name", "Tendriller Copy Editor"],
+      [tendrilBin, "page", "new", PAGE_SLUG, "--name", "Tendriller Copy Editor", "--icon", "✏️"],
       { cwd: workspaceDir, env: workspaceEnv(), capture: true },
     );
     config = JSON.parse(readFileSync(configPath, "utf8"));
@@ -277,7 +304,7 @@ async function ensureProvisionedPage({ republish = false } = {}) {
       });
       break;
     } catch (err) {
-      if (attempt < 4 && /non-JSON response|fetch failed|503|ECONNRESET/i.test(err.message)) {
+      if (attempt < 4 && /non-JSON response|fetch failed|503|ECONNRESET|peer_publication_rejected/i.test(err.message)) {
         await new Promise((r) => setTimeout(r, 1500));
         continue;
       }
@@ -285,6 +312,10 @@ async function ensureProvisionedPage({ republish = false } = {}) {
     }
   }
   const receipt = JSON.parse(deploy.stdout.trim());
+  try {
+    const fingerprint = await computeCopyEditorFingerprint({ repoRoot: ROOT, bundle: esbuild });
+    writePublishedFingerprint(fingerprint);
+  } catch {}
   return { config, pageMeta, receipt, republished: republish };
 }
 
@@ -416,10 +447,46 @@ console.error(`Once admitted, browser reads and inline edits stay locally durabl
 
 const agentProc = spawn(process.execPath, [tendrilBin, "agent", "run"], {
   cwd: workspaceDir,
-  env: workspaceEnv(),
-  stdio: "inherit",
+  env: { ...workspaceEnv(), TENDRILLER_NO_HEALTH_ALERTS: "1" },
+  stdio: ["inherit", "pipe", "pipe"],
 });
-for (const sig of ["SIGINT", "SIGTERM"]) {
-  process.on(sig, () => { agentProc.kill(sig); });
+const healthMonitor = monitorAgentProcess(agentProc, {
+  label: `copy-editor (${PAGE_SLUG})`,
+  threshold: 3,
+  windowMs: 60_000,
+  cooldownMs: 5 * 60_000,
+});
+
+let sourceWatcher = null;
+if (!flags["no-watch"]) {
+  const debounceMs = Math.max(250, Number(flags["watch-debounce-ms"]) || 5000);
+  sourceWatcher = startCopyEditorSourceWatcher({
+    repoRoot: ROOT,
+    bundle: esbuild,
+    debounceMs,
+    readPublishedFingerprint,
+    writePublishedFingerprint,
+    async verify() {
+      await runCmd(process.execPath, ["--test", join(ROOT, "scripts/test/copy-editor.test.mjs")], {
+        cwd: ROOT,
+        env: workspaceEnv(),
+        capture: true,
+      });
+    },
+    async publish() {
+      return ensureProvisionedPage({ republish: true, refreshSkeleton: false });
+    },
+  });
 }
-agentProc.on("exit", (code) => { process.exit(code ?? 0); });
+
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    healthMonitor.stop();
+    sourceWatcher?.close();
+    agentProc.kill(sig);
+  });
+}
+agentProc.on("exit", (code) => {
+  sourceWatcher?.close();
+  process.exit(code ?? 0);
+});

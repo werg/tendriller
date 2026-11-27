@@ -11,6 +11,16 @@ import {
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
 
+function decodeCasLinks(encoded) {
+  const decoded = decodeRecord(encoded);
+  if (!Array.isArray(decoded) || decoded.length !== 2 || !Array.isArray(decoded[1])) return [];
+  const links = [];
+  for (const item of decoded[1]) {
+    if (item instanceof Uint8Array && item.length === 32) links.push(bytesToHex(item));
+  }
+  return links;
+}
+
 const WRAP_KEY = 'tendriller/admission/wrap-key';
 const GENESIS = applicationId => `tendriller/admission/genesis/${applicationId}`;
 const INVITE = applicationId => `tendriller/admission/invite/${applicationId}`;
@@ -522,13 +532,70 @@ export function createAdmission(session, {
     if (saved) invite = decodeRecord(saved);
   }
 
+  const CAS_URI_RE = /^cas:sha256-([0-9a-f]{64})$/u;
+  const HEX64_RE = /^[0-9a-f]{64}$/u;
+
+  function filterReferencedPublicCas(facts) {
+    const allNodes = facts.casNodes ?? [];
+    if (!allNodes.length) return [];
+    const byHash = new Map(allNodes.map(n => [n.hash, n]));
+    const roots = new Set();
+    const scan = (val, depth = 0) => {
+      if (depth > 32 || val === null || val === undefined) return;
+      if (typeof val === 'string') {
+        const m = CAS_URI_RE.exec(val);
+        if (m) { roots.add(m[1]); return; }
+        if (HEX64_RE.test(val) && byHash.has(val)) roots.add(val);
+        return;
+      }
+      if (Array.isArray(val)) { for (const item of val) scan(item, depth + 1); return; }
+      if (typeof val === 'object') { for (const v of Object.values(val)) scan(v, depth + 1); }
+    };
+    scan(session.genesis);
+    for (const raw of facts.publicOps ?? []) {
+      try {
+        const decoded = decodeSignedOperation(raw);
+        scan(decoded?.core?.updates);
+      } catch {}
+    }
+    if (typeof session.topic === 'function') {
+      for (const name of ['$reducers', '$permissions', '$keys', '$finality', '$publications']) {
+        try { scan(session.topic(name)); } catch {}
+      }
+    }
+    const kept = [];
+    const visited = new Set();
+    const queue = [...roots];
+    while (queue.length > 0) {
+      const hash = queue.pop();
+      if (visited.has(hash)) continue;
+      const node = byHash.get(hash);
+      if (!node) continue;
+      visited.add(hash);
+      kept.push(node);
+      try {
+        for (const link of decodeCasLinks(node.bytes)) {
+          if (!visited.has(link) && byHash.has(link)) queue.push(link);
+        }
+      } catch {}
+    }
+    return kept;
+  }
+
   async function syncWithHost() {
     const facts = await session.exportPublicControlFacts();
     await indexPublicOpsMeta(facts.publicOps);
+    const filteredCas = filterReferencedPublicCas(facts);
+    const knownOpIds = [];
+    for (const raw of facts.publicOps) {
+      try { knownOpIds.push(bytesToHex((await verifySignedOperation(decodeSignedOperation(raw))).opId)); } catch {}
+    }
     const synced = await peers.syncControl({
       publicOps: facts.publicOps.map(authorityRecord),
-      casNodes: facts.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+      casNodes: filteredCas.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
       checkpoints: facts.checkpoints.map(cp => authorityRecord(encodeRecord(cp))),
+      knownOpIds,
+      knownCasHashes: filteredCas.map(n => n.hash),
     }, { signal: lifetime.signal });
     const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
     const incomingCas = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));

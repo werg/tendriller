@@ -157,23 +157,28 @@ npx tendril workspace init --service "$TENDRILLER_ORIGIN" --owner owner@example.
 
 The owner claims the agent, and every page it created, by signing in to any of those pages. A signed-in owner can instead create a one-time code under **Dashboard → Your agents → Add agent**; then use `npx tendril workspace join --service "$TENDRILLER_ORIGIN" --code CODE --handle atlas`. A second `workspace init` in the same folder is refused rather than registering another agent; a lost registration reply is not reconstructed, so inspect the account's agents before registering again.
 
-### Create the page
+### Create the page (and always set a recognizable favicon)
 
 ```sh
-npm run page:new -- notes --template notes --name "Shared notes"
+npm run page:new -- notes --template notes --name "Shared notes" --icon 📝 --theme-color "#165c43"
 ```
 
-This checks readiness, creates the page with `POST /api/agent/pages` (the creating agent receives a full grant), records `{ "notes": { "id": PAGE_ID } }` in `tendriller.json`, keeps the page URL and `application.id` private in `.tendriller/pages/PAGE_ID/page.json`, and creates `pages/notes/`. `POST /api/agent/pages` accepts a `name`, an optional `mode` (`interactive` or `dashboard`) and an optional explicit `application: {id}` (a stable 32-byte lowercase hex identity) when binding a known application; otherwise the host generates one independent of the page ID. Rerunning it for a registered slug resumes without creating a second page. An existing page needs the owner's explicit grant (the per-agent checkbox on the dashboard or the page's **Add people & devices → An agent**), then `npx tendril page grant <slug> <page-id>`. Agent credentials cannot claim a page for the owner; an unclaimed page expires after 24 hours.
+This checks readiness, creates the page with `POST /api/agent/pages` (the creating agent receives a full grant), records `{ "notes": { "id": PAGE_ID } }` in `tendriller.json`, keeps the page URL and `application.id` private in `.tendriller/pages/PAGE_ID/page.json`, and creates `pages/notes/`. `POST /api/agent/pages` accepts `name`, optional `icon` (single emoji or HTTPS image URL), optional `theme_color`, optional `mode` (`interactive` or `dashboard`), optional `subdomain`, and optional explicit `application: {id}` (a stable 32-byte lowercase hex identity) when binding a known application; otherwise the host generates one independent of the page ID. Rerunning it for a registered slug resumes without creating a second page. An existing page needs the owner's explicit grant (the per-agent checkbox on the dashboard or the page's **Add people & devices → An agent**), then `npx tendril page grant <slug> <page-id>`. Agent credentials cannot claim a page for the owner; an unclaimed page expires after 24 hours.
 
 The page has two identities: its hosted ID/URL and `application.id`. The agent token (`ta_…`) is a host credential, not a device signing or data key. Never publish the project root, `.tendriller/`, a signing identity or epoch keys. Resume retained records rather than resetting state.
 
-### Give the app a recognizable favicon
+### Never ship the default green letter favicon
 
-```sh
-npx tendril --page notes meta '{"icon":"📝"}'
-```
+Always give every page a distinctive favicon that fits what the app actually does — users rely on browser tabs, bookmarks, home screens, and dashboard cards to tell their pages apart. You have three easy ways:
 
-The host converts the emoji to an SVG favicon automatically. An HTTPS image URL also works; `icon: null` restores the default. See [favicons and page branding](BROWSER_API.md#favicons-and-page-branding).
+1. **At page creation (easiest):** pass `--icon 📝` (or an `https://` image URL) and optional `--theme-color "#hex"` to `npm run page:new` or `tendril page new`.
+2. **Anytime after creation:**
+   ```sh
+   npx tendril --page notes meta '{"icon":"📝","theme_color":"#165c43"}'
+   ```
+3. **Custom artwork in your bundle:** include `<link rel="icon" ...>` directly in `index.html` (and still set `meta.icon` so the owner's dashboard card matches).
+
+The host converts any single emoji to an SVG favicon and maskable PWA icon automatically; `icon: null` restores the default. See [favicons and page branding](BROWSER_API.md#favicons-and-page-branding).
 
 ### Continue after a lost credential or device
 

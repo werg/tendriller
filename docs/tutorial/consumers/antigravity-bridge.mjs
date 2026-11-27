@@ -27,6 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { consumeNativeEvents, openConsumerCheckpoint } from '../shared/helpers/agent-consumer.mjs';
 import { announceAgentPresence, shouldAgentRespond, streamAgentReply } from '../shared/helpers/agent-requests.mjs';
+import { createHealthAlertMonitor, sendAntigravityAlert } from '../shared/helpers/daemon-health.mjs';
 import { createCliLifetime } from '../shared/cli-lifetime.mjs';
 
 const executeFile = promisify(execFile);
@@ -1849,6 +1850,7 @@ export async function runAntigravityBridge({
 
   const pendingByPage = new Map(supported.map(({ page }) => [page.slug, 0]));
   const statusFilePath = join(stateDirectory, 'bridge-status.json');
+  let activeHealthSummary = null;
   const writeBridgeStatus = async bridgeState => {
     const pendingCount = [...pendingByPage.values()].reduce((acc, n) => acc + n, 0);
     await writeAtomicJson(statusFilePath, {
@@ -1856,6 +1858,7 @@ export async function runAntigravityBridge({
       pid: process.pid,
       mode: selected.mode,
       state: bridgeState,
+      health: activeHealthSummary ? { state: 'degraded', summary: activeHealthSummary } : { state: 'healthy' },
       workspace: selected.cwd,
       conversationCwd: selected.conversationCwd,
       conversationId: selected.conversationId || null,
@@ -1866,6 +1869,57 @@ export async function runAntigravityBridge({
       updatedAt: new Date().toISOString(),
     }).catch(() => {});
   };
+
+  const bridgeHealth = createHealthAlertMonitor({
+    label: `antigravity-bridge (${supported.map(({ page }) => page.slug).join(', ') || 'workspace'})`,
+    threshold: 3,
+    windowMs: 60_000,
+    cooldownMs: 5 * 60_000,
+    onAlert: report => {
+      activeHealthSummary = report.summary;
+      onState({ state: 'health_alert', ...report });
+      void writeBridgeStatus('degraded');
+      if (selected.mode === 'agentapi' && selected.conversationId) {
+        sendAntigravityAlert({
+          title: `${selected.titlePrefix} Health Alert`,
+          body: [
+            `⚠️ ${report.summary}`,
+            report.pages.length ? `Affected page(s): ${report.pages.join(', ')}` : null,
+            report.recentSamples.length ? `Recent errors:\n${report.recentSamples.map(s => `  - ${s}`).join('\n')}` : null,
+          ].filter(Boolean).join('\n'),
+          env: { ...process.env, ANTIGRAVITY_CONVERSATION_ID: selected.conversationId, ANTIGRAVITY_AGENTAPI_EXE: selected.agentApiBin },
+          execute: (bin, args, opts, cb) => {
+            Promise.resolve(selected.execute(bin, args, opts)).then(() => cb?.(null), err => cb?.(err));
+          },
+        });
+      }
+    },
+    onRecovered: notice => {
+      activeHealthSummary = null;
+      onState({ state: 'health_recovered', ...notice });
+      void writeBridgeStatus('running');
+      if (selected.mode === 'agentapi' && selected.conversationId) {
+        sendAntigravityAlert({
+          title: `${selected.titlePrefix} Recovered`,
+          body: `✅ ${notice.summary}`,
+          env: { ...process.env, ANTIGRAVITY_CONVERSATION_ID: selected.conversationId, ANTIGRAVITY_AGENTAPI_EXE: selected.agentApiBin },
+          execute: (bin, args, opts, cb) => {
+            Promise.resolve(selected.execute(bin, args, opts)).then(() => cb?.(null), err => cb?.(err));
+          },
+        });
+      }
+    },
+  });
+  const stopHealthWatchers = supported.map(({ page, attached }) => attached.session?.onStatus?.(st => {
+    const err = st?.connectionError ?? st?.error ?? st?.materializationError ?? null;
+    if (err) bridgeHealth.recordFault({ code: String(err), page: page.slug, message: `${page.slug}: ${err}` });
+    else if (st?.canAuthor && (st?.connectedPeers ?? 0) > 0) bridgeHealth.recordHealthy({ source: 'peer', page: page.slug });
+  }) ?? (() => {}));
+  lifetime.addEventListener('abort', () => {
+    bridgeHealth.stop();
+    for (const stopWatcher of stopHealthWatchers) { try { stopWatcher(); } catch {} }
+  }, { once: true });
+
   await writeBridgeStatus('running');
 
   const headlessDriver = selected.mode === 'headless-stream'

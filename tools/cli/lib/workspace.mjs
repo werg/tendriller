@@ -433,9 +433,9 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       }));
     },
     /** Retain exact creation intent before dispatch; uncertainty never creates a replacement page. */
-    async createPage(slug, { name = slug, mode, application, subdomain } = {}, { signal } = {}) {
+    async createPage(slug, { name = slug, mode, application, subdomain, icon, theme_color } = {}, { signal } = {}) {
       if (typeof slug !== 'string' || !SLUG.test(slug)) throw failure('invalid_slug', 'Use a page slug of lowercase letters, digits and dashes (max 48).', 64);
-      assertValid('agentPageCreate', { name, ...(mode === undefined ? {} : { mode }), ...(application === undefined ? {} : { application }), ...(subdomain === undefined ? {} : { subdomain }) });
+      assertValid('agentPageCreate', { name, ...(mode === undefined ? {} : { mode }), ...(application === undefined ? {} : { application }), ...(subdomain === undefined ? {} : { subdomain }), ...(icon === undefined ? {} : { icon }), ...(theme_color === undefined ? {} : { theme_color }) });
       await refreshPages();
       if (!config.pages?.[slug]) requireCreationReady(await describeReadiness(config.service, { ...(fetcher ? { fetch: fetcher } : {}), signal }), { service: config.service });
       const directory = join(paths.secret, 'page-intents', slug);
@@ -448,7 +448,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
           catch (error) { if (error.code === 'EEXIST') return false; throw error; }
         },
       };
-      return createWorkspacePage({ workspace, client: await getClient(), store, slug, name, mode, application, subdomain, signal });
+      return createWorkspacePage({ workspace, client: await getClient(), store, slug, name, mode, application, subdomain, icon, theme_color, signal });
     },
     /** Set, rename, reassign/swap, or clear a page's named subdomain and persist updated page URLs locally. */
     async setPageSubdomain(ref, subdomain, { reassign = false, swap = false, signal } = {}) {
@@ -1049,7 +1049,10 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
       }
     } catch (cause) { error = { code: cause.code ?? 'agent_unavailable', status: cause.status ?? null, message: cause.message }; }
   }
-  const running = await stat(join(workspace.paths.owner, 'endpoint.json')).then(() => true, () => false);
+  const [running, health] = await Promise.all([
+    stat(join(workspace.paths.owner, 'endpoint.json')).then(() => true, () => false),
+    workspace.paths?.agent ? readJson(join(workspace.paths.agent, 'health.json'), true).catch(() => null) : Promise.resolve(null),
+  ]);
   return { workspace: workspace.root, service: workspace.config.service, agent: { ...workspace.config.agent, ...(agent ? { remote: agent } : {}) },
     versions,
     ...(compositionCheck.present ? {
@@ -1063,6 +1066,7 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
     } : {}),
     ...(broadcasts ? { broadcasts } : {}),
     ...(catchup ? { catchup } : {}),
+    ...(health ? { health } : {}),
     pages: pages.map(page => ({ ...page, granted: granted ? granted.some(item => item.id === page.id) : null })),
     unregistered: granted ? granted.filter(item => !pages.some(page => page.id === item.id)) : null,
     agentProgram: { endpointRecorded: running }, ...(error ? { error } : {}) };

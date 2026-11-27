@@ -10,7 +10,7 @@ export const TEMPLATES=Object.freeze(['notes','inventory','knowledge']);
 const templateRoot=new URL('./templates/',import.meta.url);
 const pageModule=(slug,name)=>import(pathToFileURL(join(workspaceRoot,'pages',slug,name)).href);
 const DEFAULT_NAMES=Object.freeze({notes:'Shared notes',inventory:'Shared inventory',knowledge:'Knowledge & AI memory'});
-export async function createPage(slug,{template='notes',name}={}) {
+export async function createPage(slug,{template='notes',name,icon,'theme-color':themeColor}={}) {
  requireSlug(slug);if(!TEMPLATES.includes(template))throw Error(`Choose --template ${TEMPLATES.join(', ')}`);
  const selected=await workspace();
  if(selected.config.pages?.[slug]){const page=await selected.page(slug);return{slug,id:page.id,page_url:page.page_url,resumed:true,next:`npm run init -- ${slug}`};}
@@ -18,9 +18,17 @@ export async function createPage(slug,{template='notes',name}={}) {
  requireCreationReady(await describeReadiness(origin),{service:origin});
  const source=new URL(template+'/',templateRoot);
  await requireEmptyPageFolder(slug);
- const page=await selected.createPage(slug,{name:name??DEFAULT_NAMES[template]??'Shared page'}),target=join(workspaceRoot,'pages',slug);
+ const cleanIcon=typeof icon==='string'&&icon.trim()?icon.trim():undefined;
+ const cleanTheme=typeof themeColor==='string'&&themeColor.trim()?themeColor.trim():undefined;
+ const page=await selected.createPage(slug,{name:name??DEFAULT_NAMES[template]??'Shared page',...(cleanIcon?{icon:cleanIcon}:{}),...(cleanTheme?{theme_color:cleanTheme}:{})}),target=join(workspaceRoot,'pages',slug);
  for(const entry of await readdir(source))await cp(new URL(entry,source),join(target,entry),{recursive:true,errorOnExist:true,force:false});
- return{slug,id:page.id,page_url:page.page_url,template,next:`npm run init -- ${slug} (this agent creates the page keys), then npm run deploy -- ${slug}.`};
+ return{
+   slug,id:page.id,page_url:page.page_url,template,
+   ...(cleanIcon?{icon:cleanIcon}:{}),
+   ...(cleanTheme?{theme_color:cleanTheme}:{}),
+   ...(!cleanIcon?{warning:`No favicon set — browsers and the dashboard will fall back to a plain green initial letter. Always choose a recognizable icon that fits the app: pass --icon <emoji|https-url> on page:new, run 'npx tendril --page ${slug} meta \'{"icon":"✨"}\'', or ship a custom <link rel="icon"> in index.html.`}:{}),
+   next:`npm run init -- ${slug} (this agent creates the page keys), then npm run deploy -- ${slug}.${!cleanIcon?` Set a recognizable favicon before delivery with npx tendril --page ${slug} meta '{"icon":"..."}'.`:''}`,
+ };
 }
 function parseBoolOption(raw, defaultValue) {
   if (raw === undefined) return defaultValue;
@@ -47,7 +55,7 @@ function parseAuthorityOption(values) {
   throw Error('Choose --authority attested, multisig, or open');
 }
 export async function run(action,args) {
- const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'},authority:{type:'string'},'open-read':{type:'string'},'open-write':{type:'string'},signers:{type:'string'},threshold:{type:'string'}}});
+ const{values,positionals}=parseArgs({args,allowPositionals:true,strict:true,options:{template:{type:'string'},name:{type:'string'},icon:{type:'string'},'theme-color':{type:'string'},events:{type:'boolean'},'browser-finalizer':{type:'boolean'},'browser-first':{type:'boolean'},'owner-grant':{type:'string'},authority:{type:'string'},'open-read':{type:'string'},'open-write':{type:'string'},signers:{type:'string'},threshold:{type:'string'}}});
  const[slug]=positionals;if(action==='new')return createPage(slug,values);
  const selected=await workspace(),context=await selected.pageContext(requireSlug(slug));
  if(action==='demo'){await pageModule(slug,'demo.mjs');return;}

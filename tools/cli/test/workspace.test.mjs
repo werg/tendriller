@@ -150,6 +150,7 @@ test('workspace init registers one agent key; page new creates a granted page an
 
   const page = JSON.parse((await tendril(directory, ['page', 'new', 'notes', '--name', 'Shared notes'])).stdout);
   assert.equal(page.id, PAGE); assert.equal(page.slug, 'notes');
+  assert.match(page.warning ?? '', /No favicon set/i, 'omitting --icon should sternly prompt the agent to set a favicon');
   await access(join(directory, 'pages/notes'));
   const record = JSON.parse(await readFile(join(directory, `.tendriller/pages/${PAGE}/page.json`), 'utf8'));
   assert.equal(record.page_url, fake.pages[0].page_url);

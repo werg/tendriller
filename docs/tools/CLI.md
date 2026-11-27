@@ -77,7 +77,7 @@ folder; `--workspace DIR` or `TENDRIL_WORKSPACE` selects one explicitly.
 ## Pages
 
 ```sh
-tendril page new notes [--name "Shared notes"]   # create a page granted to this agent
+tendril page new notes [--name "Shared notes"] [--icon 📝] [--theme-color "#165c43"]   # create a page granted to this agent
 tendril page grant garden PAGE_ID                # register a page the owner granted
 tendril page list                                # granted and registered pages
 tendril page devices notes                       # members, pending sign-ins, invites, mode

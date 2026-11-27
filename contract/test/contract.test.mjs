@@ -7,8 +7,8 @@ const credential = { service: 'https://host.test', token: 'ta_' + 'a'.repeat(32)
 test('agent registration and page creation schemas reject unknown or malformed fields', () => {
   assertValid('agentRegistration', { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey: 'A'.repeat(43), wrapKey: 'ab'.repeat(32) });
   assertValid('agentPageCreate', { name: 'Notes' }); assertValid('agentPageCreate', {});
-  assertValid('agentPageCreate', { name: 'Board', mode: 'dashboard', application: { id: 'ab'.repeat(32) } });
-  for (const body of [{ mode: 'hosted' }, { application: { id: 'AB'.repeat(32) } }, { application: { id: 'ab'.repeat(32), extra: true } }])
+  assertValid('agentPageCreate', { name: 'Board', mode: 'dashboard', application: { id: 'ab'.repeat(32) }, icon: '📋', theme_color: '#165c43' });
+  for (const body of [{ mode: 'hosted' }, { application: { id: 'AB'.repeat(32) } }, { application: { id: 'ab'.repeat(32), extra: true } }, { icon: '' }, { theme_color: 'not a color!' }])
     assert.ok(validate('agentPageCreate', body).length);
   for (const body of [{ owner: 'bad', handle: 'ab', publicKey: 'A'.repeat(43) }, { owner: 'owner@example.test', handle: 'Bad!', publicKey: 'A'.repeat(43) },
     { owner: 'owner@example.test', handle: 'ab', publicKey: 'ab'.repeat(32) },

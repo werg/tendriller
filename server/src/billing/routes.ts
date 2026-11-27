@@ -188,7 +188,7 @@ const PRICING_CSS = `
   border:1px solid var(--line);border-radius:var(--radius);
   background:var(--surface);box-shadow:var(--shadow);
 }
-.compare-table{width:100%;border-collapse:separate;border-spacing:0;min-width:46rem;font-size:.88rem}
+.compare-table{width:100%;border-collapse:separate;border-spacing:0;min-width:38rem;font-size:.88rem}
 .compare-table th,.compare-table td{
   padding:.82rem 1rem;text-align:left;vertical-align:top;
   border-bottom:1px solid var(--line);
@@ -197,8 +197,8 @@ const PRICING_CSS = `
   padding:1rem;background:var(--surface-2);border-bottom:1px solid var(--line-strong);
   font-weight:740;color:var(--ink);white-space:nowrap;
 }
-.compare-table thead th:first-child{width:32%}
-.compare-table thead th:not(:first-child){width:17%}
+.compare-table thead th:first-child{width:34%}
+.compare-table thead th:not(:first-child){width:22%}
 .compare-col-price{display:block;margin-top:.16rem;font-size:.79rem;font-weight:620;color:var(--muted);font-variant-numeric:tabular-nums}
 .compare-table th.col-pro{background:color-mix(in srgb,var(--green-soft) 60%,var(--surface-2))}
 .compare-table th.col-pro .compare-col-name{color:var(--green)}
@@ -251,7 +251,7 @@ const PRICING_CSS = `
 @media(max-width:959px){
   .tier-grid{grid-template-columns:1fr;max-width:34rem}
   .compare-scroll-hint{display:block}
-  .compare-table{min-width:36rem}
+  .compare-table{min-width:30rem}
   .compare-table thead th:first-child{width:auto;min-width:9.5rem;max-width:10.5rem}
   .compare-table thead th:not(:first-child){width:auto;min-width:6.8rem}
   .compare-table thead th:first-child,.compare-table tbody th[scope="row"]{
@@ -278,11 +278,11 @@ ${darkCss(`
 `)}
 `;
 
-function compareRow(label: string, values: readonly [string, string, string, string], subLabel?: string): string {
+function compareRow(label: string, values: readonly [string, string, string], subLabel?: string): string {
   const th = subLabel
     ? `${escape(label)}<span class="cell-sub">${escape(subLabel)}</span>`
     : escape(label);
-  return `<tr><th scope="row">${th}</th><td>${values[0]}</td><td class="col-pro">${values[1]}</td><td>${values[2]}</td><td>${values[3]}</td></tr>`;
+  return `<tr><th scope="row">${th}</th><td>${values[0]}</td><td class="col-pro">${values[1]}</td><td>${values[2]}</td></tr>`;
 }
 
 function cell(main: string, sub?: string): string {
@@ -327,7 +327,7 @@ export function renderPricingPage(options: {
       <div>
         <span class="eyebrow">${icon("sparkles")} <span${c("pricing.hero.eyebrow", p.hero.eyebrow)}>${txt(p.hero.eyebrow)}</span></span>
         <h1${c("pricing.hero.title", p.hero.title)}>${txt(p.hero.title)}</h1>
-        <p class="lead"${c("pricing.hero.lead", p.hero.lead)}>${txt(p.hero.lead)}</p>
+        ${(editable || p.hero.lead.trim()) ? `<p class="lead"${c("pricing.hero.lead", p.hero.lead)}>${txt(p.hero.lead)}</p>` : ""}
       </div>
       <div class="pricing-hero-controls">
         <div class="billing-toggle" role="group" aria-label="Billing interval">
@@ -422,34 +422,33 @@ export function renderPricingPage(options: {
             <th scope="col"><span class="compare-col-name">Free</span><span class="compare-col-price">$0 / mo</span></th>
             <th scope="col" class="col-pro"><span class="compare-col-name">Pro</span><span class="compare-col-price" data-table-price-pro>$12 / mo</span></th>
             <th scope="col"><span class="compare-col-name">Team</span><span class="compare-col-price" data-table-price-team>$39 / mo</span></th>
-            <th scope="col"><span class="compare-col-name">Self-Hosted</span><span class="compare-col-price">$0 OSS</span></th>
           </tr>
         </thead>
         <tbody>
-          <tr class="cat-row"><th colspan="5">Workspace &amp; storage</th></tr>
-          ${compareRow("Pages", [cell("20"), cell("100"), cell("1,000"), cell("Unlimited")])}
-          ${compareRow("App & file storage", [cell("1 GB", "100 MB / page"), cell("20 GB", "250 MB / page"), cell("100 GB", "500 MB / page"), cell("Unlimited", "Your Cloudflare account")])}
-          ${compareRow("Agents", [cell("5"), cell("25"), cell("100"), cell("Unlimited")])}
-          ${compareRow("Guests per page", [cell("10"), cell("50"), cell("250"), cell("Unlimited")])}
+          <tr class="cat-row"><th colspan="4">Workspace &amp; storage</th></tr>
+          ${compareRow("Pages", [cell("20"), cell("100"), cell("1,000")])}
+          ${compareRow("App & file storage", [cell("1 GB", "100 MB / page"), cell("20 GB", "250 MB / page"), cell("100 GB", "500 MB / page")])}
+          ${compareRow("Agents", [cell("5"), cell("25"), cell("100")])}
+          ${compareRow("Guests per page", [cell("10"), cell("50"), cell("250")])}
 
-          <tr class="cat-row"><th colspan="5">Sync, video calls &amp; relay</th></tr>
-          ${compareRow("Direct peer-to-peer sync", [cell("Unlimited"), cell("Unlimited"), cell("Unlimited"), cell("Unlimited")])}
-          ${compareRow("Group video calls & firewall relay", [cell("2 GB / mo", "Trial for 1:1 & audio"), cell("100 GB / mo", "Up to 12 people · 720p"), cell("500 GB / mo", "Up to 50 people · 1080p + screen"), cell("Unlimited", "Your Cloudflare keys · 1 TB/mo free")])}
-          ${compareRow("Cloud relay fallback", [cell("5 hrs / mo", "2 concurrent · 1h sessions"), cell("50 hrs / mo", "16 concurrent · 2h sessions"), cell("250 hrs / mo", "64 concurrent · 4h sessions"), cell("Unlimited")])}
+          <tr class="cat-row"><th colspan="4">Sync, video calls &amp; relay</th></tr>
+          ${compareRow("Direct peer-to-peer sync", [cell("Unlimited"), cell("Unlimited"), cell("Unlimited")])}
+          ${compareRow("Group video calls & firewall relay", [cell("2 GB / mo", "Trial for 1:1 & audio"), cell("100 GB / mo", "Up to 12 people · 720p"), cell("500 GB / mo", "Up to 50 people · 1080p + screen")])}
+          ${compareRow("Cloud relay fallback", [cell("5 hrs / mo", "2 concurrent · 1h sessions"), cell("50 hrs / mo", "16 concurrent · 2h sessions"), cell("250 hrs / mo", "64 concurrent · 4h sessions")])}
 
-          <tr class="cat-row"><th colspan="5">Hosted MCP</th></tr>
-          ${compareRow("Enabled pages", [cell("1 page"), cell("25 pages"), cell("100 pages"), cell("Unlimited")])}
-          ${compareRow("Monthly calls", [cell("250 / mo"), cell("15,000 / mo"), cell("100,000 / mo"), cell("Unlimited")])}
-          ${compareRow("Synced state per page", [cell("50 MB"), cell("500 MB"), cell("2 GB"), cell("Unlimited")])}
+          <tr class="cat-row"><th colspan="4">Hosted MCP</th></tr>
+          ${compareRow("Enabled pages", [cell("1 page"), cell("25 pages"), cell("100 pages")])}
+          ${compareRow("Monthly calls", [cell("250 / mo"), cell("15,000 / mo"), cell("100,000 / mo")])}
+          ${compareRow("Synced state per page", [cell("50 MB"), cell("500 MB"), cell("2 GB")])}
 
-          <tr class="cat-row"><th colspan="5">Identity, teams &amp; domains</th></tr>
-          ${compareRow("Named page subdomains", [no, cell("25 pages", "e.g. my-app.tendriller.dev"), cell("100 pages", "e.g. my-app.tendriller.dev"), cell("Unlimited")], "Replace generated subdomains with unique names")}
-          ${compareRow("Cloud-connected personal accounts", [no, yes, yes, yes], "Works even when your laptop is asleep")}
-          ${compareRow("Team OAuth tie-ins", [no, no, yes, yes], "GitHub Org & Google Workspace admission + auto-offboarding")}
-          ${compareRow("Custom page domains", [no, no, cell("Included", "e.g. app.yourteam.com"), cell("Included")])}
+          <tr class="cat-row"><th colspan="4">Identity, teams &amp; domains</th></tr>
+          ${compareRow("Named page subdomains", [no, cell("25 pages", "e.g. my-app.tendriller.dev"), cell("100 pages", "e.g. my-app.tendriller.dev")], "Replace generated subdomains with unique names")}
+          ${compareRow("Cloud-connected personal accounts", [no, yes, yes], "Works even when your laptop is asleep")}
+          ${compareRow("Team OAuth tie-ins", [no, no, yes], "GitHub Org & Google Workspace admission + auto-offboarding")}
+          ${compareRow("Custom page domains", [no, no, cell("Included", "e.g. app.yourteam.com")])}
 
-          <tr class="cat-row"><th colspan="5">Overages &amp; billing</th></tr>
-          ${compareRow("Optional pay-as-you-go", [cell("Off", "Falls back to free P2P"), cell("$0.10 / GB video", "$2 / 10k MCP calls · spend cap"), cell("$0.08 / GB video", "$1.50 / 10k MCP calls · spend cap"), cell("Direct to Cloudflare")], "Off by default; editable monthly spend cap")}
+          <tr class="cat-row"><th colspan="4">Overages &amp; billing</th></tr>
+          ${compareRow("Optional pay-as-you-go", [cell("Off", "Falls back to free P2P"), cell("$0.10 / GB video", "$2 / 10k MCP calls · spend cap"), cell("$0.08 / GB video", "$1.50 / 10k MCP calls · spend cap")], "Off by default; editable monthly spend cap")}
         </tbody>
       </table>
     </div>
@@ -540,7 +539,7 @@ export function renderSelfHostBody(origin: string, editable = false): string {
     `npx wrangler deploy --config server/wrangler.my-tendriller.jsonc`,
     "",
   ];
-  return `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("terminal")} <span${c("selfHost.hero.eyebrow", s.hero.eyebrow)}>${txt(s.hero.eyebrow)}</span></span><h1${c("selfHost.hero.title", s.hero.title)}>${txt(s.hero.title)}</h1><p class="lead"${c("selfHost.hero.lead", s.hero.lead)}>${txt(s.hero.lead)}</p></div></div>
+  return `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("terminal")} <span${c("selfHost.hero.eyebrow", s.hero.eyebrow)}>${txt(s.hero.eyebrow)}</span></span><h1${c("selfHost.hero.title", s.hero.title)}>${txt(s.hero.title)}</h1>${(editable || s.hero.lead.trim()) ? `<p class="lead"${c("selfHost.hero.lead", s.hero.lead)}>${txt(s.hero.lead)}</p>` : ""}</div></div>
     <div class="actions" style="margin-top:1rem"><a class="button" href="/docs/SELF_HOSTING.md">${icon("book")} <span${c("selfHost.hero.ctaDoc", s.hero.ctaDoc)}>${txt(s.hero.ctaDoc)}</span></a><a class="button secondary" href="/pricing"><span${c("selfHost.hero.ctaCompare", s.hero.ctaCompare)}>${txt(s.hero.ctaCompare)}</span></a></div></section>
 
   <section class="card stack-sm">

@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS activity (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts I
   summary TEXT NOT NULL, by TEXT, source TEXT NOT NULL);
 `;
 
+export const REQUIRED_TABLES: readonly string[] = Object.freeze(
+  [...SCHEMA.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)/gi)].map(match => match[1]!),
+);
+
 type Bindable = string | number | null | ArrayBuffer;
 const MISSING = Symbol('missing metadata');
 const MAX_CACHED_ENTRIES = 256;
@@ -94,6 +98,11 @@ export class Db {
         catch { throw new StorageSchemaError('the schema identity is malformed'); }
         if (rows.length !== 1 || rows[0].id !== 1 || rows[0].revision !== STORAGE_SCHEMA_REVISION)
           throw new StorageSchemaError('the stored schema identity does not match this release');
+        const existingTables = new Set(objects.filter(object => object.type === 'table').map(object => object.name));
+        const missing = REQUIRED_TABLES.filter(table => !existingTables.has(table));
+        if (missing.length > 0) {
+          throw new StorageSchemaError(`stored revision ${STORAGE_SCHEMA_REVISION} is missing required tables (${missing.join(', ')})`);
+        }
         return;
       }
       if (objects.length) throw new StorageSchemaError('existing application tables have no schema identity');

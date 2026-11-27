@@ -53,7 +53,7 @@ Page residency, a durable operation set, an optional MCP gateway, hibernating so
 
 Provide the ready page URL and concise evidence:
 
-- Actual page URL, application identity, owner claim status and the workspace agent (one credential, one signing key, one wrap key) that maintains it.
+- Actual page URL, application identity, owner claim status, a domain-fitting favicon (never the default plain green initial letter), and the workspace agent (one credential, one signing key, one wrap key) that maintains it.
 - Verified signed publication ID/receipt and exact package/source composition tested.
 - Page keys created by `npm run init`; the owner's first browser admitted by the running agent after sign-in (or, on a `--browser-first` page, created by that browser).
 - A real command acknowledged **stored locally**, then its coherent **materialized locally** result (revisable).

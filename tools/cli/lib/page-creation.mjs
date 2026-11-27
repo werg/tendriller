@@ -3,14 +3,16 @@
 import { randomBytes } from 'node:crypto';
 const fail = (code, message) => Object.assign(Error(message), { code });
 const hex = value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
-export async function createWorkspacePage({ workspace, client, store, slug, name = slug, mode, application, subdomain, signal,
+export async function createWorkspacePage({ workspace, client, store, slug, name = slug, mode, application, subdomain, icon, theme_color, signal,
   newApplicationId = () => randomBytes(32).toString('hex') }) {
   signal?.throwIfAborted();
   if (typeof slug !== 'string' || !/^[a-z0-9][a-z0-9-]{0,47}$/u.test(slug)) throw fail('invalid_slug', 'Use a lowercase page slug (max 48 characters).');
   if (typeof name !== 'string' || !name.length || name.length > 200 || mode !== undefined && !['interactive', 'dashboard'].includes(mode)
     || application !== undefined && (!application || Object.keys(application).some(key => key !== 'id') || !hex(application.id))
-    || subdomain !== undefined && (typeof subdomain !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])$/u.test(subdomain)))
-    throw fail('invalid_page_creation', 'Supply a bounded name, a supported mode, an optional subdomain, and an exact application identity.');
+    || subdomain !== undefined && (typeof subdomain !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{1,43}[a-z0-9])$/u.test(subdomain))
+    || icon !== undefined && (typeof icon !== 'string' || !icon.length || icon.length > 512)
+    || theme_color !== undefined && (typeof theme_color !== 'string' || !/^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30})$/u.test(theme_color)))
+    throw fail('invalid_page_creation', 'Supply a bounded name, a supported mode, an optional subdomain/icon/theme_color, and an exact application identity.');
   const { service, agent } = workspace.config;
   let intent = await store.read('intent.json', true);
   const validate = value => {
@@ -26,7 +28,7 @@ export async function createWorkspacePage({ workspace, client, store, slug, name
     return saved;
   }
   if (!intent) {
-    const candidate = { schemaVersion: 1, service, agentId: agent.id, applicationId: application?.id ?? newApplicationId(), name, ...(mode === undefined ? {} : { mode }), ...(subdomain === undefined ? {} : { subdomain }) };
+    const candidate = { schemaVersion: 1, service, agentId: agent.id, applicationId: application?.id ?? newApplicationId(), name, ...(mode === undefined ? {} : { mode }), ...(subdomain === undefined ? {} : { subdomain }), ...(icon === undefined ? {} : { icon }), ...(theme_color === undefined ? {} : { theme_color }) };
     if (!hex(candidate.applicationId)) throw fail('invalid_page_creation', 'The application identity must be exact 32-byte hex.');
     try { await store.save('intent.json', candidate); }
     catch (error) {
@@ -63,7 +65,7 @@ export async function createWorkspacePage({ workspace, client, store, slug, name
     if (recovered) return workspace.registerPage(slug, recovered);
     throw uncertain();
   }
-  const created = await client.pages.create({ name: intent.name, ...(intent.mode === undefined ? {} : { mode: intent.mode }), ...(intent.subdomain === undefined ? {} : { subdomain: intent.subdomain }), application: { id: intent.applicationId } }, { signal });
+  const created = await client.pages.create({ name: intent.name, ...(intent.mode === undefined ? {} : { mode: intent.mode }), ...(intent.subdomain === undefined ? {} : { subdomain: intent.subdomain }), ...(intent.icon === undefined ? {} : { icon: intent.icon }), ...(intent.theme_color === undefined ? {} : { theme_color: intent.theme_color }), application: { id: intent.applicationId } }, { signal });
   if (created.application?.id !== intent.applicationId) throw uncertain();
   if (created.api !== undefined && new URL(created.api).origin !== service) throw fail('page_creation_service_mismatch', 'The created page does not belong to the retained service.');
   return workspace.registerPage(slug, created);

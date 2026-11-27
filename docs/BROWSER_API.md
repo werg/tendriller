@@ -499,16 +499,20 @@ its injected `<base>`, which names the immutable publication graph. So:
   of every change of the selected release, rollbacks included. What happens next
   depends on the page's update policy (`publication.policy`):
   - **`live` (default):** the page is replaced as soon as the agent publishes,
-    with no prompt. Only an active `tendril.publication.hold()` or text the person
-    actually typed (trusted input) and has not yet sent or cleared defers it; it
-    switches the moment that field is sent or emptied. Focus alone, values the app
-    sets itself, sliders and selects never block.
+    with no prompt. Automatic switching defers during an active `tendril.publication.hold(reason?)`,
+    active IME composition (`compositionstart`/`compositionend`), an active pointer/drag/draw
+    gesture (`pointerdown` → `pointerup`), a user-selected file input (`<input type="file">`),
+    or text the person actually typed (trusted input) and has not yet sent or cleared —
+    including inside open shadow roots, nested `contenteditable` elements, and same-origin
+    `<iframe>` documents. It switches the moment that interaction settles or the field is
+    sent/emptied. Focus alone, values the app sets itself, sliders (once released) and selects
+    never block.
   - **`careful` (opt in):** add `<meta name="tendriller-updates" content="careful">`
     for edit-heavy pages. The page also waits while any editable field is focused or
     any inspectable form control differs from its initial HTML defaults (open shadow
-    roots, checkbox/radio checkedness, selected options, changed disabled or
-    read-only controls included), and Page options shows **New version published**
-    with an **Open update** link to the page's own address.
+    roots, same-origin iframes, selected files, checkbox/radio checkedness, selected
+    options, changed disabled or read-only controls included), and Page options shows
+    **New version published** with an **Open update** link to the page's own address.
 
   Both policies also apply while hidden or resumed;
 - pinning is explicit: a document opened at its immutable
@@ -539,20 +543,12 @@ authored navigation choice; it does not save drafts or establish a connection.
 
 Every release is still the signed, verified publication the host selected; the
 switch is an ordinary navigation, so the runtime verifies it as on any load.
-Device keys and retained operations remain in their existing browser storage. Applications must persist drafts explicitly; runtime inspection does not save them. Closed shadow roots, custom editors, blurred contenteditable content, detached controls and other application work are not covered by the form-default check. Such an app calls
-`const release = tendril.publication.hold()` while that work is unsaved, then
-`release()`. Update safety is checked on publication changes, input/change,
-focus leaving an editor, form reset, visibility changes, page restoration and hold
-release. Form reset is observed at the document level. Native `reset` events from
-forms inside shadow roots are not composed, so they do not reach that listener;
-release an application hold after resetting such a form to trigger the safety
-check. A pending update otherwise waits for another observed trigger. There is
-no periodic safety scan. Programmatic changes that do not emit
-these events must use a hold while unsaved: persist the draft, update native form
-defaults to the saved values when appropriate, then release the hold. Custom
-editors and closed shadow roots require this explicit lifetime. Alternatively,
-`publication.update()` is an explicit decision to switch immediately; it bypasses
-these protections rather than detecting whether programmatic work was saved.
+Device keys and retained operations remain in their existing browser storage. Applications must persist drafts explicitly; runtime inspection does not save them. Closed shadow roots, custom/canvas editors, blurred contenteditable content, debounced auto-save timers, in-flight Chronolog writes, and detached controls are not covered by DOM inspection alone. Such an app can:
+- call `const release = tendril.publication.hold('Saving draft')` while work is unsaved or in flight, then `release()`;
+- register `tendril.publication.onBeforeReload(async (update) => { await flushDrafts(); })` to flush debounced edits right before an automatic reload (bounded timeout; returning `false` or acquiring `hold()` vetoes and defers the reload); or
+- import `createDraftGuard`, `holdWhilePendingOperations`, and `mountUpdateBanner` from `shared/helpers/live-updates.mjs` to wire all three cleanly in a few lines.
+
+Update safety is checked on publication changes, input/change/composition/pointer gestures, focus leaving an editor, form reset, visibility changes, page restoration and hold release (zero periodic polling). Form reset is observed at the document level. Native `reset` events from forms inside shadow roots are not composed, so they do not reach that listener; release an application hold after resetting such a form to trigger the safety check. A pending update otherwise waits for another observed trigger. Programmatic changes that do not emit these events must use a hold while unsaved: persist the draft, update native form defaults to the saved values when appropriate, then release the hold. Custom editors and closed shadow roots require this explicit lifetime. Alternatively, `publication.update()` is an explicit decision to switch immediately; it bypasses these protections rather than detecting whether programmatic work was saved.
 `publication.onUpdate(listener)` lets an app show its own notice;
 `publication.update()` explicitly switches immediately, overriding draft protection and active holds. An application should offer it only when the person has saved or accepted discarding local work. A pinned document opens its corresponding document in the current release.
 

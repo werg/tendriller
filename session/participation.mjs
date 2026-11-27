@@ -112,7 +112,14 @@ export function participateApplication(session, { peers, openDirectConnection,
       if (route && descriptions.get(peer.identity) === route && !links.has(peer.identity)) descriptions.delete(peer.identity);
       try { await connection?.close(); } catch {}
       // A failed promotion keeps the working relay link; nothing needs a retry.
-      if (!connectionSignal.aborted && !links.has(peer.identity)) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
+      if (!connectionSignal.aborted && !links.has(peer.identity)) {
+        const code = failureCode(cause, 'peer_connection_unavailable');
+        error = `connect:${code}`;
+        if (code === 'PEER_MESSAGE_FRAME_TOO_LARGE' || code === 'PEER_MESSAGE_CONNECTION_ENDED') {
+          void maybeCollectGarbage({ force: true });
+        }
+        scheduleRetry();
+      }
     } finally { if (opening.get(peer.identity) === controller) opening.delete(peer.identity); changed(); }
   }
   // Event-triggered only (online, network change, visible page): never a timer.
@@ -130,6 +137,21 @@ export function participateApplication(session, { peers, openDirectConnection,
   const uploadedDigests = new Set(), uploadedOpIds = new Set(), uploadedCasHashes = new Set();
   let mailboxInFlight = null, mailboxDirty = false, mailboxTimer = undefined;
   let mergingFromMailbox = false, lastMailboxSyncAt = 0, mailboxCooldownUntil = 0, mailboxFailures = 0;
+
+  let gcInFlight = null, lastGcAt = 0, opsSinceGc = 0;
+  function maybeCollectGarbage({ force = false } = {}) {
+    if (signal.aborted || typeof session.collectGarbage !== 'function') return Promise.resolve();
+    const now = Date.now();
+    const minInterval = force ? 10_000 : 30_000;
+    if (gcInFlight || now - lastGcAt < minInterval) return gcInFlight ?? Promise.resolve();
+    lastGcAt = now;
+    opsSinceGc = 0;
+    gcInFlight = Promise.resolve()
+      .then(() => session.collectGarbage())
+      .catch(() => {})
+      .finally(() => { gcInFlight = null; });
+    return gcInFlight;
+  }
 
   async function syncMailbox({ force = false } = {}) {
     if (signal.aborted || typeof peers.syncMailbox !== 'function' || typeof session.exportFacts !== 'function') return;
@@ -172,11 +194,13 @@ export function participateApplication(session, { peers, openDirectConnection,
             }
           }
 
-          for (const node of facts.casNodes ?? []) {
-            if (node.partition !== 'public') continue;
-            knownCasHashes.push(node.hash);
-            if (!uploadedCasHashes.has(node.hash) && outgoingCas.length < 128 && node.bytes.byteLength <= 512 * 1024) {
-              outgoingCas.push({ hash: node.hash, partition: 'public', bytes: bytesToHex(node.bytes) });
+          if (!isPrivate) {
+            for (const node of facts.casNodes ?? []) {
+              if (node.partition !== 'public') continue;
+              knownCasHashes.push(node.hash);
+              if (!uploadedCasHashes.has(node.hash) && outgoingCas.length < 128 && node.bytes.byteLength <= 512 * 1024) {
+                outgoingCas.push({ hash: node.hash, partition: 'public', bytes: bytesToHex(node.bytes) });
+              }
             }
           }
 
@@ -326,8 +350,14 @@ export function participateApplication(session, { peers, openDirectConnection,
   // the owned session reports the same annotated rows while this controller runs.
   let annotated = false;
   try { Object.defineProperty(session, 'diagnostics', { value: diagnostics, configurable: true, writable: true }); annotated = true; } catch {}
-  const stopAuthority = session.onChange(() => { void advertise(); void refresh(); });
+  const stopAuthority = session.onChange(() => {
+    opsSinceGc += 1;
+    if (opsSinceGc >= 20) void maybeCollectGarbage();
+    void advertise();
+    void refresh();
+  });
   const stopFacts = typeof session.onFacts === 'function' ? session.onFacts(() => { scheduleMailboxSync(); }) : () => {};
+  void maybeCollectGarbage({ force: true });
   const closed = new Promise(resolve => {
     let stopping = false;
     const shutdown = () => {

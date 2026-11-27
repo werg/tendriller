@@ -4,6 +4,7 @@ import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createOwnerConnection, reloadOnOwnerReplaced } from '../../shared/connection.mjs';
 import { mountConnectionView } from '../../shared/connect-view.mjs';
 import { mountDevices } from '../../shared/helpers/devices-view.mjs';
+import { createDraftGuard } from '../../shared/helpers/live-updates.mjs';
 import { deriveCopyState } from './domain.mjs';
 
 const $ = (s) => document.querySelector(s);
@@ -44,6 +45,7 @@ const diffBtn = $('#tce-diff-btn');
 const countEl = $('#tce-count');
 const noteEl = $('#tce-note');
 const sendBtn = $('#tce-send');
+const updateBtn = $('#tce-update-btn');
 const devicesBtn = $('#tce-devices-btn');
 const statusEl = $('#tce-status');
 const dotEl = $('#tce-dot');
@@ -97,6 +99,36 @@ const origRaw = new Map();
 const inflightRaw = new Map();
 const pendingSaves = new Set();
 const saveTimers = new Map();
+let focusedCopyEl = null;
+
+const draftGuard = createDraftGuard({
+  reason: 'Editing copy in Tendriller Copy Editor',
+  isDirty() {
+    const active = frame.contentDocument?.activeElement;
+    const editingBoxFocused = Boolean(editing && active?.matches?.(COPY_SEL));
+    return editingBoxFocused || saveTimers.size > 0 || pendingSaves.size > 0 || inflightRaw.size > 0;
+  },
+  async flush() {
+    await flushAllEdits();
+  },
+});
+
+globalThis.tendril?.publication?.onUpdate?.((update) => {
+  if (update?.kind === 'reload' && update.version != null) {
+    updateBtn.textContent = `Update v${update.version} · Reload`;
+    updateBtn.hidden = false;
+  } else {
+    updateBtn.hidden = true;
+  }
+});
+
+updateBtn?.addEventListener('click', async () => {
+  updateBtn.disabled = true;
+  try {
+    await flushAllEdits();
+  } catch {}
+  globalThis.tendril?.publication?.update?.();
+});
 
 function currentPageRecord() {
   return pagesByPath.get(currentPath) ?? site.pages[0];
@@ -149,18 +181,22 @@ function syncIframeWithState() {
     // If a submitted edit's `before` no longer matches this publication's copy, the repo already applied/moved past it.
     const edited = rawEdited && !(rawEdited.state === 'submitted' && orig !== rawEdited.before) ? rawEdited : null;
     const raw = edited ? edited.after : orig;
+    const isRemoved = !raw.trim();
     el.setAttribute('data-copy-raw', raw);
     if (edited) el.setAttribute('data-dirty', edited.state === 'submitted' ? 'submitted' : '1');
     else el.removeAttribute('data-dirty');
-    el.innerHTML = el.id === 'prompt-text'
-      ? esc(substituteVars(raw))
-      : fmtHtml(raw);
+    if (isRemoved) el.setAttribute('data-removed', '1');
+    else el.removeAttribute('data-removed');
+    el.innerHTML = isRemoved
+      ? ''
+      : (el.id === 'prompt-text' ? esc(substituteVars(raw)) : fmtHtml(raw));
   }
+  positionBoxToolbar();
 }
 
 function renderDrawer() {
   const editRows = state.edits.map((e) =>
-    `<div class="tce-diff-row"><div class="tce-diff-key"><span>${esc(e.key)}</span><button type="button" data-undo="${esc(e.key)}">Undo</button></div><div class="tce-diff-old">${esc(e.before)}</div><div class="tce-diff-new">${esc(e.after)}</div></div>`
+    `<div class="tce-diff-row"><div class="tce-diff-key"><span>${esc(e.key)}</span><button type="button" data-undo="${esc(e.key)}">Undo</button></div><div class="tce-diff-old">${esc(e.before || '(empty)')}</div><div class="tce-diff-new">${e.after ? esc(e.after) : '<em style="color:#f5b77b">(removed)</em>'}</div></div>`
   ).join('');
   const batchRows = state.batches.slice(-5).reverse().map((b) =>
     `<div class="tce-diff-row"><div class="tce-diff-key"><span>Sent batch ${esc(b.batchId)} (${esc(b.page)})</span><span>${b.edits.length} edit(s)</span></div>${b.note ? `<p style="margin:0 0 4px">Note: ${esc(b.note)}</p>` : ''}<p style="margin:0;font-size:11px;color:#8fa699">Op ${esc(b.operationId.slice(0, 14))}…</p></div>`
@@ -175,9 +211,11 @@ function renderDrawer() {
       if (!session || !canAuthor) return;
       try {
         setStatus('Reverting…');
-        const op = await session.command('undoEdit', { key: btn.dataset.undo }, { operationId: crypto.randomUUID() });
-        await op.materialized?.().catch(() => {});
-        await live?.refresh?.().catch(() => {});
+        await draftGuard.holdWhile(async () => {
+          const op = await session.command('undoEdit', { key: btn.dataset.undo }, { operationId: crypto.randomUUID() });
+          await op.materialized?.().catch(() => {});
+          await live?.refresh?.().catch(() => {});
+        });
         setStatus('Reverted in Chronolog');
       } catch (err) {
         setStatus(err.message ?? String(err));
@@ -201,33 +239,120 @@ body.tce-editing [data-copy][data-copy-raw]:hover{outline:1.5px dashed #df5f32;o
 body.tce-editing [data-copy][data-copy-raw]:focus{outline:2px solid #df5f32;outline-offset:4px;background:rgba(223,95,50,.12)}
 body.tce-editing [data-copy][data-copy-raw][data-dirty="1"]{outline:1.5px solid #25a370;outline-offset:3px;background:rgba(37,163,112,.11)}
 body.tce-editing [data-copy][data-copy-raw][data-dirty="submitted"]{outline:1.5px solid #59a8ff;outline-offset:3px;background:rgba(89,168,255,.11)}
+body.tce-editing [data-copy][data-copy-raw][data-removed="1"]{display:inline-block;min-width:10rem;min-height:1.4em;padding:2px 8px;outline:1.5px dashed rgba(244,124,124,.7);background:rgba(244,124,124,.10);border-radius:6px;vertical-align:middle}
+body.tce-editing [data-copy][data-copy-raw][data-removed="1"]:empty::before{content:"Removed — click to edit or restore";color:#d96b6b;font:500 12px/1.4 system-ui,sans-serif;font-style:italic;pointer-events:none}
+body:not(.tce-editing) [data-copy][data-copy-raw][data-removed="1"]{display:none !important}
+#tce-box-bar{position:fixed;z-index:2147483000;display:inline-flex;align-items:center;gap:6px;padding:4px 7px;border-radius:9px;background:rgba(20,33,27,.96);color:#f6f1e3;border:1px solid rgba(255,244,218,.22);box-shadow:0 8px 24px rgba(0,0,0,.45);font:500 11.5px/1 system-ui,-apple-system,sans-serif;pointer-events:auto;user-select:none}
+#tce-box-bar[hidden]{display:none}
+#tce-box-bar .tce-box-key{font:600 11px/1 ui-monospace,monospace;color:#9be6be;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tce-box-bar button{appearance:none;border:1px solid rgba(255,248,232,.22);background:rgba(255,248,232,.10);color:#fff9ec;border-radius:6px;padding:4px 8px;font:650 11px/1 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+#tce-box-bar button:hover{background:rgba(255,248,232,.20)}
+#tce-box-bar button.tce-del{background:rgba(220,68,68,.24);border-color:rgba(244,124,124,.55);color:#ffd4d4}
+#tce-box-bar button.tce-del:hover{background:rgba(220,68,68,.42)}
+#tce-box-bar button[hidden]{display:none}
 </style>`;
 
-async function persistElementEdit(el, { formatDom = false } = {}) {
+function ensureBoxToolbar(doc) {
+  let bar = doc.getElementById('tce-box-bar');
+  if (bar) return bar;
+  bar = doc.createElement('div');
+  bar.id = 'tce-box-bar';
+  bar.hidden = true;
+  bar.setAttribute('contenteditable', 'false');
+  bar.innerHTML = `<span class="tce-box-key"></span><button type="button" class="tce-restore" hidden>Restore</button><button type="button" class="tce-del" title="Remove this copy block (sets it empty so production omits it)">Delete box</button>`;
+  // Prevent mousedown from stealing focus/blurring before click fires.
+  bar.addEventListener('mousedown', (e) => { e.preventDefault(); });
+  bar.querySelector('.tce-del').addEventListener('click', async () => {
+    const target = focusedCopyEl;
+    if (!target || !target.isConnected) return;
+    target.textContent = '';
+    target.setAttribute('data-removed', '1');
+    await persistElementEdit(target, { formatDom: true, forceRaw: '' });
+    target.blur();
+    hideBoxToolbar();
+  });
+  bar.querySelector('.tce-restore').addEventListener('click', async () => {
+    const target = focusedCopyEl;
+    if (!target || !target.isConnected) return;
+    const key = target.getAttribute('data-copy');
+    const orig = origRaw.get(key) ?? '';
+    target.textContent = orig;
+    if (orig.trim()) target.removeAttribute('data-removed');
+    await persistElementEdit(target, { formatDom: true, forceRaw: orig });
+    target.blur();
+    hideBoxToolbar();
+  });
+  doc.body.append(bar);
+  return bar;
+}
+
+function hideBoxToolbar() {
+  const doc = frame.contentDocument;
+  const bar = doc?.getElementById('tce-box-bar');
+  if (bar) bar.hidden = true;
+  focusedCopyEl = null;
+}
+
+function positionBoxToolbar() {
+  const doc = frame.contentDocument;
+  const win = frame.contentWindow;
+  if (!doc || !win) return;
+  const bar = doc.getElementById('tce-box-bar');
+  if (!bar) return;
+  if (!editing || !focusedCopyEl || !focusedCopyEl.isConnected) {
+    bar.hidden = true;
+    return;
+  }
+  const key = focusedCopyEl.getAttribute('data-copy') ?? '';
+  const orig = origRaw.get(key) ?? '';
+  const curText = (focusedCopyEl.textContent ?? '').replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
+  const isModified = curText !== orig || currentEditsMap().has(key);
+  bar.querySelector('.tce-box-key').textContent = key;
+  const restoreBtn = bar.querySelector('.tce-restore');
+  restoreBtn.hidden = !isModified;
+  const delBtn = bar.querySelector('.tce-del');
+  delBtn.hidden = curText === '';
+  bar.hidden = false;
+  const rect = focusedCopyEl.getBoundingClientRect();
+  const barRect = bar.getBoundingClientRect();
+  const top = rect.top > barRect.height + 10 ? rect.top - barRect.height - 6 : Math.min(win.innerHeight - barRect.height - 8, rect.bottom + 6);
+  const left = Math.max(8, Math.min(win.innerWidth - barRect.width - 8, rect.right - barRect.width));
+  bar.style.top = `${Math.max(6, top)}px`;
+  bar.style.left = `${left}px`;
+}
+
+async function persistElementEdit(el, { formatDom = false, forceRaw } = {}) {
   const key = el.getAttribute('data-copy');
   if (!key) return;
   const existingTimer = saveTimers.get(key);
   if (existingTimer) { clearTimeout(existingTimer); saveTimers.delete(key); }
-  const raw = (el.textContent ?? '').replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
+  const raw = forceRaw !== undefined
+    ? String(forceRaw).replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim()
+    : (el.textContent ?? '').replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
   const before = origRaw.get(key) ?? '';
+  if (raw) el.removeAttribute('data-removed');
+  else el.setAttribute('data-removed', '1');
   if (formatDom) {
-    el.innerHTML = el.id === 'prompt-text'
-      ? esc(substituteVars(raw))
-      : fmtHtml(raw);
+    el.innerHTML = raw
+      ? (el.id === 'prompt-text' ? esc(substituteVars(raw)) : fmtHtml(raw))
+      : '';
   }
   const current = currentEditsMap().get(key);
   const currentAfter = current ? current.after : before;
-  if (raw === currentAfter && !inflightRaw.has(key)) return;
-  if (!session || !canAuthor) { setStatus('Waiting for local session…'); return; }
+  if (raw === currentAfter && !inflightRaw.has(key)) { draftGuard.sync(); return; }
+  if (!session || !canAuthor) { setStatus('Waiting for local session…'); draftGuard.sync(); return; }
   inflightRaw.set(key, raw);
-  const task = (async () => {
+  draftGuard.sync();
+  const task = draftGuard.holdWhile(async () => {
     try {
       if (raw !== before) {
-        setStatus(`Saving ${key}…`);
+        setStatus(raw ? `Saving ${key}…` : `Removing ${key}…`);
         const op = await session.command('putEdit', { key, before, after: raw }, { operationId: crypto.randomUUID() });
         await op.materialized?.().catch(() => {});
         await live?.refresh?.().catch(() => {});
-        setStatus(connectedPeers > 0 ? 'Saved & synced via Chronolog' : 'Saved locally in Chronolog');
+        setStatus(raw
+          ? (connectedPeers > 0 ? 'Saved & synced via Chronolog' : 'Saved locally in Chronolog')
+          : `Marked ${key} as removed`);
       } else if (current) {
         const op = await session.command('undoEdit', { key }, { operationId: crypto.randomUUID() });
         await op.materialized?.().catch(() => {});
@@ -239,10 +364,14 @@ async function persistElementEdit(el, { formatDom = false } = {}) {
     } finally {
       if (inflightRaw.get(key) === raw) inflightRaw.delete(key);
       syncIframeWithState();
+      draftGuard.sync();
     }
-  })();
+  });
   pendingSaves.add(task);
-  task.finally(() => pendingSaves.delete(task));
+  task.finally(() => {
+    pendingSaves.delete(task);
+    draftGuard.sync();
+  });
   return task;
 }
 
@@ -379,11 +508,15 @@ function bindIframeDocument() {
   doc.addEventListener('focusin', (e) => {
     const el = e.target.closest?.(COPY_SEL);
     if (!el || !editing) return;
+    ensureBoxToolbar(doc);
+    focusedCopyEl = el;
     const key = el.getAttribute('data-copy');
     const edited = currentEditsMap().get(key);
     el.textContent = inflightRaw.has(key)
       ? inflightRaw.get(key)
       : edited ? edited.after : (origRaw.get(key) ?? el.textContent ?? '');
+    positionBoxToolbar();
+    draftGuard.sync();
   });
 
   doc.addEventListener('input', (e) => {
@@ -392,26 +525,37 @@ function bindIframeDocument() {
     const key = el.getAttribute('data-copy');
     if (!key) return;
     const raw = (el.textContent ?? '').replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
+    if (raw) el.removeAttribute('data-removed');
+    else el.setAttribute('data-removed', '1');
     inflightRaw.set(key, raw);
+    positionBoxToolbar();
     const prev = saveTimers.get(key);
     if (prev) clearTimeout(prev);
     saveTimers.set(key, setTimeout(() => {
       saveTimers.delete(key);
       void persistElementEdit(el, { formatDom: false });
     }, 400));
+    draftGuard.sync();
   });
 
   doc.addEventListener('focusout', (e) => {
     const el = e.target.closest?.(COPY_SEL);
     if (!el || !editing) return;
+    if (focusedCopyEl === el) hideBoxToolbar();
     void persistElementEdit(el, { formatDom: true });
+    draftGuard.sync();
   });
+
+  frame.contentWindow?.addEventListener('scroll', () => positionBoxToolbar(), { passive: true });
+  frame.contentWindow?.addEventListener('resize', () => positionBoxToolbar(), { passive: true });
 
   // Firefox may blur the iframe window without firing focusout on the inner activeElement.
   frame.contentWindow?.addEventListener('blur', () => {
     if (!editing) return;
+    hideBoxToolbar();
     const active = doc.activeElement;
     if (active?.matches?.(COPY_SEL)) void persistElementEdit(active, { formatDom: true });
+    draftGuard.sync();
   });
 }
 
@@ -484,9 +628,11 @@ sendBtn.addEventListener('click', async () => {
     sendBtn.disabled = true;
     const batchId = `batch_${Date.now().toString(36)}`;
     setStatus('Committing signed batch…');
-    const op = await session.command('submitBatch', { batchId, page: currentPath, note, edits }, { operationId: crypto.randomUUID() });
-    await op.materialized?.().catch(() => {});
-    await live?.refresh?.().catch(() => {});
+    await draftGuard.holdWhile(async () => {
+      const op = await session.command('submitBatch', { batchId, page: currentPath, note, edits }, { operationId: crypto.randomUUID() });
+      await op.materialized?.().catch(() => {});
+      await live?.refresh?.().catch(() => {});
+    });
     noteEl.value = '';
     local.writeDraft('', 'note');
     setStatus(connectedPeers > 0 ? `Sent to agent (${batchId})` : `Signed & queued (${batchId})`);
@@ -537,8 +683,25 @@ const connection = createOwnerConnection({
       onOwnerReplaced: reloadOnOwnerReplaced,
     });
     session = attachment.session;
+    let lastSyncErr = null;
     session.onStatus?.((st) => {
       connectedPeers = st?.connectedPeers ?? 0;
+      const syncErr = st?.connectionError ?? st?.error ?? st?.materializationError ?? null;
+      if (syncErr) {
+        lastSyncErr = String(syncErr);
+        dotEl.className = 'tce-dot err';
+        dotEl.title = `Sync error: ${lastSyncErr}`;
+        setStatus(`Sync error (${lastSyncErr}) — saved locally, retrying…`);
+      } else if (lastSyncErr) {
+        lastSyncErr = null;
+        if (canAuthor) {
+          dotEl.className = 'tce-dot ok';
+          dotEl.title = connectedPeers > 0 ? `Chronolog synced (${connectedPeers} peer${connectedPeers === 1 ? '' : 's'})` : 'Chronolog local ready (mailbox sync)';
+          setStatus(connectedPeers > 0 ? 'Reconnected & synced via Chronolog' : 'Chronolog v2 ready — edits saved locally');
+        }
+      } else if (canAuthor) {
+        dotEl.title = connectedPeers > 0 ? `Chronolog synced (${connectedPeers} peer${connectedPeers === 1 ? '' : 's'})` : 'Chronolog local ready (mailbox sync)';
+      }
       if (st?.canAuthor && live) void live.refresh?.().catch(() => {});
     });
     if (globalThis.tendril) {

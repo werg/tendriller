@@ -17,7 +17,7 @@ export async function runAgent(workspace, { signal, report: rawReport = () => {}
   const health = createAgentHealthTracker({
     label: `@${workspace.config.agent?.handle || 'agent'}`,
     workspaceRoot: workspace.root,
-    healthFilePath: join(workspace.paths.agent, 'health.json'),
+    healthFilePath: workspace.paths?.agent ? join(workspace.paths.agent, 'health.json') : null,
   });
   const report = value => {
     try { health.observe(value); } catch {}

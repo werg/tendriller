@@ -45,11 +45,11 @@ test('the exact creation intent, with a stable random application identity, is r
   assert.deepEqual(f.files.get('dispatched.json'), { applicationId: f.intent().applicationId });
 });
 
-test('a requested mode is retained in the intent and sent; a requested application identity is used exactly', async () => {
-  const f = fixture(), page = await f.create({ mode: 'dashboard', application: { id: other } });
-  assert.equal(page.id, PAGE); assert.equal(f.intent().mode, 'dashboard'); assert.equal(f.intent().applicationId, other);
-  assert.deepEqual(f.calls.create, [{ name: 'Notes', mode: 'dashboard', application: { id: other } }]);
-  for (const bad of [{ mode: 'hosted' }, { application: { id: 'AB'.repeat(32) } }, { application: { id: other, extra: true } }, { name: '' }])
+test('a requested mode, icon, and theme_color are retained in the intent and sent; a requested application identity is used exactly', async () => {
+  const f = fixture(), page = await f.create({ mode: 'dashboard', icon: '📋', theme_color: '#165c43', application: { id: other } });
+  assert.equal(page.id, PAGE); assert.equal(f.intent().mode, 'dashboard'); assert.equal(f.intent().icon, '📋'); assert.equal(f.intent().theme_color, '#165c43'); assert.equal(f.intent().applicationId, other);
+  assert.deepEqual(f.calls.create, [{ name: 'Notes', mode: 'dashboard', icon: '📋', theme_color: '#165c43', application: { id: other } }]);
+  for (const bad of [{ mode: 'hosted' }, { application: { id: 'AB'.repeat(32) } }, { application: { id: other, extra: true } }, { name: '' }, { icon: '' }, { theme_color: 'not a color' }])
     await assert.rejects(fixture().create(bad), error => error.code === 'invalid_page_creation');
   await assert.rejects(fixture().create({ slug: 'Not A Slug' }), error => error.code === 'invalid_slug');
 });

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { Db, STORAGE_SCHEMA_REVISION, StorageSchemaError } from '../src/db';
+import { Db, REQUIRED_TABLES, SCHEMA, STORAGE_SCHEMA_REVISION, StorageSchemaError } from '../src/db';
 import { inDO } from './helpers';
 
 const objects = (storage: DurableObjectStorage) => storage.sql.exec(
@@ -105,5 +105,28 @@ it('shares a pending asynchronous read and retries it after failure', async () =
     expect(db.cachedAsync('identity', async () => 1)).toBe(cached);
     await expect(cached).rejects.toThrow('temporary failure');
     await expect(db.cachedAsync('identity', async () => 2)).resolves.toBe(2);
+  });
+});
+
+it('rejects existing storage whose revision matches but is missing required tables', async () => {
+  await isolatedDatabase(storage => {
+    const db = new Db(storage);
+    db.init();
+    expect(REQUIRED_TABLES).toContain('v2_mailbox_envelopes');
+    storage.sql.exec('DROP TABLE v2_mailbox_envelopes');
+    expect(() => new Db(storage).init()).toThrow(StorageSchemaError);
+    expect(() => new Db(storage).init()).toThrow('missing required tables (v2_mailbox_envelopes)');
+  });
+});
+
+it('pins SCHEMA content to STORAGE_SCHEMA_REVISION so table changes cannot ship without bumping revision', async () => {
+  const bytes = new TextEncoder().encode(SCHEMA);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  const hex = Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
+  // If you intentionally modify SCHEMA in server/src/db.ts, bump STORAGE_SCHEMA_REVISION
+  // and update both pinned values below so existing DO namespaces never silently drift.
+  expect({ revision: STORAGE_SCHEMA_REVISION, schemaSha256: hex }).toEqual({
+    revision: 15,
+    schemaSha256: 'd7c366b74a4f9cba58aa388650b54fdb3ba9a502476664367b4ccb6ded4bddc3',
   });
 });
