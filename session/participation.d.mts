@@ -33,6 +33,8 @@ export interface ApplicationTransportOptions {
   readonly directTimeoutMs?: number;
   /** Minimum time between relay-to-direct promotion attempts per peer, triggered only by reconsiderConnections(). Defaults to 30 seconds. */
   readonly upgradeCooldownMs?: number;
+  /** Minimum healthy link duration before reconnect retry backoff resets to zero. Defaults to 30 seconds. */
+  readonly stableLinkMs?: number;
   /** Called for every host page notification (for example admission requests or key wraps), so an admission controller can refresh promptly. */
   readonly onNotification?: (notification: Readonly<{ type: string }>) => void;
   readonly onTransport?: (event: Readonly<{ peerId: string; kind: 'direct' | 'relay'; reason?: 'direct_failed' | 'direct_timeout' }>) => void;

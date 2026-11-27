@@ -30,7 +30,9 @@ import {
   admissionAccounts, agentKeyHex, attestDevice, issueAgentAttestation, pendingAdmissions,
   prunePendingAdmissions, type InviteRedemption,
 } from './admissions';
-import { notifyDiscoveryWatchers } from './discovery';
+import { closeDiscoveryHubStream, notifyDiscoveryWatchers, type DiscoveryState } from './discovery';
+import { closeHubSubscriber, listHubSubscribers, type HubSubscriber } from './hub-streams';
+import { closePeerHubStream, type PeerState } from './peers';
 import { notifyMcpSyncWatchers } from './publication-watch';
 import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
 import { selectedApplication } from './application';
@@ -596,6 +598,13 @@ export function reconcileHostEffects(t: Tendril, state: MaterializedControlState
         try { ws.close(4003, 'Peer membership revoked'); } catch { /* already closed */ }
       }
     }
+    for (const sub of listHubSubscribers<{ peerId?: string }>(t)) {
+      if (sub.state?.peerId && revokedKeys.has(sub.state.peerId)) {
+        closeHubSubscriber(t, sub, 4003, 'Peer membership revoked');
+        if (sub.kind === 'peer-discovery') closeDiscoveryHubStream(t, sub as unknown as HubSubscriber<DiscoveryState>);
+        else if (sub.kind === 'rendezvous') closePeerHubStream(t, sub as unknown as HubSubscriber<PeerState>);
+      }
+    }
   }
 
   // Reconcile served publication version.
@@ -613,6 +622,11 @@ export function reconcileHostEffects(t: Tendril, state: MaterializedControlState
       t.db.set('current', mapped);
     }
   }
+  t.db.set('v2_control_summary', {
+    stateRoot: state.stateRoot,
+    historyDigest: state.historyDigest,
+    closedThroughMs: state.closedThroughMs !== null ? state.closedThroughMs.toString() : null,
+  });
 }
 
 export async function applicationMetadata(t: Tendril): Promise<HostApplication> {
@@ -740,6 +754,44 @@ export async function syncControlState(
   const incomingCas = parseCasNodesInput(input.casNodes);
   const incomingOpsRaw = Array.isArray(input.publicOps) ? input.publicOps : [];
   if (incomingOpsRaw.length > 256) throw new HttpError(400, 'too_many_operations');
+  const incomingCheckpointsRaw = Array.isArray(input.checkpoints) ? input.checkpoints : [];
+  if (incomingCheckpointsRaw.length > 64) throw new HttpError(400, 'too_many_checkpoints');
+
+  const knownOps = new Set<string>(Array.isArray(input.knownOpIds) ? input.knownOpIds.filter((x): x is string => typeof x === 'string') : []);
+  const knownCas = new Set<string>(Array.isArray(input.knownCasHashes) ? input.knownCasHashes.filter((x): x is string => typeof x === 'string') : []);
+
+  // Read-only fast path: when no new control records are submitted, avoid re-verifying every stored
+  // signature and booting QuickJS-NG WASM to replay unchanged state.
+  if (incomingCas.length === 0 && incomingOpsRaw.length === 0 && incomingCheckpointsRaw.length === 0) {
+    await freshAuthorityAccess(t, principal);
+    let summary = t.db.get<{ stateRoot: string; historyDigest: string; closedThroughMs: string | null } | null>('v2_control_summary', null);
+    if (!summary) {
+      const state = await readControlState(t);
+      if (!state) throw new HttpError(409, 'application_uninitialized');
+      summary = {
+        stateRoot: state.stateRoot,
+        historyDigest: state.historyDigest,
+        closedThroughMs: state.closedThroughMs !== null ? state.closedThroughMs.toString() : null,
+      };
+      t.db.set('v2_control_summary', summary);
+    }
+    const missingOps = listPublicOpRows(t).filter(r => !knownOps.has(r.op_id)).map(r => authorityRecord(r.raw));
+    const missingCas = listPublicCasRows(t).filter(r => !knownCas.has(r.hash)).map(r => ({ hash: r.hash, bytes: bytesToHex(r.bytes) }));
+    const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
+    return {
+      genesis: authorityRecord(genesisBytes),
+      publicOps: missingOps,
+      casNodes: missingCas,
+      checkpoints: allCheckpoints,
+      stateRoot: summary.stateRoot,
+      historyDigest: summary.historyDigest,
+      closedThroughMs: summary.closedThroughMs,
+      addedOps: 0,
+      addedCasNodes: 0,
+      addedCheckpoints: 0,
+    };
+  }
+
   const verifiedOps: Array<{ opId: string; author: string; authorTimestampMs: bigint; raw: Uint8Array; kernelInput: KernelOperationInput }> = [];
   for (const item of incomingOpsRaw) {
     const raw = authorityRecordBytes(item, 256 * 1024);
@@ -747,8 +799,6 @@ export async function syncControlState(
     verifiedOps.push({ opId: parsed.opId, author: parsed.author, authorTimestampMs: parsed.authorTimestampMs, raw, kernelInput: parsed.kernelInput });
   }
 
-  const incomingCheckpointsRaw = Array.isArray(input.checkpoints) ? input.checkpoints : [];
-  if (incomingCheckpointsRaw.length > 64) throw new HttpError(400, 'too_many_checkpoints');
   const decodedCheckpoints: Array<{ cp: FinalityCheckpoint; raw: Uint8Array }> = [];
   for (const item of incomingCheckpointsRaw) {
     const raw = authorityRecordBytes(item, 256 * 1024);
@@ -780,6 +830,37 @@ export async function syncControlState(
     }
   }
   if (opMap.size > MAX_PUBLIC_OPS) throw new HttpError(413, 'public_ops_limit');
+
+  // If every submitted op/CAS node was already stored and no checkpoints were submitted, skip WASM replay.
+  if (newOps.length === 0 && newCas.length === 0 && decodedCheckpoints.length === 0) {
+    await freshAuthorityAccess(t, principal);
+    let summary = t.db.get<{ stateRoot: string; historyDigest: string; closedThroughMs: string | null } | null>('v2_control_summary', null);
+    if (!summary) {
+      const state = await readControlState(t);
+      if (!state) throw new HttpError(409, 'application_uninitialized');
+      summary = {
+        stateRoot: state.stateRoot,
+        historyDigest: state.historyDigest,
+        closedThroughMs: state.closedThroughMs !== null ? state.closedThroughMs.toString() : null,
+      };
+      t.db.set('v2_control_summary', summary);
+    }
+    const missingOps = existingOpRows.filter(r => !knownOps.has(r.op_id)).map(r => authorityRecord(r.raw));
+    const missingCas = existingCas.filter(r => !knownCas.has(r.hash)).map(r => ({ hash: r.hash, bytes: bytesToHex(r.bytes) }));
+    const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
+    return {
+      genesis: authorityRecord(genesisBytes),
+      publicOps: missingOps,
+      casNodes: missingCas,
+      checkpoints: allCheckpoints,
+      stateRoot: summary.stateRoot,
+      historyDigest: summary.historyDigest,
+      closedThroughMs: summary.closedThroughMs,
+      addedOps: 0,
+      addedCasNodes: 0,
+      addedCheckpoints: 0,
+    };
+  }
 
   const allKernelOps: KernelOperationInput[] = [];
   for (const row of opMap.values()) {
@@ -859,8 +940,6 @@ export async function syncControlState(
     });
   }
 
-  const knownOps = new Set<string>(Array.isArray(input.knownOpIds) ? input.knownOpIds.filter((x): x is string => typeof x === 'string') : []);
-  const knownCas = new Set<string>(Array.isArray(input.knownCasHashes) ? input.knownCasHashes.filter((x): x is string => typeof x === 'string') : []);
   const missingOps = listPublicOpRows(t).filter(r => !knownOps.has(r.op_id)).map(r => authorityRecord(r.raw));
   const missingCas = listPublicCasRows(t).filter(r => !knownCas.has(r.hash)).map(r => ({ hash: r.hash, bytes: bytesToHex(r.bytes) }));
   const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
@@ -1499,6 +1578,7 @@ export async function notarizeBlindFrontier(
       Number(closedThroughMs),
       copy.buffer,
     );
+    t.db.del('v2_control_summary');
   });
   notifyDiscoveryWatchers(t);
   return {

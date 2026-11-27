@@ -12,15 +12,16 @@ const pause = (ms, signal) => new Promise(resolve => {
 });
 /** Optional background introductions. Local authoring and opening never wait for this controller. */
 export function participateApplication(session, { peers, openDirectConnection,
-  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, passiveDialDelayMs = 1500, onTransport, onNotification } = {}) {
+  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, passiveDialDelayMs = 1500, stableLinkMs = 30_000, onTransport, onNotification } = {}) {
   if (!Number.isSafeInteger(upgradeCooldownMs) || upgradeCooldownMs < 0 || upgradeCooldownMs > 600_000) throw TypeError('upgradeCooldownMs must be a bounded integer');
   if (!Number.isSafeInteger(passiveDialDelayMs) || passiveDialDelayMs < 0 || passiveDialDelayMs > 30_000) throw TypeError('passiveDialDelayMs must be a bounded integer');
+  if (!Number.isSafeInteger(stableLinkMs) || stableLinkMs < 0 || stableLinkMs > 600_000) throw TypeError('stableLinkMs must be a bounded integer');
   if (typeof session?.connectPeer !== 'function' || typeof session.device?.storageId !== 'string' || !session.device.storageId || typeof openDirectConnection !== 'function') throw TypeError('Provide an owned operation-set session and RTC adapter');
   const stop = new AbortController(), signal = AbortSignal.any([stop.signal, session.signal]);
   const adapter = createPeerIntroductions({ peers, identity: session.identity.publicKey, directTimeoutMs,
     openDirectConnection: options => openDirectConnection({ ...options, configuration, timeoutMs: directTimeoutMs }),
     openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }), onTransport });
-  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map(), introduced = new Map(), passiveFallbacks = new Map();
+  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map(), introduced = new Map(), passiveFallbacks = new Map(), stableTimers = new Map();
   let error = null, advertising, refreshing, dirty = false, retry, retryCount = 0, connectionRevision = 0;
   function cancelPassiveFallback(peerId) {
     const timer = passiveFallbacks.get(peerId);
@@ -106,8 +107,26 @@ export function participateApplication(session, { peers, openDirectConnection,
       route = adapter.transport.describe(connection); descriptions.set(peer.identity, route);
       const link = await session.connectPeer({ connection, peerIdentity: peer.identity, signal: connectionSignal });
       if (signal.aborted || link.signal.aborted) { if (descriptions.get(peer.identity) === route) descriptions.delete(peer.identity); await link.close(); if (!signal.aborted) scheduleRetry(); return; }
-      links.set(peer.identity, link); connectionRevision++; error = null; retryCount = 0; clearTimeout(retry); retry = undefined;
-      link.signal.addEventListener('abort', () => { if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; } changed(); scheduleRetry(); }, { once: true });
+      links.set(peer.identity, link); connectionRevision++; error = null; clearTimeout(retry); retry = undefined;
+      const previousStable = stableTimers.get(peer.identity);
+      if (previousStable !== undefined) { clearTimeout(previousStable); stableTimers.delete(peer.identity); }
+      if (stableLinkMs === 0) {
+        retryCount = 0;
+      } else {
+        const stableTimer = setTimeout(() => {
+          if (stableTimers.get(peer.identity) === stableTimer) stableTimers.delete(peer.identity);
+          if (links.get(peer.identity) === link) retryCount = 0;
+        }, stableLinkMs);
+        stableTimer.unref?.();
+        stableTimers.set(peer.identity, stableTimer);
+      }
+      link.signal.addEventListener('abort', () => {
+        const timer = stableTimers.get(peer.identity);
+        if (timer !== undefined) { clearTimeout(timer); stableTimers.delete(peer.identity); }
+        if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; }
+        changed();
+        scheduleRetry();
+      }, { once: true });
     } catch (cause) {
       if (route && descriptions.get(peer.identity) === route && !links.has(peer.identity)) descriptions.delete(peer.identity);
       try { await connection?.close(); } catch {}
@@ -135,6 +154,8 @@ export function participateApplication(session, { peers, openDirectConnection,
     return Promise.allSettled(work.map(peerId => connect({ identity: peerId, route: null }, undefined, true))).then(() => undefined);
   }
   const uploadedDigests = new Set(), uploadedOpIds = new Set(), uploadedCasHashes = new Set();
+  const knownControlOpIds = new Set(), knownControlCasHashes = new Set();
+  let lastDirectory = [];
   let mailboxInFlight = null, mailboxDirty = false, mailboxTimer = undefined;
   let mergingFromMailbox = false, lastMailboxSyncAt = 0, mailboxCooldownUntil = 0, mailboxFailures = 0;
 
@@ -288,19 +309,31 @@ export function participateApplication(session, { peers, openDirectConnection,
         try {
           // Sync public-control state from the blind host (untrusted signed ops verified by TopicKernel).
           if (typeof peers.syncControl === 'function') {
-            const synced = await peers.syncControl({}, { signal }).catch(() => null);
-            if (synced && (synced.publicOps?.length || synced.casNodes?.length || synced.checkpoints?.length)) {
-              await session.mergeFacts({
-                publicOps: (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024)),
-                encryptedEnvelopes: [],
-                casNodes: (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' })),
-                retentions: [],
-                checkpoints: (synced.checkpoints ?? []).map(r => decodeRecord(authorityRecordBytes(r, 256 * 1024))),
-              });
+            const synced = await peers.syncControl({
+              knownOpIds: [...knownControlOpIds],
+              knownCasHashes: [...knownControlCasHashes],
+            }, { signal }).catch(() => null);
+            if (synced) {
+              const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
+              const incomingCas = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
+              for (const raw of incomingOps) {
+                try { knownControlOpIds.add(bytesToHex(operationIdDigest(decodeSignedOperation(raw).coreBytes))); } catch {}
+              }
+              for (const node of incomingCas) knownControlCasHashes.add(node.hash);
+              if (incomingOps.length || incomingCas.length || synced.checkpoints?.length) {
+                await session.mergeFacts({
+                  publicOps: incomingOps,
+                  encryptedEnvelopes: [],
+                  casNodes: incomingCas,
+                  retentions: [],
+                  checkpoints: (synced.checkpoints ?? []).map(r => decodeRecord(authorityRecordBytes(r, 256 * 1024))),
+                });
+              }
             }
           }
           await syncMailbox();
           const directory = await adapter.discovery.read({ signal });
+          lastDirectory = directory;
           for (const peer of directory) if (session.isReader(peer.identity)) void connect(peer);
           if (error?.startsWith('discovery:')) error = null;
         } catch (cause) { if (!signal.aborted) { error = `discovery:${failureCode(cause, 'discovery_unavailable')}`; scheduleRetry(); } }
@@ -354,7 +387,9 @@ export function participateApplication(session, { peers, openDirectConnection,
     opsSinceGc += 1;
     if (opsSinceGc >= 20) void maybeCollectGarbage();
     void advertise();
-    void refresh();
+    // Dial any already-discovered peer whose membership just became readable locally,
+    // without issuing host sync/discovery requests on every ordinary application write.
+    for (const peer of lastDirectory) if (session.isReader(peer.identity)) void connect(peer);
   });
   const stopFacts = typeof session.onFacts === 'function' ? session.onFacts(() => { scheduleMailboxSync(); }) : () => {};
   void maybeCollectGarbage({ force: true });
@@ -365,6 +400,8 @@ export function participateApplication(session, { peers, openDirectConnection,
       if (annotated && session.diagnostics === diagnostics) { try { delete session.diagnostics; } catch {} }
       for (const timer of passiveFallbacks.values()) clearTimeout(timer);
       passiveFallbacks.clear();
+      for (const timer of stableTimers.values()) clearTimeout(timer);
+      stableTimers.clear();
       for (const controller of opening.values()) controller.abort(signal.reason);
       void Promise.allSettled([...links.values()].map(link => link.close())).finally(async () => { links.clear(); descriptions.clear(); connectionRevision++; changed(); await Promise.allSettled([notifications, invitations]); resolve(); });
     };

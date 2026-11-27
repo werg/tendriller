@@ -5,6 +5,9 @@ import { HttpError, json, readJson } from './http';
 import { AGENT_ID_RE } from './ids';
 import { notifyAgentsWatchers } from './publication-watch';
 import { agentKeyHex, attestGrantedAgent, dropPendingAdmission } from './admissions';
+import { closeAgentHubSubscribers, type HubSubscriber } from './hub-streams';
+import { closeDiscoveryHubStream, type DiscoveryState } from './discovery';
+import { closePeerHubStream, type PeerState } from './peers';
 import type { Tendril } from './tendril';
 
 export type AgentEventKind = 'grant' | 'revoked' | 'page-deleted' | 'publication' | 'agents-changed';
@@ -57,12 +60,16 @@ function socketAgent(ws: WebSocket): { agentId: string; revision?: number } | nu
   return typeof value?.agentId === 'string' ? { agentId: value.agentId } : null;
 }
 
-/** Closes an agent's page sockets, or only those of an older grant revision. */
+/** Closes an agent's page sockets and hub subscriptions, or only those of an older grant revision. */
 export function closeAgentSockets(t: Tendril, agentId: string, reason: string, keepRevision?: number): void {
   for (const ws of t.ctx.getWebSockets()) {
     const owner = socketAgent(ws);
     if (!owner || owner.agentId !== agentId || keepRevision !== undefined && owner.revision === keepRevision) continue;
     try { ws.close(4003, reason); } catch { /* already closed */ }
+  }
+  for (const sub of closeAgentHubSubscribers(t, agentId, reason, keepRevision)) {
+    if (sub.kind === 'peer-discovery') closeDiscoveryHubStream(t, sub as HubSubscriber<DiscoveryState>);
+    else if (sub.kind === 'rendezvous') closePeerHubStream(t, sub as HubSubscriber<PeerState>);
   }
 }
 
