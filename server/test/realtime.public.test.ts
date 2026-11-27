@@ -215,4 +215,40 @@ describe("Cloudflare Realtime TURN & SFU brokering and entitlements", () => {
     expect(await report.json()).toMatchObject({ continueSfu: false });
     expect((await getAccountEntitlements(env, h.account!)).usage).toMatchObject({ mediaBytes: 1024, complimentaryMediaBytes: 1024 });
   });
+
+  it("preserves complimentary SFU coverage across same-millisecond revocation and resists backward clock steps", async () => {
+    const h = await create();
+    await applyPlanToAccount(env, h.account!, "pro");
+    const id = crypto.randomUUID();
+    const now = await inDO(h.id, t => t.now());
+    await createPremiumGrant(env, "operator:testing", { id, accountId: h.account!, plan: "team", reason: "Same-ms SFU test", expiresAt: now + 60_000 }, now);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ sessionId: "cf_same_ms_test" }), { status: 201 }));
+    const run = (action: string, body: unknown) => inDO(h.id, async t => {
+      const previous = t.env;
+      t.env = { ...previous, CF_REALTIME_APP_ID: "test-app", CF_REALTIME_API_TOKEN: "test-token" };
+      try {
+        const url = new URL(`https://tendril.internal/peers/sfu/${action}`);
+        return await handleRealtimeSfu(t, new Request(url, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } }), url, action, agentPrincipal(t, h));
+      } finally { t.env = previous; }
+    });
+    // Pin t.now() to `now` so session admission and revocation occur in the exact same millisecond.
+    await inDO(h.id, t => { t.now = () => now; });
+    try {
+      expect((await run("sessions", { peerId: "ef".repeat(32), callId: "same-ms-call" })).status).toBe(201);
+      await revokePremiumGrant(env, "operator:testing", id, "Immediate revoke", now);
+      await inDO(h.id, t => { t.now = () => now + 1000; });
+      const firstReport = await run("usage", { sessionId: "cf_same_ms_test", bytesReceivedDelta: 2048 });
+      expect(firstReport.status).toBe(200);
+      // Subsequent interval starts after revocation, and even if the clock steps backward slightly it is still recorded as billable.
+      await inDO(h.id, t => { t.now = () => now + 995; });
+      const secondReport = await run("usage", { sessionId: "cf_same_ms_test", bytesReceivedDelta: 4096 });
+      expect(secondReport.status).toBe(200);
+      expect((await getAccountEntitlements(env, h.account!, now + 1000)).usage).toMatchObject({
+        mediaBytes: 6144,
+        complimentaryMediaBytes: 2048,
+      });
+    } finally {
+      await inDO(h.id, t => { Reflect.deleteProperty(t, "now"); });
+    }
+  });
 });

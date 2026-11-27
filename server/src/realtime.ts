@@ -32,6 +32,8 @@ interface SfuPeerEntry {
   lastActivityAt: number;
   /** Server clock at the start of the next coalesced usage interval. */
   lastUsageAt: number;
+  /** True when a complimentary grant was active at `lastUsageAt` (covers same-ms revocation). */
+  lastUsageComplimentary: boolean;
   reportedBytes: number;
 }
 
@@ -214,7 +216,8 @@ export async function handleRealtimeSfu(
       throw new HttpError(403, "forbidden", "Unknown or unowned SFU session.");
     }
     const recordedAt = t.now();
-    const mediaIntervalStart = entry.lastUsageAt;
+    const mediaIntervalStart = Math.min(entry.lastUsageAt, recordedAt);
+    const intervalStartedComplimentary = entry.lastUsageComplimentary;
     entry.lastActivityAt = recordedAt;
     entry.lastUsageAt = recordedAt;
     entry.reportedBytes += Math.floor(delta);
@@ -222,9 +225,13 @@ export async function handleRealtimeSfu(
       // We cannot split coalesced bytes at an exact grant boundary. Waive the
       // whole interval if it overlaps complimentary access, rather than bill
       // previously authorized test traffic merely because its report was late.
-      await recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(delta) }, recordedAt, { mediaIntervalStart });
+      await recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(delta) }, recordedAt, {
+        mediaIntervalStart,
+        ...(intervalStartedComplimentary ? { mediaComplimentary: true } : {}),
+      });
     }
     const updated = await getAccountEntitlements(t.env, ownerAccount, t.now());
+    entry.lastUsageComplimentary = Boolean(updated.premiumGrant);
     const allowed = updated.quotas.sfuEnabled && canConsumeMedia(updated).allowed;
     return json({
       ok: true,
@@ -248,9 +255,13 @@ export async function handleRealtimeSfu(
     const tracks = Array.isArray(body.tracks) ? body.tracks : [];
     const finalBytes = Number(body.bytesReceivedDelta ?? 0);
     if (Number.isFinite(finalBytes) && finalBytes > 0 && finalBytes <= MAX_USAGE_REPORT_BYTES) {
-      const recordedAt = t.now(), mediaIntervalStart = entry.lastUsageAt;
+      const recordedAt = t.now(), mediaIntervalStart = Math.min(entry.lastUsageAt, recordedAt);
+      const intervalStartedComplimentary = entry.lastUsageComplimentary;
       entry.lastUsageAt = recordedAt;
-      t.ctx.waitUntil(recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(finalBytes) }, recordedAt, { mediaIntervalStart }));
+      t.ctx.waitUntil(recordAccountUsage(t.env, ownerAccount, { mediaBytes: Math.floor(finalBytes) }, recordedAt, {
+        mediaIntervalStart,
+        ...(intervalStartedComplimentary ? { mediaComplimentary: true } : {}),
+      }));
     }
     let result: Record<string, unknown> = { ok: true };
     if (tracks.length > 0 && sfuConfigured(t.env)) {
@@ -343,6 +354,7 @@ export async function handleRealtimeSfu(
       createdAt: now,
       lastActivityAt: now,
       lastUsageAt: authorizedAt,
+      lastUsageComplimentary: Boolean(ent.premiumGrant),
       reportedBytes: 0,
     });
     return json({ ...created, maxPeers: ent.quotas.sfuMaxPeers, maxHeight: ent.quotas.sfuMaxHeight }, 201);

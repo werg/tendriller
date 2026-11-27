@@ -51,7 +51,7 @@ Reference: [/docs/STATE_MODELS.md](https://tendriller.dev/docs/STATE_MODELS.md)
 
 Core `0.3.0-rc.17` · Slug `2026-11-27-backend-administration` · Changelog only
 
-Adds scoped operator APIs and a CLI for expiring, audited Pro/Team grants, plus aggregate daily service usage and inventory without page analytics.
+Adds scoped operator APIs and a CLI for audited Pro/Team grants (with optional expiry or never-expiring until revoked), plus aggregate daily service usage and inventory without page analytics.
 
 Complimentary grants remain separate from Polar subscriptions, apply to application and atomic database quota checks, and keep testing usage exempt from later PAYG charges. Service analytics collect fixed global MCP, relay and media counters plus inventory snapshots with 90-day retention. The backend-only /api/admin/v1 API requires independent expiring operator credentials and provides a boundary for a future private admin tendril. No browser UI or page-content access is added.
 

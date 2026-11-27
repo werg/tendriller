@@ -5,7 +5,7 @@ CREATE TABLE premium_grants (
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   plan_id TEXT NOT NULL CHECK (plan_id IN ('pro', 'team')),
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL CHECK (expires_at > created_at AND expires_at <= created_at + 7776000000),
+  expires_at INTEGER CHECK (expires_at IS NULL OR (expires_at > created_at AND expires_at <= 253402300799999)),
   created_by TEXT NOT NULL,
   reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 500),
   revoked_at INTEGER,
@@ -56,21 +56,21 @@ SELECT a.id AS account_id,
     MAX(COALESCE(a.page_cap, s.account_page_cap), COALESCE((
       SELECT MAX(CASE g.plan_id WHEN 'team' THEN 1000 ELSE 100 END)
       FROM premium_grants g WHERE g.account_id = a.id AND g.revoked_at IS NULL
-        AND g.created_at <= unixepoch('subsec') * 1000 AND g.expires_at > unixepoch('subsec') * 1000
+        AND g.created_at <= unixepoch('subsec') * 1000 AND (g.expires_at IS NULL OR g.expires_at > unixepoch('subsec') * 1000)
         AND a.suspended_at IS NULL AND a.deleting_at IS NULL
     ), 0)) END AS page_cap,
   CASE WHEN s.account_resident_cap IS NULL OR a.plan = 'unlimited' THEN NULL ELSE
     MAX(COALESCE(a.resident_cap, s.account_resident_cap), COALESCE((
       SELECT MAX(CASE g.plan_id WHEN 'team' THEN 1000 ELSE 100 END)
       FROM premium_grants g WHERE g.account_id = a.id AND g.revoked_at IS NULL
-        AND g.created_at <= unixepoch('subsec') * 1000 AND g.expires_at > unixepoch('subsec') * 1000
+        AND g.created_at <= unixepoch('subsec') * 1000 AND (g.expires_at IS NULL OR g.expires_at > unixepoch('subsec') * 1000)
         AND a.suspended_at IS NULL AND a.deleting_at IS NULL
     ), 0)) END AS resident_cap,
   CASE WHEN s.account_storage_cap IS NULL OR a.plan = 'unlimited' THEN NULL ELSE
     MAX(COALESCE(a.storage_cap, s.account_storage_cap), COALESCE((
       SELECT MAX(CASE g.plan_id WHEN 'team' THEN 107374182400 ELSE 21474836480 END)
       FROM premium_grants g WHERE g.account_id = a.id AND g.revoked_at IS NULL
-        AND g.created_at <= unixepoch('subsec') * 1000 AND g.expires_at > unixepoch('subsec') * 1000
+        AND g.created_at <= unixepoch('subsec') * 1000 AND (g.expires_at IS NULL OR g.expires_at > unixepoch('subsec') * 1000)
         AND a.suspended_at IS NULL AND a.deleting_at IS NULL
     ), 0)) END AS storage_cap
 FROM accounts a CROSS JOIN service_state s WHERE s.id = 1;

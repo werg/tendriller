@@ -72,7 +72,12 @@ describe("isolated operator API", () => {
 
   it("rejects page origins, foreign origins and preflights without adding public CORS", async () => {
     const { token, customEnv } = await operator();
-    const foreignHeaders: Array<Record<string, string>> = [{ Origin: "https://private.tendriller.site" }, { Origin: "null" }, { "Sec-Fetch-Site": "cross-site" }];
+    const foreignHeaders: Array<Record<string, string>> = [
+      { Origin: "https://private.tendriller.site" },
+      { Origin: "null" },
+      { "Sec-Fetch-Site": "cross-site" },
+      { "Sec-Fetch-Site": "same-site" },
+    ];
     for (const headers of foreignHeaders) {
       const response = await call(customEnv, token, "/analytics", { headers });
       expect(response.status).toBe(403);
@@ -132,6 +137,18 @@ describe("isolated operator API", () => {
     expect((await write(input)).status).toBe(200);
     expect((await getAccountEntitlements(customEnv, owner)).plan).toBe("free");
 
+    // Omitting expiresAt (or passing null) creates a never-expiring grant until revoked.
+    const permanentInput = { id: uuid(), accountId: owner, plan: "team", reason: "permanent access" };
+    const permanentRes = await write(permanentInput);
+    expect(permanentRes.status).toBe(201);
+    expect(await permanentRes.json()).toMatchObject({ created: true, grant: { id: permanentInput.id, expiresAt: null } });
+    expect((await write({ ...permanentInput, expiresAt: null })).status).toBe(200);
+    expect((await getAccountEntitlements(customEnv, owner)).plan).toBe("team");
+    expect((await call(customEnv, token, `/premium-grants/${permanentInput.id}/revoke`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "ended" }),
+    })).status).toBe(200);
+    expect((await getAccountEntitlements(customEnv, owner)).plan).toBe("free");
+
     await env.ACCOUNTS.prepare("INSERT INTO audit_log (id,actor,action,subject,reason,created_at) VALUES (?, 'other-admin', 'page:hold', 'private-page', 'private-page-content', ?)")
       .bind(uuid(), Date.now()).run();
     const audit = await call(customEnv, token, "/audit?limit=1");
@@ -145,7 +162,7 @@ describe("isolated operator API", () => {
     expect(text).not.toContain("private-page");
     const count = await env.ACCOUNTS.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE actor=? AND action IN ('premium:grant','premium:revoke')")
       .bind(`operator:${record.id}`).first<{ n: number }>();
-    expect(count?.n).toBe(2);
+    expect(count?.n).toBe(4);
   });
 
   it("bounds inputs and fails closed when rate limits reject a caller", async () => {

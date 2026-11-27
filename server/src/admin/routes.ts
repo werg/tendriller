@@ -85,13 +85,16 @@ export async function routeAdministration(req: Request, env: Env, url = new URL(
       requireAdminScope(principal, "premium:write");
       queryKeys(url, []);
       const input = await body(req, ["id", "accountId", "plan", "expiresAt", "reason"]);
+      const expiresAt = input.expiresAt === undefined || input.expiresAt === null
+        ? null
+        : typeof input.expiresAt === "number" ? input.expiresAt : undefined;
       if (typeof input.accountId !== "string" || !ACCOUNT_ID.test(input.accountId) ||
           typeof input.id !== "string" || !GRANT_ID.test(input.id) ||
-          (input.plan !== "pro" && input.plan !== "team") || typeof input.expiresAt !== "number" || typeof input.reason !== "string") {
-        throw new HttpError(400, "invalid_grant", "Specify a grant UUID, accountId, pro/team plan, expiresAt in milliseconds and reason.");
+          (input.plan !== "pro" && input.plan !== "team") || expiresAt === undefined || typeof input.reason !== "string") {
+        throw new HttpError(400, "invalid_grant", "Specify a grant UUID, accountId, pro/team plan, optional expiresAt in milliseconds (or null), and reason.");
       }
       const result = await createPremiumGrant(env, principal.actor, {
-        id: input.id, accountId: input.accountId, plan: input.plan, expiresAt: input.expiresAt, reason: input.reason,
+        id: input.id, accountId: input.accountId, plan: input.plan, expiresAt, reason: input.reason,
       });
       response = json(result, result.created ? 201 : 200);
     } else if (path === `${ADMIN_API_PREFIX}/premium-grants` && req.method === "GET") {

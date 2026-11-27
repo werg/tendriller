@@ -514,7 +514,7 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
   const checkoutLive = Boolean(env.POLAR_ACCESS_TOKEN && env.POLAR_PRODUCTS_JSON);
   const { body, script, extraCss } = renderPricingPage({
     signedIn: Boolean(session),
-    currentPlan: ent?.plan ?? null,
+    currentPlan: ent?.billingPlan ?? null,
     checkoutLive,
   });
   const response = servicePage("Pricing", body, script, 200, {
@@ -634,15 +634,23 @@ export function renderBillingDashboardContent(view: BillingDashboardView): { bod
 
   const resetDate = ent.usage.resetsAt.slice(0, 10);
   const ratio = (used: number, cap: number | null) => (cap === null || cap === 0 ? null : used / cap);
+  const effectiveMcpCalls = ent.premiumGrant ? ent.usage.mcpCalls : Math.max(0, ent.usage.mcpCalls - ent.usage.complimentaryMcpCalls);
+  const effectiveMediaBytes = ent.premiumGrant ? ent.usage.mediaBytes : Math.max(0, ent.usage.mediaBytes - ent.usage.complimentaryMediaBytes);
+  const mcpCompNote = !ent.premiumGrant && ent.usage.complimentaryMcpCalls > 0
+    ? ` · ${ent.usage.complimentaryMcpCalls.toLocaleString("en-US")} complimentary calls excluded`
+    : "";
+  const mediaCompNote = !ent.premiumGrant && ent.usage.complimentaryMediaBytes > 0
+    ? ` · ${fmtBytes(ent.usage.complimentaryMediaBytes)} complimentary excluded`
+    : "";
   const metersHtml = [
     meterRow("Pages", String(pagesUsed), ent.quotas.pages === null ? "Unlimited" : String(ent.quotas.pages), ratio(pagesUsed, ent.quotas.pages)),
     meterRow("App & file storage", fmtBytes(storageUsed), ent.quotas.storageBytes === null ? "Unlimited" : fmtBytes(ent.quotas.storageBytes), ratio(storageUsed, ent.quotas.storageBytes)),
     meterRow("Agents", String(agentsUsed), ent.quotas.agents === null ? "Unlimited" : String(ent.quotas.agents), ratio(agentsUsed, ent.quotas.agents)),
     meterRow("Named page subdomains", String(subdomainsUsed), ent.quotas.customSubdomains === null ? "Unlimited" : ent.quotas.customSubdomains === 0 ? "Pro & Team" : String(ent.quotas.customSubdomains), ent.quotas.customSubdomains === 0 ? null : ratio(subdomainsUsed, ent.quotas.customSubdomains), `Replace generated page subdomains with memorable names in <a href="/dashboard/domains#subdomains">Domains</a>.`),
     meterRow("Hosted MCP opted-in pages", String(mcpPagesUsed), ent.quotas.mcpPages === null ? "Unlimited" : String(ent.quotas.mcpPages), ratio(mcpPagesUsed, ent.quotas.mcpPages)),
-    meterRow("Hosted MCP calls (this month)", ent.usage.mcpCalls.toLocaleString("en-US"), ent.quotas.mcpCallsPerMonth === null ? "Unlimited" : ent.quotas.mcpCallsPerMonth.toLocaleString("en-US"), ratio(ent.usage.mcpCalls, ent.quotas.mcpCallsPerMonth), `Resets ${resetDate} UTC · local <code>tendril agent run</code> is always unlimited.`),
+    meterRow("Hosted MCP calls (this month)", effectiveMcpCalls.toLocaleString("en-US"), ent.quotas.mcpCallsPerMonth === null ? "Unlimited" : ent.quotas.mcpCallsPerMonth.toLocaleString("en-US"), ratio(effectiveMcpCalls, ent.quotas.mcpCallsPerMonth), `Resets ${resetDate} UTC${mcpCompNote} · local <code>tendril agent run</code> is always unlimited.`),
     meterRow("Host relay active time (this month)", fmtHours(ent.usage.relayMs), ent.quotas.relayMsPerMonth === null ? "Unlimited" : fmtHours(ent.quotas.relayMsPerMonth), ratio(ent.usage.relayMs, ent.quotas.relayMsPerMonth), `Resets ${resetDate} UTC · direct peer-to-peer sync uses 0 host relay time.`),
-    meterRow("Group video & call relay (this month)", fmtBytes(ent.usage.mediaBytes), ent.quotas.mediaBytesPerMonth === null ? "Unlimited" : fmtBytes(ent.quotas.mediaBytesPerMonth), ratio(ent.usage.mediaBytes, ent.quotas.mediaBytesPerMonth), `Resets ${resetDate} UTC · ${ent.quotas.sfuEnabled ? `Group video up to ${ent.quotas.sfuMaxPeers} peers (${ent.quotas.sfuMaxHeight}p)` : "TURN trial only; upgrade for multi-party video"}.`),
+    meterRow("Group video & call relay (this month)", fmtBytes(effectiveMediaBytes), ent.quotas.mediaBytesPerMonth === null ? "Unlimited" : fmtBytes(ent.quotas.mediaBytesPerMonth), ratio(effectiveMediaBytes, ent.quotas.mediaBytesPerMonth), `Resets ${resetDate} UTC${mediaCompNote} · ${ent.quotas.sfuEnabled ? `Group video up to ${ent.quotas.sfuMaxPeers} peers (${ent.quotas.sfuMaxHeight}p)` : "TURN trial only; upgrade for multi-party video"}.`),
   ].join("");
 
   const spendCapDollars = ent.paygSpendCapCents === null ? "" : String(Math.round(ent.paygSpendCapCents / 100));
@@ -842,14 +850,17 @@ export async function routeBillingDashboard(req: Request, env: Env, url: URL): P
     if (url.pathname === "/dashboard/billing/payg" && req.method === "POST") {
       sameOrigin(req, env);
       await requireWritesOpen(env);
-      const ent = await getAccountEntitlements(env, session.accountId);
       const raw = new TextDecoder().decode(await readBody(req, 4096));
       const { isJson, params } = parseFormOrJson(req, raw);
       const enabled = params.payg_enabled === true || params.payg_enabled === "1" || params.payg_enabled === "true" || params.payg_enabled === "on";
-      if (enabled && !ent.quotas.paygAllowed) {
-        throw new HttpError(402, "plan_required", "Pay-as-you-go overage requires a paid Pro or Team plan without an active complimentary grant.");
+      if (enabled) {
+        const ent = await getAccountEntitlements(env, session.accountId);
+        if (!ent.quotas.paygAllowed) {
+          throw new HttpError(402, "plan_required", "Pay-as-you-go overage requires a paid Pro or Team plan without an active complimentary grant.");
+        }
       }
       const uncapped = params.uncapped === true || params.uncapped === "1" || params.uncapped === "true" || params.uncapped === "on" || params.spend_cap_cents === null;
+      let capSpecified = true;
       let capCents: number | null = DEFAULT_PAYG_SPEND_CAP_CENTS;
       if (uncapped) {
         capCents = null;
@@ -866,12 +877,21 @@ export async function routeBillingDashboard(req: Request, env: Env, url: URL): P
         }
         capCents = Math.round(usd * 100);
       } else {
-        capCents = ent.paygSpendCapCents;
+        capSpecified = false;
       }
-      await env.ACCOUNTS.prepare("UPDATE accounts SET payg_enabled = ?, payg_spend_cap_cents = ? WHERE id = ?")
-        .bind(enabled ? 1 : 0, capCents, session.accountId).run();
+      let storedCapCents: number | null = capCents;
+      if (capSpecified) {
+        await env.ACCOUNTS.prepare("UPDATE accounts SET payg_enabled = ?, payg_spend_cap_cents = ? WHERE id = ?")
+          .bind(enabled ? 1 : 0, capCents, session.accountId).run();
+      } else {
+        // Leave payg_spend_cap_cents untouched so an omitted cap never clobbers a concurrent update.
+        const updated = await env.ACCOUNTS.prepare(
+          "UPDATE accounts SET payg_enabled = ? WHERE id = ? RETURNING payg_spend_cap_cents",
+        ).bind(enabled ? 1 : 0, session.accountId).first<{ payg_spend_cap_cents: number | null }>();
+        storedCapCents = updated ? updated.payg_spend_cap_cents : DEFAULT_PAYG_SPEND_CAP_CENTS;
+      }
       if (isJson || (req.headers.get("Accept") ?? "").includes("application/json")) {
-        return json({ ok: true, payg_enabled: enabled, payg_spend_cap_cents: capCents });
+        return json({ ok: true, payg_enabled: enabled, payg_spend_cap_cents: storedCapCents });
       }
       return redirect("/dashboard/billing?saved=1", 303);
     }

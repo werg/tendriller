@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
-import { createPremiumGrant, getPremiumGrant, listPremiumGrants, MAX_PREMIUM_GRANT_MS, revokePremiumGrant } from "../src/billing/premium-grants";
+import { createPremiumGrant, getPremiumGrant, listPremiumGrants, MAX_PREMIUM_GRANT_EXPIRY_MS, revokePremiumGrant } from "../src/billing/premium-grants";
 import { applyPlanToAccount, canConsumeMcpCall, getAccountEntitlements, recordAccountUsage } from "../src/billing/entitlements";
 import { GB, planSpec } from "../src/billing/plans";
 import { processPolarWebhook, signStandardWebhook } from "../src/billing/polar";
@@ -85,7 +85,7 @@ describe("Complimentary premium access", () => {
 
   it("rejects invalid bounds and inactive or nonexistent accounts", async () => {
     const id = await account(), now = Date.now(), input = grantInput(id, "pro", now);
-    for (const expiresAt of [now, now - 1, now + MAX_PREMIUM_GRANT_MS + 1, NaN, Infinity, now + 0.5])
+    for (const expiresAt of [now, now - 1, 0, -1, MAX_PREMIUM_GRANT_EXPIRY_MS + 1, NaN, Infinity, now + 0.5])
       await expect(createPremiumGrant(env, ACTOR, { ...input, expiresAt }, now)).rejects.toMatchObject({ status: 400 });
     for (const reason of ["", " ", "reason\nwith control", "x".repeat(501)])
       await expect(createPremiumGrant(env, ACTOR, { ...input, reason }, now)).rejects.toMatchObject({ status: 400 });
@@ -95,6 +95,44 @@ describe("Complimentary premium access", () => {
     await expect(createPremiumGrant(env, ACTOR, input, now)).rejects.toMatchObject({ status: 404 });
     await env.ACCOUNTS.prepare("UPDATE accounts SET suspended_at = NULL, deleting_at = ? WHERE id = ?").bind(now, id).run();
     await expect(createPremiumGrant(env, ACTOR, input, now)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("supports never-expiring grants (omitted or null expiry) and longer finite expiries until revoked", async () => {
+    const id = await account(), now = Date.now();
+    await applyPlanToAccount(env, id, "free");
+    // Longer than 90 days finite expiry is allowed.
+    const oneYear = { id: crypto.randomUUID(), accountId: id, plan: "pro" as const, expiresAt: now + 365 * DAY, reason: "Annual beta" };
+    expect((await createPremiumGrant(env, ACTOR, oneYear, now)).created).toBe(true);
+
+    // Never-expiring grant (omitted expiresAt -> null) is preferred over finite same-tier grant.
+    const foreverId = crypto.randomUUID();
+    const created = await createPremiumGrant(env, ACTOR, { id: foreverId, accountId: id, plan: "pro", reason: "Founding tester" }, now);
+    expect(created.created).toBe(true);
+    expect(created.grant.expiresAt).toBeNull();
+    // Exact retry with explicit null matches omitted expiresAt; finite expiry conflicts.
+    const retried = await createPremiumGrant(env, ACTOR, { id: foreverId, accountId: id, plan: "pro", expiresAt: null, reason: "Founding tester" }, now + 10 * 365 * DAY);
+    expect(retried.created).toBe(false);
+    expect(retried.grant.expiresAt).toBeNull();
+    await expect(createPremiumGrant(env, ACTOR, { id: foreverId, accountId: id, plan: "pro", expiresAt: now + DAY, reason: "Founding tester" }, now))
+      .rejects.toMatchObject({ status: 409, code: "grant_id_conflict" });
+
+    // Active now, preferred over oneYear, and still active 10 years later (entitlements, SQL limits, and usage exemption).
+    expect((await getAccountEntitlements(env, id, now)).premiumGrant).toEqual({ id: foreverId, plan: "pro", expiresAt: null });
+    const farFuture = now + 10 * 365 * DAY;
+    expect((await getAccountEntitlements(env, id, farFuture)).plan).toBe("pro");
+    expect(await accountLimits(env, id)).toEqual({ pages: 100, residents: 100, storage: 20 * GB });
+    await recordAccountUsage(env, id, { mcpCalls: 5, mediaBytes: 4096 }, farFuture);
+    expect((await getAccountEntitlements(env, id, farFuture)).usage).toMatchObject({
+      mcpCalls: 5, complimentaryMcpCalls: 5, mediaBytes: 4096, complimentaryMediaBytes: 4096,
+    });
+
+    // Revoking both ends access immediately and retry never resurrects the never-expiring grant.
+    await revokePremiumGrant(env, ACTOR, foreverId, "Ended", now + 1000);
+    await revokePremiumGrant(env, ACTOR, oneYear.id, "Ended", now + 1000);
+    expect((await getAccountEntitlements(env, id, now + 1000)).plan).toBe("free");
+    const afterRevoke = await createPremiumGrant(env, ACTOR, { id: foreverId, accountId: id, plan: "pro", reason: "Founding tester" }, now + 2000);
+    expect(afterRevoke.created).toBe(false);
+    expect(afterRevoke.grant.revokedAt).toBe(now + 1000);
   });
 
   it("expires at the deadline without cron, including atomic SQL capacity checks", async () => {

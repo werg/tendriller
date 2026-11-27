@@ -24,10 +24,10 @@ export const HELP = `Usage:
   node scripts/admin.mjs generate-credential --id ID --scopes SCOPE[,SCOPE...] \\
     --token-file PATH --config-file PATH [--expires-in-days 30]
   node scripts/admin.mjs grant --server ORIGIN --token-file PATH \\
-    --id UUID --account-id ID --plan pro|team --expires-at TIMESTAMP --reason TEXT
+    --id UUID --account-id ID --plan pro|team [--expires-at TIMESTAMP] --reason TEXT
   node scripts/admin.mjs revoke --server ORIGIN --token-file PATH --id UUID --reason TEXT
   node scripts/admin.mjs grants --server ORIGIN --token-file PATH --account-id ID [--limit N] [--before CURSOR]
-  node scripts/admin.mjs analytics --server ORIGIN --token-file PATH --from YYYY-MM-DD --to YYYY-MM-DD
+  node scripts/admin.mjs analytics --server ORIGIN --token-file PATH [--from YYYY-MM-DD] [--to YYYY-MM-DD]
   node scripts/admin.mjs audit --server ORIGIN --token-file PATH [--limit N] [--before CURSOR]
 
 Scopes: ${ADMIN_SCOPES.join(', ')}
@@ -36,6 +36,7 @@ one-record JSON array for ADMIN_API_CREDENTIALS_JSON; it contains only a token h
 Credential lifetime is 1–90 days, default 30. Keep both files outside the checkout.
 Install the reviewed config on the intended service separately; this CLI does not deploy it.
 TIMESTAMP is an absolute RFC3339 timestamp with a timezone, or epoch milliseconds.
+Omit --expires-at to create a never-expiring grant (active until revoked).
 Choose and retain a grant UUID before the first attempt; retry with the same id and body.
 HTTPS is required except for loopback development. Redirects and automatic retries
 are disabled. Network commands never use cookies and never accept a token on argv.
@@ -85,12 +86,16 @@ export function adminOrigin(value) {
 }
 
 function timestamp(value) {
-  if (/^[0-9]+$/.test(value)) return integer(value, '--expires-at', 1, 8_640_000_000_000_000);
+  if (/^[0-9]+$/.test(value)) return integer(value, '--expires-at', 1, 253_402_300_799_999);
   if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value) || !Number.isFinite(Date.parse(value))) {
     throw new Error('--expires-at must be an absolute RFC3339 timestamp with a timezone or epoch milliseconds');
   }
   day(value.slice(0, 10), 'expires-at');
-  return Date.parse(value);
+  const ms = Date.parse(value);
+  if (!Number.isSafeInteger(ms) || ms < 1 || ms > 253_402_300_799_999) {
+    throw new Error('--expires-at must be between 1970-01-01T00:00:00.001Z and 9999-12-31T23:59:59.999Z');
+  }
+  return ms;
 }
 
 function day(value, flag) {
@@ -183,7 +188,7 @@ async function responseJson(response) {
 export async function adminRequest({ server, tokenFile, path, query = {}, method = 'GET', body }, { fetchImpl = globalThis.fetch, timeoutMs = 15_000 } = {}) {
   integer(timeoutMs, 'Request timeout', 1, 30_000);
   const origin = adminOrigin(server);
-  if (!/^\/api\/admin\/v1\/[a-z0-9/-]+$/.test(path)) throw new Error('Invalid admin API path');
+  if (!/^\/api\/admin\/v1(?:\/[a-z0-9-]+)*$/.test(path)) throw new Error('Invalid admin API path');
   const token = await readTokenFile(tokenFile);
   const url = new URL(path, origin);
   for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
@@ -236,7 +241,7 @@ export async function runAdmin(argv, { stdout = text => process.stdout.write(tex
     }
     const request = { server: required(flags, 'server'), tokenFile: required(flags, 'token-file'), path: '', query: {} };
     if (command === 'grant') {
-      const expiresAt = timestamp(required(flags, 'expires-at', 64));
+      const expiresAt = flags['expires-at'] !== undefined ? timestamp(required(flags, 'expires-at', 64)) : null;
       // The server validates new grants' lifetimes. A historical timestamp must
       // remain sendable to recover the result of the same request after expiry.
       const plan = required(flags, 'plan', 4);
@@ -248,8 +253,9 @@ export async function runAdmin(argv, { stdout = text => process.stdout.write(tex
       Object.assign(request, { path: `/api/admin/v1/premium-grants/${grantId(flags)}/revoke`, method: 'POST', body: { reason: required(flags, 'reason', 500).trim() } });
     } else if (command === 'analytics') {
       request.path = '/api/admin/v1/analytics';
-      request.query = { from: day(required(flags, 'from', 10), 'from'), to: day(required(flags, 'to', 10), 'to') };
-      if (request.query.from > request.query.to) throw new Error('--from must not be after --to');
+      if (flags.from !== undefined) request.query.from = day(required(flags, 'from', 10), 'from');
+      if (flags.to !== undefined) request.query.to = day(required(flags, 'to', 10), 'to');
+      if (request.query.from && request.query.to && request.query.from > request.query.to) throw new Error('--from must not be after --to');
     } else {
       request.path = command === 'grants' ? '/api/admin/v1/premium-grants' : '/api/admin/v1/audit';
       if (command === 'grants') request.query.accountId = required(flags, 'account-id', 128);

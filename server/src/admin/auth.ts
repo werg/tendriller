@@ -54,13 +54,14 @@ function credentials(raw: string | undefined): Credential[] {
 function checkOrigin(req: Request, env: Env): void {
   const url = new URL(req.url);
   const expected = new URL(publicBase(env)).origin;
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  const loopback = url.hostname === "localhost" || url.hostname === "[::1]" || /^127(?:\.[0-9]{1,3}){3}$/.test(url.hostname);
   if (url.origin !== expected || (url.protocol !== "https:" && !loopback)) {
     throw new HttpError(404, "not_found");
   }
   const origin = req.headers.get("Origin");
-  // No browser credential sharing or cross-origin administration, including GETs.
-  if ((origin !== null && origin !== expected) || req.headers.get("Sec-Fetch-Site") === "cross-site") {
+  const fetchSite = req.headers.get("Sec-Fetch-Site");
+  // No browser credential sharing or non-same-origin administration (including same-site subdomains), even on GETs.
+  if ((origin !== null && origin !== expected) || (fetchSite !== null && fetchSite !== "same-origin" && fetchSite !== "none")) {
     throw new HttpError(403, "bad_origin", "Administration requires the service origin.");
   }
 }

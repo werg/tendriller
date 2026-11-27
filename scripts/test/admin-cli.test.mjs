@@ -115,6 +115,19 @@ test('grant sends a retained operation UUID and exact body once, without cookies
   assert(!output.out.join('').includes(TOKEN));
 });
 
+test('grant without --expires-at sends expiresAt: null for never-expiring premium', async t => {
+  const { tokenFile } = tokenFixture(t), output = captured(), calls = [];
+  const argv = ['grant', '--server', 'https://service.example', '--token-file', tokenFile, '--id', ID,
+    '--account-id', 'account-123', '--plan', 'team', '--reason', 'Founding member'];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return Response.json({ grant: { id: ID, expiresAt: null }, created: true }, { status: 201 });
+  };
+  assert.equal(await runAdmin(argv, { ...output, fetchImpl, now: NOW }), 0);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { id: ID, accountId: 'account-123', plan: 'team', expiresAt: null, reason: 'Founding member' });
+});
+
 test('read APIs encode bounded parameters and revoke uses only the named grant', async t => {
   const { tokenFile } = tokenFixture(t), output = captured(), calls = [];
   const common = ['--server', 'https://service.example', '--token-file', tokenFile];
@@ -122,14 +135,21 @@ test('read APIs encode bounded parameters and revoke uses only the named grant',
   for (const args of [
     ['grants', ...common, '--account-id', 'account-123', '--before', 'opaque+/=cursor', '--limit', '20'],
     ['analytics', ...common, '--from', '2026-11-01', '--to', '2026-11-27'],
+    ['analytics', ...common],
+    ['analytics', ...common, '--from', '2026-11-20'],
     ['audit', ...common, '--limit', '10'],
     ['revoke', ...common, '--id', ID, '--reason', 'Testing complete'],
   ]) assert.equal(await runAdmin(args, { ...output, fetchImpl, now: NOW }), 0);
   assert.equal(new URL(calls[0].url).searchParams.get('before'), 'opaque+/=cursor');
   assert.equal(new URL(calls[1].url).pathname, '/api/admin/v1/analytics');
-  assert.equal(new URL(calls[2].url).pathname, '/api/admin/v1/audit');
-  assert.equal(new URL(calls[3].url).pathname, `/api/admin/v1/premium-grants/${ID}/revoke`);
-  assert.deepEqual(JSON.parse(calls[3].options.body), { reason: 'Testing complete' });
+  assert.equal(new URL(calls[2].url).search, '');
+  assert.equal(new URL(calls[3].url).search, '?from=2026-11-20');
+  assert.equal(new URL(calls[4].url).pathname, '/api/admin/v1/audit');
+  assert.equal(new URL(calls[5].url).pathname, `/api/admin/v1/premium-grants/${ID}/revoke`);
+  assert.deepEqual(JSON.parse(calls[5].options.body), { reason: 'Testing complete' });
+  const rootRes = await adminRequest({ server: 'https://service.example', tokenFile, path: '/api/admin/v1' }, { fetchImpl });
+  assert.equal(rootRes.ok, true);
+  await assert.rejects(adminRequest({ server: 'https://service.example', tokenFile, path: '/api/admin/v1//audit' }, { fetchImpl }), /Invalid admin API path/);
 });
 
 test('invalid commands fail before credential reads or network traffic', async () => {

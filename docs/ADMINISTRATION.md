@@ -18,7 +18,7 @@ reading analytics cannot issue grants or inspect account-targeted audit records.
 | --- | --- |
 | `analytics:read` | Read aggregate service counters and inventory snapshots |
 | `premium:read` | List grant history for an exact account ID |
-| `premium:write` | Create and revoke bounded Pro/Team grants; receive the resulting grant record |
+| `premium:write` | Create and revoke Pro/Team grants (with optional expiry); receive the resulting grant record |
 | `audit:read` | Read premium grant/revoke audit entries, including actors and target account IDs |
 
 No scope confers access to page content, encryption keys, private application
@@ -36,8 +36,8 @@ once the updated Worker secret/version is active. There is no application cache
 or renewal endpoint that can prolong the credential.
 
 Requests require the canonical service origin over HTTPS (loopback HTTP is
-allowed for local development). A supplied foreign `Origin` or cross-site
-Fetch Metadata value is rejected, including on reads. These routes bypass the
+allowed for local development). A supplied foreign `Origin` or non-same-origin
+Fetch Metadata value (`same-site` or `cross-site`) is rejected, including on reads. These routes bypass the
 public API's wildcard CORS and preflight handling, return `Cache-Control:
 no-store`, and never fall back to cookies. Existing edge rate-limit bindings
 apply separate `admin:` keys: `AUTH_RATE` for each authenticated operator and
@@ -116,7 +116,8 @@ does not accept a token on the command line or retry mutations automatically.
 ## Complimentary premium grants
 
 A grant is a separate, immutable ledger entry for an existing, active account.
-Choose `pro` or `team`, an absolute expiry at most 90 days away, a client-generated
+Choose `pro` or `team`, an optional absolute expiry (omit or pass `null` for a
+never-expiring grant that stays active until explicitly revoked), a client-generated
 UUID, and a short operational reason. Reasons must be trimmed, 1–500 characters,
 without control characters. Use a cohort or support reference; do not put private
 application information in a reason.
@@ -137,7 +138,8 @@ node scripts/admin.mjs grant \
   --reason 'December beta cohort'
 ```
 
-Use your own UUID and future timestamp. Save the exact UUID and body before the
+Use your own UUID and optional future timestamp (omit `--expires-at` for a
+never-expiring grant). Save the exact UUID and body before the
 first attempt. An exact retry returns the existing record, even after expiry or
 revocation; it never extends or reactivates access. Reusing a UUID with a different
 account, tier, expiry, reason, or operator identity returns `409`. To recover a
@@ -194,8 +196,9 @@ ordinary admission is not reclassified by a later grant. The accounting month
 and analytics day use the fresh metering time so queued calls are not backdated
 into a closed usage period that reconciliation no longer reads.
 SFU reports contain a coalesced byte count. The server retains each session's last
-usage-report time; if any grant overlaps that interval, the whole report is
-complimentary. This deliberately favors the account holder because the server
+usage-report time and whether complimentary access was active at interval start; if
+any grant overlaps that interval (including same-millisecond revocation), the whole
+report is complimentary. This deliberately favors the account holder because the server
 cannot split client-reported bytes across the exact expiry instant. Subsequent
 intervals entirely after the grant ends use ordinary billing. Client timestamps
 cannot select the exemption interval. Reporting/relay measurement limits remain
@@ -279,7 +282,7 @@ accepts arbitrary metadata or silently ignores an undeclared input field.
 | Method and path | Scope | Input / result |
 | --- | --- | --- |
 | `GET /api/admin/v1` | Any configured scope | API version, operator ID, permitted scopes |
-| `POST /api/admin/v1/premium-grants` | `premium:write` | `{id, accountId, plan, expiresAt, reason}` → `{grant, created}`; `201` new, `200` retry |
+| `POST /api/admin/v1/premium-grants` | `premium:write` | `{id, accountId, plan, reason, expiresAt?}` → `{grant, created}`; `201` new, `200` retry |
 | `POST /api/admin/v1/premium-grants/:id/revoke` | `premium:write` | `{reason}` → `{grant, revoked}`; `200`, including repeat revocation |
 | `GET /api/admin/v1/premium-grants` | `premium:read` | Required `accountId`; optional `limit`/`before` → `{grants, nextCursor}` |
 | `GET /api/admin/v1/analytics` | `analytics:read` | Optional `from`/`to` → service-only daily metrics and coverage |
@@ -353,21 +356,11 @@ validation or a dedicated admin Worker instead of assuming `ctx.access` works he
 A future private admin tendril should declare narrow domain commands/queries,
 such as `grantPremium`, `revokePremium`, `listGrants`, and `serviceUsage`. Its
 trusted native/Worker adapter holds the corresponding operator credential and
-calls these APIs. Authenticate each command's signed actor and approved capability
-against the page's current Chronolog API-access policy before using that
-credential. The adapter consumes that policy; it has no separate editable page
-ACL. See [Chronolog-managed cloud APIs](CHRONOLOG_CLOUD_APIS.md) for public-policy
-and admitted-participant profiles, code ownership, and version cutover.
-Membership of an arbitrary tendril must never imply
+calls these APIs after authenticating the signed actor against the page's
+authorization policy. Membership of an arbitrary tendril must never imply
 service-wide admin rights. Keep analytics-only adapters separate from grant writers.
 The UI and replicated application state contain no operator token. Preserve grant
 UUIDs and their exact inputs through uncertain command outcomes.
-
-The [Cloud Computation proposal](CLOUD_ACTIONS.md) develops this adapter boundary
-into a joint premium package using Workers for Platforms, Dynamic Workers, and
-secret-backed capabilities.
-It is a design proposal; this administration release does not implement hosted
-user code or a customer secrets vault.
 
 If operational needs grow, a dedicated admin Worker, separate analytics database,
 short-lived identity-bound authorization, and an external append-only audit sink

@@ -81,7 +81,6 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Changelog](CHANGELOG.md) — version tags and source releases
 - [Operations](docs/OPERATIONS.md) — fresh provisioning, storage baseline, readiness, and staging checks
 - [Service administration](docs/ADMINISTRATION.md) — scoped operator APIs, complimentary premium grants, and aggregate usage
-- [Cloud Computation proposal](docs/CLOUD_ACTIONS.md) — future hosted agents, cloud tasks, and secret-backed capabilities
 - [Three-repository qualification](docs/RELEASE_COMPOSITION.md) — composing core, Chronolog, and cookbooks
 - [Agent onboarding acceptance](docs/AGENT_ONBOARDING_TEST.md) — cold-start domain evaluation
 - [Cookbooks](https://github.com/werg/tendriller-contrib) — larger examples and independent qualification

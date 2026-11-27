@@ -342,6 +342,13 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     for (const form of checkoutForms) expect(form).not.toMatch(/<button\b[^>]*\bdisabled\b/);
     expect(html).not.toContain("Current (");
 
+    // Public /pricing must also keep the granted tier's checkout form available for grant-only users.
+    const pricing = await route(new Request(`${BASE}/pricing`, { headers: { Cookie: h.session! } }), billingEnv);
+    expect(pricing.status).toBe(200);
+    const pricingHtml = await pricing.text();
+    expect(pricingHtml).not.toContain("Current plan · Manage");
+    expect(pricingHtml).toContain(`<input type="hidden" name="plan" value="${plan}">`);
+
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       id: "chk_grant", url: "https://polar.sh/checkout/chk_grant",
     }), { status: 201 }));
@@ -416,6 +423,66 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     expect(afterGrant).not.toContain("Pay-as-you-go overage is paused");
     expect(afterGrant.match(/<input\b[^>]*name="payg_enabled"[^>]*>/)?.[0]).toBeDefined();
     expect(afterGrant.match(/<input\b[^>]*name="payg_enabled"[^>]*>/)?.[0]).not.toContain("checked");
+  });
+
+  it("does not clobber a concurrently saved spend cap when a PAYG update omits the cap field", async () => {
+    const h = await create();
+    await applyPlanToAccount(env, h.account!, "pro");
+    // Start uncapped (NULL) with PAYG enabled.
+    await env.ACCOUNTS.prepare("UPDATE accounts SET payg_enabled = 1, payg_spend_cap_cents = NULL WHERE id = ?")
+      .bind(h.account).run();
+
+    // Begin a request omitting the cap field whose body streams in after another request saves a $20 cap.
+    let releaseBody!: () => void;
+    let bodyReading!: () => void;
+    const bodyStarted = new Promise<void>(resolve => { bodyReading = resolve; });
+    const bodyGate = new Promise<void>(resolve => { releaseBody = resolve; });
+    const encoder = new TextEncoder();
+    const delayedStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        bodyReading();
+        await bodyGate;
+        controller.enqueue(encoder.encode(JSON.stringify({ payg_enabled: false })));
+        controller.close();
+      },
+    });
+    const staleReq = route(new Request(`${BASE}/dashboard/billing/payg`, {
+      method: "POST",
+      headers: { Cookie: h.session!, Origin: BASE, "Content-Type": "application/json", Accept: "application/json" },
+      body: delayedStream,
+      // @ts-expect-error duplex is required by Request with ReadableStream body
+      duplex: "half",
+    }), env);
+
+    await bodyStarted;
+    const concurrentCap = await route(new Request(`${BASE}/dashboard/billing/payg`, {
+      method: "POST",
+      headers: { Cookie: h.session!, Origin: BASE, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ payg_enabled: true, spend_cap_cents: 2000 }),
+    }), env);
+    expect(concurrentCap.status).toBe(200);
+    expect(await concurrentCap.json()).toEqual({ ok: true, payg_enabled: true, payg_spend_cap_cents: 2000 });
+
+    releaseBody();
+    const staleRes = await staleReq;
+    expect(staleRes.status).toBe(200);
+    expect(await staleRes.json()).toEqual({ ok: true, payg_enabled: false, payg_spend_cap_cents: 2000 });
+    expect(await env.ACCOUNTS.prepare("SELECT payg_enabled, payg_spend_cap_cents FROM accounts WHERE id = ?").bind(h.account).first())
+      .toEqual({ payg_enabled: 0, payg_spend_cap_cents: 2000 });
+  });
+
+  it("excludes complimentary usage from billing dashboard quota meters after a grant ends", async () => {
+    const h = await create();
+    const grant = { id: crypto.randomUUID(), accountId: h.account!, plan: "team" as const, expiresAt: Date.now() + 60_000, reason: "Meter display test" };
+    await createPremiumGrant(env, "operator:testing", grant);
+    await recordAccountUsage(env, h.account!, { mcpCalls: 500, mediaBytes: 3 * GB });
+    await revokePremiumGrant(env, "operator:testing", grant.id, "Done");
+
+    const res = await route(new Request(`${BASE}/dashboard/billing`, { headers: { Cookie: h.session! } }), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("500 complimentary calls excluded");
+    expect(html).toContain("3.0 GB complimentary excluded");
   });
 
   it("redirects signed-in users from / and /auth to /dashboard, supports /?home=1, and shows contextual upgrade card on /dashboard", async () => {
