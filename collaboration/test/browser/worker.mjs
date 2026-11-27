@@ -3,7 +3,13 @@ import {
   defineCommand, defineQuery, encodeRecord,
 } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
+import quickjsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import { serveBrowserOwner } from '../../../session/worker.mjs';
+
+let quickjsWasmPromise;
+const loadQuickJsWasm = () => (quickjsWasmPromise ??= fetch(new URL(quickjsWasmUrl, import.meta.url))
+  .then(r => { if (!r.ok) throw Error(`QuickJS WASM fetch failed: ${r.status}`); return r.arrayBuffer(); })
+  .then(buf => WebAssembly.compile(buf)));
 
 const profileId = new URL(import.meta.url).searchParams.get('profile') || 'browser-owner-test';
 const MSG_REDUCER = `
@@ -78,10 +84,12 @@ serveBrowserOwner({
           if (!(key instanceof Uint8Array) || key.length !== 32) throw Error('RETAINED_FIXTURE_EPOCH_KEY_MISSING');
           session = await createApplicationSession({
             device,
+            applicationId: '91'.repeat(32),
             definition,
             genesis: genesisBytes,
             casNodes,
             epochKeys: new Map([[0, key]]),
+            wasmModule: await loadQuickJsWasm(),
           });
           return { session };
         } catch (error) {

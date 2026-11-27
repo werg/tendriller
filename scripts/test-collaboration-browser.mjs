@@ -16,6 +16,7 @@ await build({
   absWorkingDir: root,
   entryPoints: { page: 'collaboration/test/browser/page.mjs', worker: 'collaboration/test/browser/worker.mjs' },
   bundle: true, splitting: true, format: 'esm', platform: 'browser', target: 'es2022', outdir: out, outExtension: { '.js': '.mjs' },
+  loader: { '.wasm': 'file' },
 });
 await build({
   absWorkingDir: root,
@@ -45,8 +46,9 @@ window.passiveReady=(async()=>{
     res.end('<!doctype html><title>Owner conformance</title><script type="module" src="/page.mjs"></script>');
     return;
   }
-  if (!/^\/[A-Za-z0-9_.-]+\.mjs$/.test(path)) { res.writeHead(404); res.end(); return; }
-  try { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(await readFile(join(out, path.slice(1)))); }
+  if (!/^\/[A-Za-z0-9_.-]+\.(?:mjs|wasm)$/.test(path)) { res.writeHead(404); res.end(); return; }
+  const contentType = path.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
+  try { res.writeHead(200, { 'content-type': contentType }); res.end(await readFile(join(out, path.slice(1)))); }
   catch { res.writeHead(404); res.end(); }
 });
 await new Promise(done => server.listen(0, '127.0.0.1', done));
