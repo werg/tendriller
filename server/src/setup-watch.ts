@@ -1,10 +1,15 @@
 import { currentPrincipal, freshPrincipal, pageAccessAllowed, requireAgentScope, type AgentPrincipal } from './access';
 import { HttpError } from './http';
+import {
+  closeHubSubscriber, deliverHubData, listHubSubscribers, putHubSubscriber,
+  type HubStreamOpenResult, type HubStreamRef,
+} from './hub-streams';
 import type { Tendril } from './tendril';
 
 export const SETUP_WATCH_PROTOCOL = 'tendriller.setup.v1';
 const TAG = 'setup-watch';
-interface Attachment { kind: typeof TAG; principal: AgentPrincipal }
+interface SetupState { principal: AgentPrincipal }
+interface Attachment extends SetupState { kind: typeof TAG }
 const attachment = (ws: WebSocket) => {
   const value = ws.deserializeAttachment() as Attachment | null;
   return value?.kind === TAG ? value : null;
@@ -21,25 +26,54 @@ async function authorized(t: Tendril, principal: AgentPrincipal) {
     && Boolean(currentPrincipal(t, principal));
 }
 
+function activeWatchers(t: Tendril): AgentPrincipal[] {
+  const result: AgentPrincipal[] = [];
+  for (const ws of t.ctx.getWebSockets(TAG)) {
+    const old = attachment(ws);
+    if (!old || ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
+    if (!currentPrincipal(t, old.principal)) { ws.close(4003, 'Setup access revoked'); continue; }
+    result.push(old.principal);
+  }
+  for (const sub of listHubSubscribers<SetupState>(t, TAG)) {
+    if (!currentPrincipal(t, sub.state.principal)) {
+      closeHubSubscriber(t, sub, 4003, 'Setup access revoked');
+      continue;
+    }
+    result.push(sub.state.principal);
+  }
+  return result;
+}
+
 /** A bounded, receive-only setup channel. No heartbeat, timer, payload queue or application data. */
 export async function upgradeSetupWatch(t: Tendril, req: Request, principal: AgentPrincipal) {
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'websocket_required');
   if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(x => x.trim()).includes(SETUP_WATCH_PROTOCOL))
     throw new HttpError(400, 'setup_protocol_required');
   if (!await authorized(t, principal)) throw new HttpError(403, 'forbidden');
-  const sockets = t.ctx.getWebSockets(TAG).filter(ws => {
-    const old = attachment(ws);
-    if (!old || ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
-    if (!currentPrincipal(t, old.principal)) { ws.close(4003, 'Setup access revoked'); return false; }
-    return true;
-  });
-  if (sockets.length >= 8 || sockets.filter(ws => attachment(ws)?.principal.agentId === principal.agentId).length >= 2)
+  const watchers = activeWatchers(t);
+  if (watchers.length >= 8 || watchers.filter(p => p.agentId === principal.agentId).length >= 2)
     throw new HttpError(429, 'setup_watch_full');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, [TAG]);
   server.serializeAttachment({ kind: TAG, principal } satisfies Attachment);
   server.send(snapshot(t)); // Reconnection reconciles changes missed while disconnected.
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': SETUP_WATCH_PROTOCOL } });
+}
+
+/** Stateless hub-backed setup watch subscription. */
+export async function openSetupHubStream(
+  t: Tendril,
+  protocols: string[],
+  principal: AgentPrincipal,
+  ref: HubStreamRef,
+): Promise<HubStreamOpenResult> {
+  if (!protocols.includes(SETUP_WATCH_PROTOCOL)) throw new HttpError(400, 'setup_protocol_required');
+  if (!await authorized(t, principal)) throw new HttpError(403, 'forbidden');
+  const watchers = activeWatchers(t);
+  if (watchers.length >= 8 || watchers.filter(p => p.agentId === principal.agentId).length >= 2)
+    throw new HttpError(429, 'setup_watch_full');
+  putHubSubscriber<SetupState>(t, { ...ref, kind: TAG, state: { principal }, createdAt: t.now() });
+  return { protocol: SETUP_WATCH_PROTOCOL, initial: [snapshot(t)] };
 }
 
 export function notifySetupChanged(t: Tendril): void {
@@ -51,6 +85,13 @@ export function notifySetupChanged(t: Tendril): void {
         if (!await authorized(t, value.principal)) { ws.close(4003, 'Setup access revoked'); continue; }
         ws.send(snapshot(t));
       } catch { try { ws.close(4003, 'Setup access unavailable'); } catch {} }
+    }
+    for (const sub of listHubSubscribers<SetupState>(t, TAG)) {
+      try {
+        if (!await authorized(t, sub.state.principal)) { closeHubSubscriber(t, sub, 4003, 'Setup access revoked'); continue; }
+        const delivered = await deliverHubData(t, sub, snapshot(t));
+        if (!delivered) closeHubSubscriber(t, sub, 1001, 'Hub stream unavailable', { notify: false });
+      } catch { closeHubSubscriber(t, sub, 4003, 'Setup access unavailable'); }
     }
   });
 }

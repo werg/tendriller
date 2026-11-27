@@ -180,10 +180,10 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
     if (!want() || retryTimer) return;
     const ms = Math.min(maxRetryMs, retryMs * 2 ** Math.min(failures++, 16));
     status({ state: 'reconnecting', retryInMs: ms });
-    retryTimer = setTimeout(() => { retryTimer = undefined; connect(); }, ms);
+    retryTimer = setTimeout(() => { retryTimer = undefined; connect({ immediate: true }); }, ms);
   }
-  function connect() {
-    if (socket || !want()) return;
+  function connect({ immediate = false } = {}) {
+    if (socket || !want() || (!immediate && retryTimer)) return;
     clearTimeout(retryTimer); retryTimer = undefined;
     let current, opened = false;
     status({ state: 'connecting' });
@@ -283,7 +283,7 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
       }
     },
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
-    connect() { keepAlive = true; connect(); },
+    connect() { keepAlive = true; connect({ immediate: true }); },
     close() {
       stopped = true; clearTimeout(retryTimer); clearInterval(pingTimer);
       const current = socket; socket = undefined;

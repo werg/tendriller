@@ -4,11 +4,20 @@ import { PEER_DISCOVERY_PROTOCOL as PROTOCOL } from '../../contract/discovery-wa
 import { accountActive, currentPrincipal, freshPrincipal, pageAccessAllowed, participantIdentity, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
+import {
+  closeHubSubscriber, deliverHubData, listHubSubscribers, putHubSubscriber,
+  type HubStreamOpenResult, type HubStreamRef, type HubSubscriber,
+} from './hub-streams';
 import type { Tendril } from './tendril';
 
 const TAG = 'peer-discovery', key = 'peer_directory';
-interface Attachment { kind: typeof TAG; peerId: string; owner: string; connection: string; principal: Principal }
+export interface DiscoveryState { peerId: string; owner: string; connection: string; principal: Principal }
+interface Attachment extends DiscoveryState { kind: typeof TAG }
 interface StoredAdvertisement { advertisement: PeerAdvertisement; owner: string; principal: Principal; connection: string }
+type DiscoveryListener =
+  | { kind: 'ws'; ws: WebSocket; value: Attachment }
+  | { kind: 'hub'; sub: HubSubscriber<DiscoveryState>; value: DiscoveryState };
+
 const attachment = (ws: WebSocket): Attachment | null => {
   const value = ws.deserializeAttachment() as Attachment | null;
   return value?.kind === TAG ? value : null;
@@ -21,30 +30,62 @@ async function fresh(t: Tendril, principal: Principal) {
     throw new HttpError(403, 'forbidden', 'Peer discovery access is no longer active');
   identity(t, principal);
 }
-function retire(ws: WebSocket, code: number, reason: string): void {
+function retireWs(ws: WebSocket, code: number, reason: string): void {
   try { ws.serializeAttachment(null); } catch {}
   try { ws.close(code, reason); } catch {}
 }
-function listeners(t: Tendril): WebSocket[] {
-  return t.ctx.getWebSockets(TAG).filter(ws => {
+function retireListener(t: Tendril, listener: DiscoveryListener, code: number, reason: string): void {
+  if (listener.kind === 'ws') retireWs(listener.ws, code, reason);
+  else closeHubSubscriber(t, listener.sub, code, reason);
+}
+function listeners(t: Tendril): DiscoveryListener[] {
+  const result: DiscoveryListener[] = [];
+  for (const ws of t.ctx.getWebSockets(TAG)) {
     const value = attachment(ws);
-    if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
-    if (!currentPrincipal(t, value.principal)) { retire(ws, 4003, 'Peer host access revoked'); return false; }
-    return true;
-  });
+    if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
+    if (!currentPrincipal(t, value.principal)) { retireWs(ws, 4003, 'Peer host access revoked'); continue; }
+    result.push({ kind: 'ws', ws, value });
+  }
+  for (const sub of listHubSubscribers<DiscoveryState>(t, TAG)) {
+    if (!currentPrincipal(t, sub.state.principal)) {
+      closeHubSubscriber(t, sub, 4003, 'Peer host access revoked');
+      continue;
+    }
+    result.push({ kind: 'hub', sub, value: sub.state });
+  }
+  return result;
 }
 function active(t: Tendril): StoredAdvertisement[] {
-  const connected = new Set(listeners(t).map(ws => attachment(ws)!.connection));
+  const connected = new Set(listeners(t).map(l => l.value.connection));
   return t.db.get<StoredAdvertisement[]>(key, []).filter(row => connected.has(row.connection) && currentPrincipal(t, row.principal));
 }
 const presence = (row: StoredAdvertisement) => ({ advertisement: row.advertisement });
+function removeDiscoveryConnection(t: Tendril, connection: string): void {
+  t.transaction(() => {
+    const before = t.db.get<StoredAdvertisement[]>(key, []), after = before.filter(row => row.connection !== connection);
+    if (before.length !== after.length) { t.db.set(key, after); notify(t); }
+  });
+}
 function notify(t: Tendril, except?: string) {
   t.afterCommit(async () => {
-    for (const socket of listeners(t)) {
-      const value = attachment(socket)!;
-      if (value.connection === except) continue;
-      try { await fresh(t, value.principal); if (socket.readyState === WebSocket.READY_STATE_OPEN) socket.send(JSON.stringify({ type: 'changed' })); }
-      catch { try { socket.close(4003, 'Peer discovery access unavailable'); } catch {} }
+    for (const listener of listeners(t)) {
+      if (listener.value.connection === except) continue;
+      if (listener.kind === 'ws') {
+        try { await fresh(t, listener.value.principal); if (listener.ws.readyState === WebSocket.READY_STATE_OPEN) listener.ws.send(JSON.stringify({ type: 'changed' })); }
+        catch { try { listener.ws.close(4003, 'Peer discovery access unavailable'); } catch {} }
+      } else {
+        try {
+          await fresh(t, listener.value.principal);
+          const delivered = await deliverHubData(t, listener.sub, JSON.stringify({ type: 'changed' }));
+          if (!delivered) {
+            closeHubSubscriber(t, listener.sub, 1001, 'Hub stream unavailable', { notify: false });
+            removeDiscoveryConnection(t, listener.value.connection);
+          }
+        } catch {
+          closeHubSubscriber(t, listener.sub, 4003, 'Peer discovery access unavailable');
+          removeDiscoveryConnection(t, listener.value.connection);
+        }
+      }
     }
   });
 }
@@ -60,13 +101,13 @@ export async function handleDiscoveryWatch(t: Tendril, req: Request, url: URL, p
   let peerId: string;
   try { peerId = validatePeerId(url.searchParams.get('peerId')); } catch { throw new HttpError(400, 'bad_request'); }
   await fresh(t, principal);
-  const owner = identity(t, principal), sockets = listeners(t), previous = sockets.filter(ws => attachment(ws)!.peerId === peerId);
-  if (previous.some(ws => attachment(ws)!.owner !== owner)) throw new HttpError(409, 'peer_identity_conflict');
+  const owner = identity(t, principal), all = listeners(t), previous = all.filter(l => l.value.peerId === peerId);
+  if (previous.some(l => l.value.owner !== owner)) throw new HttpError(409, 'peer_identity_conflict');
   const budget = participantIdentity(t, principal).budget;
-  if (!previous.length && (sockets.length >= LIMITS.peers || sockets.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.peersPerPrincipal))
+  if (!previous.length && (all.length >= LIMITS.peers || all.filter(l => participantIdentity(t, l.value.principal).budget === budget).length >= LIMITS.peersPerPrincipal))
     throw new HttpError(429, 'peer_directory_full');
-  const staleConnections = new Set(previous.map(ws => attachment(ws)!.connection));
-  for (const stale of previous) retire(stale, 4000, 'Discovery listener replaced');
+  const staleConnections = new Set(previous.map(l => l.value.connection));
+  for (const stale of previous) retireListener(t, stale, 4000, 'Discovery listener replaced');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, [TAG]);
   const connection = crypto.randomUUID();
@@ -83,12 +124,48 @@ export async function handleDiscoveryWatch(t: Tendril, req: Request, url: URL, p
   }
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PROTOCOL } });
 }
+
+/** Stateless hub-backed discovery watch subscription. */
+export async function openDiscoveryHubStream(
+  t: Tendril,
+  url: URL,
+  protocols: string[],
+  principal: Principal,
+  ref: HubStreamRef,
+): Promise<HubStreamOpenResult> {
+  if (!protocols.includes(PROTOCOL))
+    throw new HttpError(400, 'bad_request', 'Peer discovery requires its versioned WebSocket protocol');
+  let peerId: string;
+  try { peerId = validatePeerId(url.searchParams.get('peerId')); } catch { throw new HttpError(400, 'bad_request'); }
+  await fresh(t, principal);
+  const owner = identity(t, principal), all = listeners(t), previous = all.filter(l => l.value.peerId === peerId);
+  if (previous.some(l => l.value.owner !== owner)) throw new HttpError(409, 'peer_identity_conflict');
+  const budget = participantIdentity(t, principal).budget;
+  if (!previous.length && (all.length >= LIMITS.peers || all.filter(l => participantIdentity(t, l.value.principal).budget === budget).length >= LIMITS.peersPerPrincipal))
+    throw new HttpError(429, 'peer_directory_full');
+  const staleConnections = new Set(previous.map(l => l.value.connection));
+  for (const stale of previous) retireListener(t, stale, 4000, 'Discovery listener replaced');
+  const connection = crypto.randomUUID();
+  putHubSubscriber<DiscoveryState>(t, { ...ref, kind: TAG, state: { peerId, owner, principal, connection }, createdAt: t.now() });
+  if (staleConnections.size) {
+    t.transaction(() => {
+      const before = t.db.get<StoredAdvertisement[]>(key, []);
+      const after = before.filter(row => !staleConnections.has(row.connection));
+      if (before.length !== after.length) t.db.set(key, after);
+      notify(t, connection);
+    });
+  }
+  return { protocol: PROTOCOL, initial: [JSON.stringify({ type: 'ready' })] };
+}
+
 export function closeDiscoverySocket(t: Tendril, ws: WebSocket): void {
   const value = attachment(ws); if (!value) return;
-  t.transaction(() => {
-    const before = t.db.get<StoredAdvertisement[]>(key, []), after = before.filter(row => row.connection !== value.connection);
-    if (before.length !== after.length) { t.db.set(key, after); notify(t); }
-  });
+  removeDiscoveryConnection(t, value.connection);
+}
+
+export function closeDiscoveryHubStream(t: Tendril, sub: HubSubscriber<DiscoveryState>): void {
+  if (!sub.state?.connection) return;
+  removeDiscoveryConnection(t, sub.state.connection);
 }
 
 /** Actual changes write bounded routing hints once. Reads never renew presence. */
@@ -96,9 +173,17 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
   await fresh(t, principal);
   if (action === 'read') {
     const before = active(t), principals = new Map(before.map(row => [row.owner, row.principal]));
+    const ownerAccount = t.db.get<string | null>('owner_account', null);
     const permitted = new Map(await Promise.all([...principals].map(async ([owner, value]) => {
-      try { await fresh(t, value); return [owner, true] as const; }
-      catch { return [owner, false] as const; }
+      try {
+        identity(t, value);
+        // `fresh(t, principal)` above already verified `pageAccessAllowed(t)` (which checks the page
+        // and its owner account). Only distinct guest/visitor accounts need a D1 active check here.
+        if (value.kind === 'page' && value.accountId && value.accountId !== ownerAccount && !await accountActive(t, value.accountId)) {
+          return [owner, false] as const;
+        }
+        return [owner, Boolean(await freshPrincipal(t, value))] as const;
+      } catch { return [owner, false] as const; }
     })));
     identity(t, principal);
     return { applicationId: selectedApplication(t).id, peers: active(t).filter(row => permitted.get(row.owner)).map(presence) };
@@ -116,7 +201,7 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
   } catch (error) { throw new HttpError(400, 'bad_request', error instanceof Error ? error.message : 'Invalid advertisement'); }
   const owner = identity(t, principal);
   return t.transaction(() => {
-    const sockets = listeners(t), socket = sockets.filter(ws => attachment(ws)!.peerId === peerId).at(-1), bound = socket && attachment(socket)!;
+    const all = listeners(t), match = all.filter(l => l.value.peerId === peerId).at(-1), bound = match?.value;
     if (bound && bound.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');
     const retained = t.db.get<StoredAdvertisement[]>(key, []), rows = active(t), previous = rows.find(row => row.advertisement.peerId === peerId);
     if (previous && previous.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');

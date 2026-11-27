@@ -1,12 +1,13 @@
-import { isDiscoverySocket, closeDiscoverySocket } from './discovery';
-import { isSetupWatch, notifySetupChanged } from './setup-watch';
+import { isDiscoverySocket, closeDiscoverySocket, openDiscoveryHubStream, closeDiscoveryHubStream, type DiscoveryState } from './discovery';
+import { isSetupWatch, notifySetupChanged, openSetupHubStream } from './setup-watch';
 import { applicationPrepared, withAuthorityMutation } from './authority';
 import { attestGrantedAgent, issueAgentAttestation, ownerAdmissionEmail } from './admissions';
 import { isPublicationWatch, notifyPublicationWatchers } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
-import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
+import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers, openRendezvousHubStream, handlePeerHubData, closePeerHubStream, type PeerState } from './peers';
 import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expireRelays } from './peer-relay';
-import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
+import { isInvitationSocket, handleInvitationMessage, openInvitationHubStream, handleInvitationHubData, type InvitationState } from './peer-invitations';
+import { closeAllHubSubscribers, deleteHubSubscriber, getHubSubscriber, hubStreamKey, listHubSubscribers, type HubStreamDataResult, type HubStreamOpenResult, type HubStreamRef, type HubSubscriber } from './hub-streams';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
@@ -35,7 +36,7 @@ import { handlePage, pageAccessDenied } from './page';
 import { isEmojiIcon } from './pwa';
 import { enforceOrgDepartureOnPage, matchingPageGroupRule } from './groups/org-groups';
 import { agentPageApi, barePageUrl, pageUrl, publicBase } from './urls';
-import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
+import { AGENT_HEADER, AGENT_SCOPES, authenticateAgent, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession, requireAgentScope } from './access';
 import { agentPageSummary } from './agent';
 import { claimCreatorAgents } from './agents';
 import type { Role } from '../../contract/index.mjs';
@@ -169,7 +170,10 @@ export class Tendril extends DurableObject<Env> {
         this.db.set("disabled", body.disabled);
         if (body.disabled) this.db.set("disabled_at", this.db.get<number | null>("disabled_at", null) ?? this.now());
         else this.db.del("disabled_at");
-        if (body.disabled) for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
+        if (body.disabled) {
+          for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
+          closeAllHubSubscribers(this, 4003, "page held");
+        }
         this.scheduleAlarm();
         return json({ ok: true });
       }
@@ -179,6 +183,7 @@ export class Tendril extends DurableObject<Env> {
           files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
+      if (kind === 'hub' && req.method === 'POST') return await this.handleHubStream(req, url);
       if (kind === 'mcp' && req.method === 'POST') return await mcpRequest(this, req);
       if (kind === 'agent-grant') return await handleAgentGrants(this, req, url);
       if (kind === 'org-departure' && req.method === 'POST') {
@@ -287,6 +292,111 @@ export class Tendril extends DurableObject<Env> {
     } catch (err) {
       return toErrorResponse(err);
     }
+  }
+
+  /** Stateless DO-to-DO virtual stream endpoints called by AgentHub. */
+  private async handleHubStream(req: Request, url: URL): Promise<Response> {
+    if (url.pathname === '/hub/stream/close') {
+      const body = await readJson(req, 64 * 1024);
+      const agentId = typeof body.agentId === 'string' ? body.agentId : '';
+      const connId = typeof body.connId === 'string' ? body.connId : '';
+      if (!AGENT_ID_RE.test(agentId) || !connId) throw new HttpError(400, 'bad_request');
+      const filter = Array.isArray(body.streams) ? new Set(body.streams.filter((v: unknown): v is number => Number.isInteger(v))) : null;
+      const rows = listHubSubscribers(this).filter(sub => sub.agentId === agentId && sub.connId === connId && (!filter || filter.has(sub.streamId)));
+      for (const sub of rows) {
+        deleteHubSubscriber(this, sub.key);
+        if (sub.kind === 'peer-discovery') closeDiscoveryHubStream(this, sub as HubSubscriber<DiscoveryState>);
+        else if (sub.kind === 'rendezvous') closePeerHubStream(this, sub as HubSubscriber<PeerState>);
+      }
+      return json({ closed: rows.length });
+    }
+    if (url.pathname === '/hub/stream/data') {
+      const body = await readJson(req, 1024 * 1024 + 4096);
+      const agentId = typeof body.agentId === 'string' ? body.agentId : '';
+      const connId = typeof body.connId === 'string' ? body.connId : '';
+      const s = body.s;
+      if (!AGENT_ID_RE.test(agentId) || !connId || !Number.isInteger(s)) throw new HttpError(400, 'bad_request');
+      const key = hubStreamKey(agentId, connId, s as number);
+      const sub = getHubSubscriber(this, key);
+      if (!sub) return json({ close: { code: 1011, reason: 'stream_unknown' } } satisfies HubStreamDataResult);
+      if (sub.kind === 'peer-discovery') {
+        deleteHubSubscriber(this, sub.key);
+        closeDiscoveryHubStream(this, sub as HubSubscriber<DiscoveryState>);
+        return json({ close: { code: 1008, reason: 'Discovery watch is receive-only' } } satisfies HubStreamDataResult);
+      }
+      if (sub.kind === 'setup-watch') {
+        deleteHubSubscriber(this, sub.key);
+        return json({ close: { code: 1008, reason: 'Setup watch is receive-only' } } satisfies HubStreamDataResult);
+      }
+      try { await this.admitTraffic('agent'); }
+      catch {
+        deleteHubSubscriber(this, sub.key);
+        if (sub.kind === 'rendezvous') closePeerHubStream(this, sub as HubSubscriber<PeerState>);
+        return json({ close: { code: 1013, reason: 'Page traffic limit reached; reconnect shortly' } } satisfies HubStreamDataResult);
+      }
+      if (typeof body.text !== 'string') {
+        deleteHubSubscriber(this, sub.key);
+        if (sub.kind === 'rendezvous') closePeerHubStream(this, sub as HubSubscriber<PeerState>);
+        return json({
+          close: {
+            code: 1009,
+            reason: sub.kind === 'peer-invitations'
+              ? 'Invitations accept bounded acknowledgements'
+              : 'Rendezvous accepts bounded SDP/ICE signaling only',
+          },
+        } satisfies HubStreamDataResult);
+      }
+      if (sub.kind === 'peer-invitations') {
+        return json(handleInvitationHubData(this, sub as HubSubscriber<InvitationState>, body.text));
+      }
+      if (sub.kind === 'rendezvous') {
+        return json(await handlePeerHubData(this, sub as HubSubscriber<PeerState>, body.text));
+      }
+      deleteHubSubscriber(this, sub.key);
+      return json({ close: { code: 1008, reason: 'Unsupported participant transport' } } satisfies HubStreamDataResult);
+    }
+    if (url.pathname === '/hub/stream/open') {
+      await this.admitTraffic('agent');
+      await recoverLifetimeChange(this);
+      const owner = this.db.get<string | null>('owner_account', null);
+      if (owner && await this.checkPagePolicy() === 'page') {
+        throw new HttpError(403, 'disabled', 'This tendril is unavailable');
+      }
+      if (this.db.get<boolean>('disabled', false)) {
+        throw new HttpError(403, 'disabled', 'This tendril is unavailable');
+      }
+      const body = await readJson(req, 16 * 1024);
+      const connId = typeof body.connId === 'string' ? body.connId : '';
+      const s = body.s;
+      const path = typeof body.path === 'string' ? body.path : '';
+      const protocols = Array.isArray(body.protocols) ? body.protocols.filter((p: unknown): p is string => typeof p === 'string') : [];
+      if (!connId || !Number.isInteger(s)) throw new HttpError(400, 'bad_request');
+      const principal = authenticateAgent(this, req);
+      this.recordAccess();
+      const baseRef: Omit<HubStreamRef, 'kind'> = {
+        key: hubStreamKey(principal.agentId, connId, s as number),
+        agentId: principal.agentId,
+        connId,
+        streamId: s as number,
+      };
+      let result: HubStreamOpenResult;
+      if (path === 'setup/watch') {
+        result = await openSetupHubStream(this, protocols, principal, { ...baseRef, kind: 'setup-watch' });
+      } else if (path === 'peers/discovery/watch') {
+        requireAgentScope(principal, 'participants:connect');
+        result = await openDiscoveryHubStream(this, url, protocols, principal, { ...baseRef, kind: 'peer-discovery' });
+      } else if (path === 'peers/invitations') {
+        requireAgentScope(principal, 'participants:connect');
+        result = await openInvitationHubStream(this, url, protocols, principal, { ...baseRef, kind: 'peer-invitations' });
+      } else if (path === 'peers/rendezvous') {
+        requireAgentScope(principal, 'participants:connect');
+        result = await openRendezvousHubStream(this, url, protocols, principal, { ...baseRef, kind: 'rendezvous' });
+      } else {
+        throw new HttpError(404, 'not_found');
+      }
+      return json(result);
+    }
+    throw new HttpError(404, 'not_found');
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -581,6 +691,7 @@ export class Tendril extends DurableObject<Env> {
     this.db.set("disabled", true);
     this.db.set("disabled_at", now);
     for (const ws of this.ctx.getWebSockets()) ws.close(4003, "page held");
+    closeAllHubSubscribers(this, 4003, "page held");
     this.scheduleAlarm();
     addActivity(this, { kind: "disabled", summary: `Page held: ${reason}` });
     if (!owner) return;
@@ -1067,6 +1178,7 @@ export class Tendril extends DurableObject<Env> {
         /* gone */
       }
     }
+    closeAllHubSubscribers(this, 4004, "tendril deleted");
     if (id) {
       let cursor: string | undefined;
       do {

@@ -4,6 +4,9 @@ import { agentReq, api, create, createAgent, createPage, dashboard, grantAgent, 
   signInAsOwner, testPublicKey, type Handle } from './helpers';
 import { SETUP_WATCH_PROTOCOL } from '../src/setup-watch';
 import { PEER_DISCOVERY_PROTOCOL } from '../../contract/discovery-watch.mjs';
+import { PEER_INVITATION_PROTOCOL } from '../../contract/invitations.mjs';
+import { PEER_RENDEZVOUS_PROTOCOL } from '../../contract/peers.mjs';
+import { listHubSubscribers } from '../src/hub-streams';
 
 const HUB = 'tendriller.hub.v1';
 type Frame = Record<string, any>;
@@ -251,7 +254,9 @@ it('multiplexes control streams over one hub connection onto real page socket en
   connection.send({ t: 'open', s: 2, page: h.id, path: `peers/discovery/watch?peerId=${peerId}`, protocols: [PEER_DISCOVERY_PROTOCOL] });
   expect(await connection.until(frame => frame.s === 2 && frame.t === 'opened')).toEqual({ t: 'opened', s: 2, protocol: PEER_DISCOVERY_PROTOCOL });
   expect(JSON.parse((await connection.until(frame => frame.s === 2 && frame.t === 'data')).text)).toEqual({ type: 'ready' });
-  const routed = await inDO(h.id, t => t.ctx.getWebSockets('peer-discovery').map(ws => ws.deserializeAttachment()));
+  // Hub virtual streams use stateless DO-to-DO POSTs — zero outbound WebSockets held on Tendril.
+  expect(await inDO(h.id, t => t.ctx.getWebSockets('peer-discovery').length)).toBe(0);
+  const routed = await inDO(h.id, t => listHubSubscribers(t, 'peer-discovery').map(sub => sub.state));
   expect(routed).toEqual([expect.objectContaining({ peerId, owner: `agent:${h.agent.id}`, principal: expect.objectContaining({ agentId: h.agent.id }) })]);
 
   // Receive-only endpoints keep their own protocol rules behind the stream.
@@ -333,4 +338,135 @@ it('join codes are single-use, expire and add agents only to the issuing account
   const page = await createPage(joined, {});
   expect(page.claimed).toBe(true);
   expect(await inDO(page.id, t => t.db.get('owner_account', null))).toBe(h.account);
+});
+
+it('runs discovery, invitations, and WebRTC rendezvous end-to-end over stateless hub streams with direct browser sockets', async () => {
+  const h = await create();
+  const agentPeerId = '11'.repeat(32);
+  const browserPeerId = '22'.repeat(32);
+  const connection = await hub(h.token);
+
+  // 1. Discovery: hub agent watches + advertises; browser direct WS observes changed & reads it.
+  connection.send({ t: 'open', s: 1, page: h.id, path: `peers/discovery/watch?peerId=${agentPeerId}`, protocols: [PEER_DISCOVERY_PROTOCOL] });
+  expect(await connection.until(f => f.s === 1 && f.t === 'opened')).toEqual({ t: 'opened', s: 1, protocol: PEER_DISCOVERY_PROTOCOL });
+  expect(JSON.parse((await connection.until(f => f.s === 1 && f.t === 'data')).text)).toEqual({ type: 'ready' });
+
+  const browserDiscRes = await req(h.page_url + `_tendril/peers/discovery/watch?peerId=${browserPeerId}`, {
+    headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_DISCOVERY_PROTOCOL },
+  });
+  expect(browserDiscRes.status).toBe(101);
+  const browserDiscWs = browserDiscRes.webSocket!;
+  const browserDiscFrames: any[] = [];
+  const browserDiscWaiters: ((v: any) => void)[] = [];
+  browserDiscWs.addEventListener('message', e => {
+    const parsed = JSON.parse(e.data as string);
+    const w = browserDiscWaiters.shift();
+    if (w) w(parsed); else browserDiscFrames.push(parsed);
+  });
+  browserDiscWs.accept();
+  const nextBrowserDisc = () => browserDiscFrames.length ? Promise.resolve(browserDiscFrames.shift()) : new Promise(r => browserDiscWaiters.push(r));
+  expect(await nextBrowserDisc()).toEqual({ type: 'ready' });
+
+  // Agent advertises via normal HTTP POST; browser WS gets 'changed' and reads the agent's ad.
+  const advRes = await api(h, 'POST', 'peers/discovery', {
+    action: 'advertise',
+    advertisement: { peerId: agentPeerId, storageId: 'agent-store-1', routes: [{ kind: 'invitation', peerId: agentPeerId }] },
+  });
+  expect(advRes.status).toBe(200);
+  expect(await nextBrowserDisc()).toEqual({ type: 'changed' });
+  const readRes = await req(h.page_url + '_tendril/peers/discovery', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'read' }),
+  });
+  expect(readRes.status).toBe(200);
+  const readBody = await readRes.json() as { peers: Array<{ advertisement: { peerId: string } }> };
+  expect(readBody.peers.map(p => p.advertisement.peerId)).toEqual([agentPeerId]);
+
+  // Browser advertises -> hub agent receives 'changed' via DO-to-DO POST.
+  const browserAdvRes = await req(h.page_url + '_tendril/peers/discovery', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'advertise', advertisement: { peerId: browserPeerId, storageId: 'browser-store-1', routes: [{ kind: 'invitation', peerId: browserPeerId }] } }),
+  });
+  expect(browserAdvRes.status).toBe(200);
+  expect(JSON.parse((await connection.until(f => f.s === 1 && f.t === 'data')).text)).toEqual({ type: 'changed' });
+
+  // 2. Invitations: hub agent listens, browser sends invite, hub receives + ACKs it.
+  connection.send({ t: 'open', s: 2, page: h.id, path: `peers/invitations?peerId=${agentPeerId}`, protocols: [PEER_INVITATION_PROTOCOL] });
+  expect(await connection.until(f => f.s === 2 && f.t === 'opened')).toEqual({ t: 'opened', s: 2, protocol: PEER_INVITATION_PROTOCOL });
+  expect(JSON.parse((await connection.until(f => f.s === 2 && f.t === 'data')).text)).toEqual({ t: 'ready', version: 1, peerId: agentPeerId });
+
+  const channel = `ch-${crypto.randomUUID()}`;
+  const inviteRes = await req(h.page_url + '_tendril/peers/invite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ peerId: agentPeerId, channel, requesterPeerId: browserPeerId }),
+  });
+  expect(inviteRes.status).toBe(200);
+  const invFrame = JSON.parse((await connection.until(f => f.s === 2 && f.t === 'data')).text);
+  expect(invFrame).toEqual({ t: 'invitation', channel, requesterPeerId: browserPeerId });
+  connection.send({ t: 'data', s: 2, text: JSON.stringify({ t: 'received', channel, requesterPeerId: browserPeerId }) });
+
+  // 3. Rendezvous: hub agent joins as offerer, direct browser WS joins as answerer; full SDP + ICE + complete handshake.
+  connection.send({ t: 'open', s: 3, page: h.id, path: `peers/rendezvous?channel=${channel}&peerId=${agentPeerId}`, protocols: [PEER_RENDEZVOUS_PROTOCOL] });
+  expect(await connection.until(f => f.s === 3 && f.t === 'opened')).toEqual({ t: 'opened', s: 3, protocol: PEER_RENDEZVOUS_PROTOCOL });
+
+  const browserRdzRes = await req(h.page_url + `_tendril/peers/rendezvous?channel=${channel}&peerId=${browserPeerId}`, {
+    headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL },
+  });
+  expect(browserRdzRes.status).toBe(101);
+  const browserRdzWs = browserRdzRes.webSocket!;
+  const rdzFrames: any[] = [];
+  const rdzWaiters: ((v: any) => void)[] = [];
+  const browserRdzClosed = new Promise<number>(r => browserRdzWs.addEventListener('close', e => r(e.code)));
+  browserRdzWs.addEventListener('message', e => {
+    const parsed = JSON.parse(e.data as string);
+    const w = rdzWaiters.shift();
+    if (w) w(parsed); else rdzFrames.push(parsed);
+  });
+  browserRdzWs.accept();
+  const nextRdz = () => rdzFrames.length ? Promise.resolve(rdzFrames.shift()) : new Promise(r => rdzWaiters.push(r));
+
+  const agentReady = JSON.parse((await connection.until(f => f.s === 3 && f.t === 'data')).text);
+  const browserReady = await nextRdz();
+  expect(agentReady).toMatchObject({ t: 'ready', version: 2, role: 'offerer' });
+  expect(browserReady).toEqual({ t: 'ready', version: 2, session: agentReady.session, role: 'answerer' });
+
+  // Offer + trickle ICE sent back-to-back over hub must arrive in strict FIFO order.
+  const offerSdp = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n';
+  const answerSdp = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n';
+  connection.send({ t: 'data', s: 3, text: JSON.stringify({ t: 'description', session: agentReady.session, description: { type: 'offer', sdp: offerSdp } }) });
+  connection.send({ t: 'data', s: 3, text: JSON.stringify({ t: 'candidate', session: agentReady.session, candidate: { candidate: 'candidate:1 1 udp 2122260223 192.0.2.1 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 } }) });
+
+  expect(await nextRdz()).toEqual({ t: 'description', session: agentReady.session, description: { type: 'offer', sdp: offerSdp } });
+  expect(await nextRdz()).toEqual({ t: 'candidate', session: agentReady.session, candidate: { candidate: 'candidate:1 1 udp 2122260223 192.0.2.1 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+
+  browserRdzWs.send(JSON.stringify({ t: 'description', session: agentReady.session, description: { type: 'answer', sdp: answerSdp } }));
+  expect(JSON.parse((await connection.until(f => f.s === 3 && f.t === 'data')).text))
+    .toEqual({ t: 'description', session: agentReady.session, description: { type: 'answer', sdp: answerSdp } });
+
+  connection.send({ t: 'data', s: 3, text: JSON.stringify({ t: 'connected', session: agentReady.session }) });
+  expect(JSON.parse((await connection.until(f => f.s === 3 && f.t === 'data')).text)).toEqual({ t: 'complete', session: agentReady.session });
+  expect(await connection.until(f => f.s === 3 && f.t === 'closed')).toMatchObject({ t: 'closed', s: 3, code: 1000 });
+  expect(await nextRdz()).toEqual({ t: 'complete', session: agentReady.session });
+  expect(await browserRdzClosed).toBe(1000);
+
+  // Confirm Tendril held ZERO agent WebSockets and rendezvous hub_subscriber row was cleaned up.
+  expect(await inDO(h.id, t => listHubSubscribers(t, 'rendezvous').length)).toBe(0);
+  expect(await inDO(h.id, t => t.ctx.getWebSockets('peer-invitations').length)).toBe(0);
+
+  // Closing the hub discovery stream withdraws the agent's advertisement and notifies the browser.
+  connection.send({ t: 'close', s: 1, code: 1000, reason: 'done' });
+  expect(await connection.until(f => f.s === 1 && f.t === 'closed')).toMatchObject({ t: 'closed', s: 1, code: 1000 });
+  expect(await nextBrowserDisc()).toEqual({ type: 'changed' });
+  const afterClose = await (await req(h.page_url + '_tendril/peers/discovery', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'read' }),
+  })).json() as { peers: Array<{ advertisement: { peerId: string } }> };
+  expect(afterClose.peers.map(p => p.advertisement.peerId)).toEqual([browserPeerId]);
+
+  browserDiscWs.close(1000, 'done');
+  connection.close();
 });

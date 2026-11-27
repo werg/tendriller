@@ -13,6 +13,7 @@ import { newPageKey, sha256Hex } from './ids';
 import { serviceDescriptor } from './descriptor';
 import { authenticateAgent, localAgentGrant, requireAgentScope, type AgentPrincipal } from './access';
 import { pageAgents } from './agent-grants';
+import { closeAllHubSubscribers } from './hub-streams';
 import { handleEnvelopeSync } from './mcp-participant';
 import { onboardingDescriptor } from './onboarding';
 import { publicBase } from './urls';
@@ -244,6 +245,7 @@ route("POST", /^release$/, t => withUnconfiguredApplication(t, async () => {
   t.db.run("DELETE FROM page_sessions");
   // Revoke the previous owner's active introduction channels with their sessions.
   for (const ws of t.ctx.getWebSockets()) ws.close(4003, "claim released");
+  closeAllHubSubscribers(t, 4003, "claim released");
   t.scheduleAlarm();
   return json({ released: true, expires_at: t.expiresAt() });
 }));

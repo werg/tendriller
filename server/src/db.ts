@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS v2_checkpoints (scope_id TEXT NOT NULL, closed_throug
 CREATE TABLE IF NOT EXISTS v2_mailbox_envelopes (digest TEXT PRIMARY KEY, epoch INTEGER NOT NULL, author TEXT NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS v2_mailbox_ops (op_id TEXT PRIMARY KEY, author TEXT NOT NULL, author_ts INTEGER NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS v2_mailbox_cas (hash TEXT PRIMARY KEY, partition TEXT NOT NULL, bytes BLOB NOT NULL, stored_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS hub_subscribers (key TEXT PRIMARY KEY, kind TEXT NOT NULL, agent_id TEXT NOT NULL, conn_id TEXT NOT NULL, stream_id INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_store (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_connections (grant_id TEXT PRIMARY KEY, handle TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '',
   public_key TEXT NOT NULL, wrapped_keys BLOB NOT NULL, label TEXT NOT NULL, capabilities TEXT NOT NULL,
@@ -64,6 +65,7 @@ const ADDITIVE_REV15_TABLES: Readonly<Record<string, string>> = Object.freeze({
   v2_mailbox_envelopes: 'CREATE TABLE IF NOT EXISTS v2_mailbox_envelopes (digest TEXT PRIMARY KEY, epoch INTEGER NOT NULL, author TEXT NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL)',
   v2_mailbox_ops: 'CREATE TABLE IF NOT EXISTS v2_mailbox_ops (op_id TEXT PRIMARY KEY, author TEXT NOT NULL, author_ts INTEGER NOT NULL, raw BLOB NOT NULL, stored_at INTEGER NOT NULL)',
   v2_mailbox_cas: 'CREATE TABLE IF NOT EXISTS v2_mailbox_cas (hash TEXT PRIMARY KEY, partition TEXT NOT NULL, bytes BLOB NOT NULL, stored_at INTEGER NOT NULL)',
+  hub_subscribers: 'CREATE TABLE IF NOT EXISTS hub_subscribers (key TEXT PRIMARY KEY, kind TEXT NOT NULL, agent_id TEXT NOT NULL, conn_id TEXT NOT NULL, stream_id INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL)',
 });
 
 type Bindable = string | number | null | ArrayBuffer;
