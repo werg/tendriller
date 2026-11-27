@@ -244,12 +244,12 @@ export function participateApplication(session, { peers, openDirectConnection,
 
   function scheduleMailboxSync() {
     if (signal.aborted || mergingFromMailbox || typeof peers.syncMailbox !== 'function') return;
+    if (Date.now() < mailboxCooldownUntil) return;
     if (mailboxTimer !== undefined) return;
-    const delay = Math.max(500, mailboxCooldownUntil - Date.now());
     mailboxTimer = setTimeout(() => {
       mailboxTimer = undefined;
       void syncMailbox({ force: true });
-    }, delay);
+    }, 250);
     mailboxTimer.unref?.();
   }
 
@@ -293,6 +293,8 @@ export function participateApplication(session, { peers, openDirectConnection,
   const notifications = observe('notifications', async notification => {
     if (notification.type === 'ready') {
       // Advertising waits for both socket lifetimes, but no data submission waits for advertising.
+      mailboxFailures = 0;
+      mailboxCooldownUntil = 0;
       void advertise();
     }
     // The host notifies page changes (membership, admission requests, key wraps) here.
