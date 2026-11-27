@@ -14,7 +14,7 @@ Tendriller is built around **Chronolog (`chronolog`) as the central pipe**. Ever
 | Full peer session | `@chronolog/peer-session` (`/native`, `/worker`, `/browser`) | Durable local storage (`node:sqlite` / IndexedDB), `TopicKernel`, QuickJS-NG + `sqlite-cas.wasm`, operation journal, signals, chunked content, direct WebRTC + WS relay. |
 | Blind-host control kernel | `@chronolog/peer-session/kernel` + `@chronolog/authority` | Pure `TopicKernel({ blindHostMode: true })` running in Tendriller's Cloudflare Worker Durable Object over *only* public `$*` control operations (`$reducers`, `$permissions`, `$keys`, `$finality`, `$publications`, `$signal_policy`). |
 | Reactive views & draft store | `@chronolog/peer-session` (`createLiveView`, `createViewStore`) | Coherent snapshot reads + separate local drafts and retained operation references. |
-| Durable topic outbox | `@chronolog/peer-session` (`forwardSessionEvents`) | Cursor-based event pump bound to `revision.digest`. |
+| Durable topic outbox | `@chronolog/peer-session` (`forwardSessionEvents`) | Revision-aware snapshot reconciler with a durable outbox, retry-safe event identities, and provisional-event retractions. |
 | Scoped tool pipe | `@chronolog/peer-session` (`createApplicationTools`, `createScopedApplicationTools`) | Capability-scoped, revision-aware tool surface for local agents and hosted MCP. |
 | Local owner attachment | `@chronolog/peer-session` (`createApplicationOwner`, `connectApplicationOwner`) | Multi-tab browser and multi-CLI native attachment to one retained signing profile. |
 
@@ -22,7 +22,7 @@ Tendriller is built around **Chronolog (`chronolog`) as the central pipe**. Ever
 
 | Component | Owner | Why it is structured this way |
 | --- | --- | --- |
-| Application state, reducers, SQLite-CAS, replication, signals | Chronolog session (peers) | All application data and epoch keys stay strictly on admitted devices. Zero server-side application database. |
+| Application state, reducers, SQLite-CAS, replication, signals | Chronolog session (peers) | Private application plaintext and epoch keys stay with authorized participants. The ordinary blind host retains encrypted facts without materializing private state; explicitly admitted hosted participants are separate exceptions. |
 | Blind public-control host (`server/`) | Tendriller Cloudflare Worker + Durable Objects | Provides authenticated HTTPS origins, OAuth 2.1, immutable signed R2 asset hosting, WebRTC introductions/relay, a blind store-and-forward mailbox, and a blind `TopicKernel({ blindHostMode: true })` over `$*` public control topics. Reconciles active served code releases and WebSocket access automatically on late revocations. Zero `node:*` imports. |
 | Opt-in hosted MCP participant (`server/src/mcp-participant.ts`) | Tendriller Worker DO (RAM-only per call) | Zero plaintext keys and zero plaintext data at rest: X25519-sealed keys unwrap strictly in RAM from the OAuth Bearer token, hydrate an ephemeral `ApplicationSession` with static `quickjs-ng` + `sqlite-cas.wasm` directly from `$reducers`, read/write opaque AEAD envelopes against the unified blind mailbox + an epoch-encrypted materialized snapshot cache, and discard all plaintext material on exit. |
 | Browser runtime & standalone tools (`runtime/`, `tools/`) | `@tendriller/runtime`, `@tendriller/tools` | Intentionally zero `@chronolog/*` runtime dependency in `runtime/` so page boot, offline cache, sensors, and voice stay tiny and decoupled. |
@@ -32,11 +32,21 @@ Tendriller is built around **Chronolog (`chronolog`) as the central pipe**. Ever
 ## Strict two-way public / encrypted control partition
 
 On private logs (`privateLog: true`), operations are partitioned strictly by visibility:
-- **Public control operations (`visibility: 'public'`)** may update *only* `$*` control topics (`$reducers`, `$permissions`, `$keys`, `$finality`, `$publications`, `$signal_policy`), and their reducers may read *only* public `$*` topics and public CAS nodes.
-- **Encrypted application operations (`visibility: 'encrypted'`)** are AES-256-GCM encrypted under the active epoch key and may update *only* non-`$` application topics.
+- **Public control operations (`visibility: 'public'`)** may update *only* the six recognized control topics (`$reducers`, `$permissions`, `$keys`, `$finality`, `$publications`, `$signal_policy`), and their reducers may read *only* public control topics and public CAS nodes. A `$` prefix alone does not register a control topic.
+- **Encrypted application operations (`visibility: 'encrypted'`)** are AES-256-GCM encrypted under the selected key ring's active epoch key and may update *only* application topics outside that control allowlist.
 - Idempotency (`seenOpsRoot`) is scoped to `(visibility, author, operationId)`, so an encrypted operation can never collide with or influence a public control operation.
 
-Because of this invariant, Tendriller's blind Cloudflare Worker derives bit-for-bit identical `$permissions`, `$keys`, `$finality`, and `$publications` state to every full peer!
+The partition lets blind and full kernels derive identical public control state
+from the same eligible control facts and dependencies. Replication freshness and
+finality-view selection remain separate requirements; the partition does not
+establish globally latest state.
+
+Public logs (`privateLog: false`) also exist; their application operations can be
+public while signatures and write permissions still apply. Content blobs have an
+explicit public/private visibility choice, distinct from HTTP access and retention.
+Private logs can use named encrypted topic compartments, but do not provide an
+arbitrary per-SQL-row public visibility switch. Genesis and reducer code remain
+public control material; private initial data must be authored in encrypted operations.
 
 ## Build boundaries
 

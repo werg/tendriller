@@ -312,7 +312,11 @@ A future private admin tendril should declare narrow domain commands/queries,
 such as `grantPremium`, `revokePremium`, `listGrants`, and `serviceUsage`. Its
 trusted native/Worker adapter holds the corresponding operator credential and
 calls these APIs. Authenticate each command's signed actor and approved capability
-before using that credential. Membership of an arbitrary tendril must never imply
+against the page's current Chronolog API-access policy before using that
+credential. The adapter consumes that policy; it has no separate editable page
+ACL. See [Chronolog-managed cloud APIs](CHRONOLOG_CLOUD_APIS.md) for public-policy
+and admitted-participant profiles, code ownership, and version cutover.
+Membership of an arbitrary tendril must never imply
 service-wide admin rights. Keep analytics-only adapters separate from grant writers.
 The UI and replicated application state contain no operator token. Preserve grant
 UUIDs and their exact inputs through uncertain command outcomes.
