@@ -32,7 +32,7 @@ export default {
 };
 `;
 
-export async function genesisForDevices(devices, { imports = {}, topics = {}, privateChain = true } = {}) {
+export async function genesisForDevices(devices, { imports = {}, topics = {}, privateLog = true } = {}) {
   const creator = {
     publicKey: devices[0].identity.publicKey,
     wrapKey: devices[0].wrapKey?.publicKey,
@@ -51,15 +51,15 @@ export async function genesisForDevices(devices, { imports = {}, topics = {}, pr
     publisher: false,
     finalizer: false,
   }));
-  const created = await p.createChainGenesis({
+  const created = await p.createLogGenesis({
     creator,
     members,
-    privateChain,
+    privateLog,
     imports: { 'app/events': EVENT_EMITTER_REDUCER, ...imports },
     topics: { events: { module: 'app/events', initialState: { count: 0 } }, ...topics },
   });
   return {
-    chainId: created.chainId,
+    logId: created.logId,
     genesis: created.genesis,
     genesisBytes: created.genesisBytes,
     casNodes: created.casNodes,

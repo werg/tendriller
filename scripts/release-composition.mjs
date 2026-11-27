@@ -27,9 +27,9 @@ export function verifyFirstAppProfiles(composition, manifest) {
       throw Error(`Release discovery must bind its exact ${profile} first-app kit and selected packages.`);
   }
   const authority = composition.chronolog?.authority;
-  cleanIdentity(authority ?? {}, 'werg/chronolog-db', 'Composition authority');
+  cleanIdentity(authority ?? {}, 'werg/chronolog', 'Composition authority');
   for (const role of ['session', 'session-sql-browser'])
-    cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog-db', `Composition ${role}`, authority);
+    cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog', `Composition ${role}`, authority);
 }
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -111,7 +111,7 @@ export function packedArchive(path) {
 
 export function verifyBrowserSqlSession(archive, expected) {
   const proof = archive.json('provenance.json');
-  const identity = cleanIdentity(proof, 'werg/chronolog-db', 'Browser SQL session dependency', expected);
+  const identity = cleanIdentity(proof, 'werg/chronolog', 'Browser SQL session dependency', expected);
   if (archive.package.name !== '@chronolog/peer-session' || proof.format !== 'chronolog-peer-session-package/v2' ||
       proof.profile !== 'chronolog-crdt-v2' || proof.zeroNativeBuild !== true ||
       archive.package.os || archive.package.cpu || archive.package.libc ||
@@ -185,7 +185,7 @@ export function verifyReleaseArtifacts(root, manifest) {
     fail('Release composition identity does not match the manifest and its contents.');
   cleanIdentity(composition.core ?? {}, 'werg/tendriller', 'Release composition source', identity);
   for (const role of ['session', 'authority'])
-    cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog-db', `Release composition ${role}`);
+    cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog', `Release composition ${role}`);
   verifyFirstAppProfiles(composition, manifest);
   const componentRoles = [...roles, 'authority', 'session', 'session-sql-browser', 'starter'];
   if (!Array.isArray(composition.components) || composition.components.length !== componentRoles.length ||
@@ -248,7 +248,7 @@ export function prepareRelease({ root, version, contract }) {
     if (digest(packages.engine.read(file)) !== hash) fail(`Packed engine provenance mismatch: ${file}`);
   const authorityBytes = packages.engine.read('authority-provenance.json');
   const authorityProof = JSON.parse(authorityBytes.toString('utf8'));
-  const authority = cleanIdentity(authorityProof, 'werg/chronolog-db', 'Embedded authority dependency');
+  const authority = cleanIdentity(authorityProof, 'werg/chronolog', 'Embedded authority dependency');
   if (authorityProof.profile !== 'chronolog-crdt-v2' || authorityProof.format !== 'chronolog-authority-package/v2')
     fail('Embedded authority profile is not supported.');
   const authorityInputBytes = packages.engine.read('authority-inputs.json');
@@ -263,7 +263,7 @@ export function prepareRelease({ root, version, contract }) {
   if (typeof pin !== 'string' || !pin.startsWith('file:')) fail('Pin the public Chronolog session archive in package.json.');
   const sessionPath = resolve(root, pin.slice(5)), sessionArchive = packedArchive(sessionPath);
   const sessionProof = sessionArchive.json('provenance.json');
-  const session = cleanIdentity(sessionProof, 'werg/chronolog-db', 'Chronolog session dependency');
+  const session = cleanIdentity(sessionProof, 'werg/chronolog', 'Chronolog session dependency');
   if (sessionArchive.package.name !== '@chronolog/peer-session' || sessionProof.profile !== 'chronolog-crdt-v2' ||
       sessionProof.format !== 'chronolog-peer-session-package/v2' || sessionProof.zeroNativeBuild !== true)
     fail('The first-app composition requires the pinned zero-native-build Chronolog v2 session package.');

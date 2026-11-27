@@ -2,11 +2,11 @@ import { expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import {
   bytesToHex,
-  createChainGenesis,
+  createLogGenesis,
   createSigningIdentity,
-  encodeGenesisBlock,
+  encodeLogGenesis,
   encodeRecord,
-  genesisChainId,
+  genesisLogId,
   signRecord,
 } from '@chronolog/peer-session';
 import { generateWrapKeyPair } from '../src/mcp-crypto';
@@ -33,7 +33,7 @@ async function initPageAuthority(h: Awaited<ReturnType<typeof create>>) {
     hostAttestationKey: string;
     admissionAccounts: string[];
   };
-  const created = await createChainGenesis({
+  const created = await createLogGenesis({
     creator: {
       publicKey: ownerId.publicKey,
       wrapKey: ownerWrap.publicKeyHex,
@@ -43,7 +43,7 @@ async function initPageAuthority(h: Awaited<ReturnType<typeof create>>) {
       publisher: true,
       finalizer: false,
     },
-    privateChain: true,
+    privateLog: true,
     hostPublicKey: appMeta.hostAttestationKey,
   });
   const genesis = structuredClone(created.genesis) as any;
@@ -57,8 +57,8 @@ async function initPageAuthority(h: Awaited<ReturnType<typeof create>>) {
       invites: [],
     },
   };
-  const genesisBytes = encodeGenesisBlock(genesis);
-  const applicationId = bytesToHex(genesisChainId(genesisBytes));
+  const genesisBytes = encodeLogGenesis(genesis);
+  const applicationId = bytesToHex(genesisLogId(genesisBytes));
   const initRes = await req(`${h.page_url}_tendril/peers/enrollment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

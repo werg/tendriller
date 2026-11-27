@@ -185,7 +185,7 @@ test('connectOrStartNativeSession supports bounded zero-IPC mode and concurrent 
   const sharedDevice = await p.openApplicationDevice({ store: (await import('../../collaboration/test/physical-fixture.mjs')).memoryStore(), create: true });
   const seed = await (await import('../../collaboration/test/physical-fixture.mjs')).genesisForDevices([sharedDevice], reducerOpts);
   await sharedDevice.close();
-  const appId = seed.chainId;
+  const appId = seed.logId;
   let opened = 0;
   const openOwner = async () => {
     opened++;

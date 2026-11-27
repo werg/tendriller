@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { bytesToHex, createSigningIdentity, hexToBytes, type SigningIdentity } from '@chronolog/authority';
-import { encodeSignedOperation, genesisChainId, signOperationCore, verifySignedOperation } from '@chronolog/peer-session/kernel';
+import { encodeSignedOperation, genesisLogId, signOperationCore, verifySignedOperation } from '@chronolog/peer-session/kernel';
 import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
 import type { PeersClient } from '../../dist/sdk/peers.mjs';
 
@@ -27,10 +27,10 @@ async function publicationScope(peers: PeersClient, signer: AgentSigner) {
   if (!publisherKeys.includes(signer.publicKey)) {
     throw new Error('The host publication configuration does not name this agent signer');
   }
-  const chainId = metadata.genesis
-    ? bytesToHex(genesisChainId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
+  const logId = metadata.genesis
+    ? bytesToHex(genesisLogId(authorityRecordBytes(metadata.genesis, 1024 * 1024)))
     : metadata.selection.id;
-  return { chainId, publisherKeys };
+  return { logId, publisherKeys };
 }
 
 /**
@@ -56,7 +56,7 @@ export async function publishAssetGraph(
   }
   const signed = await signOperationCore({
     version: 1,
-    chainId: hexToBytes(scope.chainId),
+    logId: hexToBytes(scope.logId),
     author: hexToBytes(signer.publicKey),
     authorTimestampMs: BigInt(Date.now()),
     operationId: crypto.randomUUID(),

@@ -24,7 +24,7 @@ function installed(t, overrides = {}) {
   const project = mkdtempSync(join(tmpdir(), 'review-installed-')); t.after(() => rmSync(project, { recursive: true, force: true }));
   for (const name of ['authority', 'peer-session']) {
     const directory = join(project, 'node_modules/@chronolog', name); mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, 'provenance.json'), JSON.stringify({ repository: 'werg/chronolog-db', dirty: false,
+    writeFileSync(join(directory, 'provenance.json'), JSON.stringify({ repository: 'werg/chronolog', dirty: false,
       source: composition.session.sourceCommit, sourceTree: composition.session.sourceTree, ...(overrides[name] ?? {}) }));
   }
   const tools = join(project, 'node_modules/@tendriller/tools'); mkdirSync(tools, { recursive: true });

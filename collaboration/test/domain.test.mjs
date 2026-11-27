@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApplicationSession, createChainGenesis, describeApplication, openApplicationDevice } from '@chronolog/peer-session';
+import { createApplicationSession, createLogGenesis, describeApplication, openApplicationDevice } from '@chronolog/peer-session';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createCollaborationDefinition } from '../domain.mjs';
@@ -18,13 +18,13 @@ async function harness() {
   const devC = await openApplicationDevice({ store: memoryStore(), create: true });
   const A = devA.identity.publicKey, B = devB.identity.publicKey, C = devC.identity.publicKey;
   const { definition, imports, topics } = createCollaborationDefinition({ administrators: [A] });
-  const created = await createChainGenesis({
+  const created = await createLogGenesis({
     creator: { publicKey: A, reader: true, writer: true, administrator: true, publisher: true, finalizer: false },
     members: [
       { publicKey: B, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
       { publicKey: C, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
     ],
-    privateChain: true,
+    privateLog: true,
     imports,
     topics,
   });
@@ -69,7 +69,7 @@ async function harness() {
 
   return {
     A, B, C,
-    appId: created.chainId,
+    appId: created.logId,
     definition,
     sessions,
     sessionA: sessions[A],

@@ -8,7 +8,7 @@ There is **no separate key-wrap mailbox on the host**. Because `$keys` lives dir
 
 ## Genesis & admission lifecycle
 
-1. **Genesis (`createPageGenesis` / `openPageGenesis`):** The creator (the agent by default via `npm run init -- <slug>`, or the owner's first browser with `--browser-first`) creates the `GenesisBlock` pinning `$reducers`, `$permissions` (creator as admin/publisher/finalizer + `admission.hostKey` + `admission.accounts`), `$keys`, `$finality`, and `$publications`, generates epoch 0 key locally, and submits genesis to the host once.
+1. **Genesis (`createPageGenesis` / `openPageGenesis`):** The creator (the agent by default via `npm run init -- <slug>`, or the owner's first browser with `--browser-first`) creates the `LogGenesis` pinning `$reducers`, `$permissions` (creator as admin/publisher/finalizer + `admission.hostKey` + `admission.accounts`), `$keys`, `$finality`, and `$publications`, generates epoch 0 key locally, and submits genesis to the host once.
 2. **Host attestation (`challenge` → `enroll`, or `enroll-agent`):** A newcomer proves its Ed25519 signing key and X25519 wrap key to the page host. The host signs a short-lived Ed25519 attestation (`signHostAttestationV2`) binding the account, email, device key, wrap key, and optional invite ID. The host never signs `$permissions` or sees epoch keys.
 3. **Atomic admission (`session.admitMember`):** Any online administrator verifies the attestation against `$permissions.admission` and calls `session.admitMember(member, { attestation })`. In **one atomic public-control operation** updating both `$permissions` and `$keys`:
    - `chronolog/permissions` verifies the host's Ed25519 signature via `verifyEd25519` inside QuickJS-NG and adds the member, AND

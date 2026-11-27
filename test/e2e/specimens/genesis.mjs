@@ -1,7 +1,7 @@
 // Test-only Chronolog v2 page genesis creation for the SQL specimens.
 export async function signSpecimenGenesis(log, { metadata, identity, members, key, imports, topics }) {
   const wrapKey = (await log.createWrapKeyPair()).publicKey;
-  const created = await log.createChainGenesis({
+  const created = await log.createLogGenesis({
     creator: {
       publicKey: identity.publicKey,
       wrapKey,
@@ -21,7 +21,7 @@ export async function signSpecimenGenesis(log, { metadata, identity, members, ke
         publisher: false,
         finalizer: false,
       })),
-    privateChain: true,
+    privateLog: true,
     hostPublicKey: metadata.hostAttestationKey,
     epoch0Key: key,
     imports,
@@ -38,9 +38,9 @@ export async function signSpecimenGenesis(log, { metadata, identity, members, ke
       invites: [],
     },
   };
-  const genesisBytes = log.encodeGenesisBlock(genesis);
+  const genesisBytes = log.encodeLogGenesis(genesis);
   return {
-    chainId: log.bytesToHex(log.genesisChainId(genesisBytes)),
+    logId: log.bytesToHex(log.genesisLogId(genesisBytes)),
     genesis,
     genesisBytes,
     casNodes: created.casNodes,

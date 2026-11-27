@@ -13,7 +13,7 @@ export interface HostAppConfig {
 export interface HostApplication {
   readonly selection: { readonly id: string };
   readonly configuration: HostAppConfig | null;
-  /** Canonical Chronolog v2 GenesisBlock record, or null before initialization. */
+  /** Canonical Chronolog v2 LogGenesis record, or null before initialization. */
   readonly genesis: AuthorityRecord | null;
   /** Latest blind-host materialized public-control stateRoot, or null before initialization. */
   readonly stateRoot: string | null;

@@ -116,13 +116,13 @@ test('a browser on an uninitialized page creates v2 genesis: durable before send
     assert.ok(intent, 'the exact genesis intent survived the lost reply');
     return bootstrapBrowser({ configuration, device, signal: new AbortController().signal });
   });
-  assert.equal(opened.chainId, host.state.applicationId);
+  assert.equal(opened.logId, host.state.applicationId);
   assert.ok(opened.epoch0Key instanceof Uint8Array && opened.epoch0Key.length === 32, 'the retained epoch 0 key is recovered');
   assert.equal(log.filter(entry => entry.endsWith(':initialize')).length, 1);
   // Reopening offline uses the retained local genesis.
   const offline = await withBrowser(async () => { throw new TypeError('offline'); }, () =>
-    bootstrapBrowser({ configuration: { ...configuration, applicationId: opened.chainId }, device, signal: new AbortController().signal }));
-  assert.equal(offline.chainId, opened.chainId);
+    bootstrapBrowser({ configuration: { ...configuration, applicationId: opened.logId }, device, signal: new AbortController().signal }));
+  assert.equal(offline.logId, opened.logId);
   await device.close();
 });
 

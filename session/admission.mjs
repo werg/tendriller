@@ -1,12 +1,12 @@
 // Chronolog v2 page genesis and host-attested device admission.
-// The creator (a browser or native agent) creates the v2 GenesisBlock and epoch 0 key;
+// The creator (a browser or native agent) creates the v2 LogGenesis and epoch 0 key;
 // every later device or agent proves its key to the host, receives a host-signed
 // Ed25519 attestation (`signHostAttestationV2`), and an online administrator admits it
 // atomically via `session.admitMember(...)` (which updates `$permissions` AND seals
 // HPKE lockboxes into `$keys` in one public-control operation).
 import {
-  bytesToHex, createChainGenesis, createWrapKeyPair, decodeGenesisBlock, decodeRecord,
-  decodeSignedOperation, encodeRecord, genesisChainId, hexToBytes, importWrapPrivateKey, signRecord,
+  bytesToHex, createLogGenesis, createWrapKeyPair, decodeLogGenesis, decodeRecord,
+  decodeSignedOperation, encodeRecord, genesisLogId, hexToBytes, importWrapPrivateKey, signRecord,
   verifyHostAttestationV2, verifyRecord, verifySignedOperation,
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
@@ -111,7 +111,7 @@ function buildAuthorityTopic(authority, identity, wrapKey) {
 }
 
 /**
- * Create a Chronolog v2 GenesisBlock for a Tendriller page.
+ * Create a Chronolog v2 LogGenesis for a Tendriller page.
  * By default pins the host attestation key, owner admission accounts, and default owner-device
  * grant inside `$permissions.admission`. Pass `authority: { mode: 'multisig' | 'open', ... }`,
  * `admission: null`, or a custom `topics.$permissions` reducer to opt out of host-attested
@@ -119,7 +119,7 @@ function buildAuthorityTopic(authority, identity, wrapKey) {
  */
 export async function createPageGenesis({
   identity, wrapKey, hostKey, accounts = [], mode = 'attested', ownerGrant = DEFAULT_OWNER_GRANT,
-  subject = 'device', authority = undefined, admission = undefined, privateChain = undefined, imports, topics, finalitySchedule, frozenReducers, salt,
+  subject = 'device', authority = undefined, admission = undefined, privateLog = undefined, imports, topics, finalitySchedule, frozenReducers, salt,
 }) {
   if (!HEX.test(identity?.publicKey ?? '') || !HEX.test(wrapKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
@@ -128,14 +128,14 @@ export async function createPageGenesis({
   const resolvedTopics = builtAuthority && !(topics && Object.hasOwn(topics, '$permissions'))
     ? { ...(topics ?? {}), $permissions: builtAuthority.topic }
     : topics;
-  const resolvedPrivateChain = privateChain ?? builtAuthority?.privateChainDefault ?? true;
+  const resolvedPrivateChain = privateLog ?? builtAuthority?.privateChainDefault ?? true;
   const customPerms = Boolean(resolvedTopics && Object.hasOwn(resolvedTopics, '$permissions'));
   const hostAttested = admission !== null && !customPerms;
   if (hostAttested && !HEX.test(hostKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
   }
   const grant = hostAttested ? policyGrant(ownerGrant) : null;
-  const created = await createChainGenesis({
+  const created = await createLogGenesis({
     creator: {
       publicKey: identity.publicKey,
       wrapKey,
@@ -145,7 +145,7 @@ export async function createPageGenesis({
       publisher: true,
       finalizer: true,
     },
-    privateChain: resolvedPrivateChain,
+    privateLog: resolvedPrivateChain,
     ...(hostAttested ? { hostPublicKey: hostKey } : {}),
     imports,
     topics: resolvedTopics,
@@ -157,10 +157,10 @@ export async function createPageGenesis({
     if (subject && Array.isArray(created.genesis.initialTopics?.$permissions?.members) && created.genesis.initialTopics.$permissions.members[0]) {
       const genesis = structuredClone(created.genesis);
       genesis.initialTopics.$permissions.members[0] = { ...genesis.initialTopics.$permissions.members[0], subject };
-      const { encodeGenesisBlock } = await import('@chronolog/peer-session');
-      const genesisBytes = encodeGenesisBlock(genesis);
+      const { encodeLogGenesis } = await import('@chronolog/peer-session');
+      const genesisBytes = encodeLogGenesis(genesis);
       return {
-        chainId: bytesToHex(genesisChainId(genesisBytes)),
+        logId: bytesToHex(genesisLogId(genesisBytes)),
         genesis,
         genesisBytes,
         casNodes: created.casNodes,
@@ -168,7 +168,7 @@ export async function createPageGenesis({
       };
     }
     return {
-      chainId: created.chainId,
+      logId: created.logId,
       genesis: created.genesis,
       genesisBytes: created.genesisBytes,
       casNodes: created.casNodes,
@@ -184,11 +184,11 @@ export async function createPageGenesis({
     ...genesis.initialTopics.$permissions,
     admission: { hostKey, mode, accounts: [...accounts], grant, invites: [] },
   };
-  const { encodeGenesisBlock } = await import('@chronolog/peer-session');
-  const genesisBytes = encodeGenesisBlock(genesis);
-  const chainId = bytesToHex(genesisChainId(genesisBytes));
+  const { encodeLogGenesis } = await import('@chronolog/peer-session');
+  const genesisBytes = encodeLogGenesis(genesis);
+  const logId = bytesToHex(genesisLogId(genesisBytes));
   return {
-    chainId,
+    logId,
     genesis,
     genesisBytes,
     casNodes: created.casNodes,
@@ -202,7 +202,7 @@ export async function createPageGenesis({
  * retries after an uncertain network reply resend the exact same bytes.
  */
 export async function openPageGenesis({
-  store, identity, wrapKey, peers, applicationId, create = true, subject = 'device', ownerGrant, authority, imports, topics, privateChain, finalitySchedule, signal,
+  store, identity, wrapKey, peers, applicationId, create = true, subject = 'device', ownerGrant, authority, imports, topics, privateLog, finalitySchedule, signal,
 }) {
   const readCachedIntent = async (...keys) => {
     for (const k of keys) {
@@ -223,8 +223,8 @@ export async function openPageGenesis({
     const cached = await readCachedIntent(applicationId, 'pending');
     if (cached) {
       return {
-        chainId: cached.chainId,
-        genesis: decodeGenesisBlock(cached.genesisBytes),
+        logId: cached.logId,
+        genesis: decodeLogGenesis(cached.genesisBytes),
         genesisBytes: cached.genesisBytes,
         casNodes: cached.casNodes ?? [],
         publicOps: cached.publicOps ?? [],
@@ -235,31 +235,31 @@ export async function openPageGenesis({
     throw error;
   }
 
-  const persistCached = async (chainId, record) => {
+  const persistCached = async (logId, record) => {
     const encoded = encodeRecord(record);
-    await store?.put(GENESIS(chainId), encoded);
-    if (applicationId && applicationId !== chainId) {
+    await store?.put(GENESIS(logId), encoded);
+    if (applicationId && applicationId !== logId) {
       await store?.put(GENESIS(applicationId), encoded);
     }
   };
 
   if (metadata.genesis !== null) {
     const genesisBytes = authorityRecordBytes(metadata.genesis, 1024 * 1024);
-    const genesis = decodeGenesisBlock(genesisBytes);
-    const chainId = bytesToHex(genesisChainId(genesisBytes));
+    const genesis = decodeLogGenesis(genesisBytes);
+    const logId = bytesToHex(genesisLogId(genesisBytes));
     const synced = await peers.syncControl({}, { signal });
     const casNodes = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
     const publicOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
-    const intent = await readCachedIntent(chainId, applicationId, 'pending');
-    const epoch0Key = intent?.chainId === chainId ? intent.epoch0Key : undefined;
-    await persistCached(chainId, {
-      chainId,
+    const intent = await readCachedIntent(logId, applicationId, 'pending');
+    const epoch0Key = intent?.logId === logId ? intent.epoch0Key : undefined;
+    await persistCached(logId, {
+      logId,
       genesisBytes,
       casNodes,
       publicOps,
       ...(epoch0Key ? { epoch0Key } : {}),
     });
-    return { chainId, genesis, genesisBytes, casNodes, publicOps, epoch0Key, created: false };
+    return { logId, genesis, genesisBytes, casNodes, publicOps, epoch0Key, created: false };
   }
 
   if (!create) throw failure('PAGE_UNINITIALIZED', 'The page creator has not initialized its data yet.');
@@ -276,7 +276,7 @@ export async function openPageGenesis({
       authority,
       imports,
       topics,
-      privateChain,
+      privateLog,
       finalitySchedule,
     });
     await store?.put(intentKey, encodeRecord(intent));
@@ -291,25 +291,25 @@ export async function openPageGenesis({
     metadata = await peers.application({ signal });
   }
   const genesisBytes = authorityRecordBytes(metadata.genesis, 1024 * 1024);
-  const genesis = decodeGenesisBlock(genesisBytes);
-  const chainId = bytesToHex(genesisChainId(genesisBytes));
-  const created = chainId === intent.chainId;
+  const genesis = decodeLogGenesis(genesisBytes);
+  const logId = bytesToHex(genesisLogId(genesisBytes));
+  const created = logId === intent.logId;
   if (!created) {
     const synced = await peers.syncControl({}, { signal }).catch(() => ({ casNodes: [], publicOps: [] }));
     const casNodes = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
     const publicOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
-    await persistCached(chainId, { chainId, genesisBytes, casNodes, publicOps });
-    return { chainId, genesis, genesisBytes, casNodes, publicOps, epoch0Key: undefined, created: false };
+    await persistCached(logId, { logId, genesisBytes, casNodes, publicOps });
+    return { logId, genesis, genesisBytes, casNodes, publicOps, epoch0Key: undefined, created: false };
   }
-  await persistCached(chainId, {
-    chainId,
+  await persistCached(logId, {
+    logId,
     genesisBytes,
     casNodes: intent.casNodes,
     publicOps: [],
     ...(intent.epoch0Key ? { epoch0Key: intent.epoch0Key } : {}),
   });
   return {
-    chainId,
+    logId,
     genesis,
     genesisBytes,
     casNodes: intent.casNodes,
@@ -356,7 +356,7 @@ export function createAdmission(session, {
   memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {}, onEpochRotated = null,
 } = {}) {
   const identity = session.device.identity;
-  const applicationId = session.chainId ?? session.applicationId;
+  const applicationId = session.logId ?? session.applicationId;
   const listeners = new Set();
   const lifetime = new AbortController();
   let attestation = null, invite = null, inviteLoaded = false, timer, running, again = false, closed = false;
@@ -421,7 +421,7 @@ export function createAdmission(session, {
       });
     });
     const me = members.find(m => m.publicKey === identity.publicKey) ?? null;
-    const hasKey = !session.genesis.privateChain || keys.currentEpoch < 0 || session.hasEpochKey(keys.currentEpoch);
+    const hasKey = !session.genesis.privateLog || keys.currentEpoch < 0 || session.hasEpochKey(keys.currentEpoch);
     const phase = closed ? 'closed'
       : me === null ? (wasMember ? 'removed' : admission.mode === 'strict' ? 'waiting-approval' : 'waiting-admission')
         : !hasKey ? 'waiting-keys' : 'admitted';
@@ -695,7 +695,7 @@ export function createAdmission(session, {
             continue;
           }
           if (member) {
-            await session.removeMember(dp.publicKey, { rotateEpoch: session.genesis.privateChain });
+            await session.removeMember(dp.publicKey, { rotateEpoch: session.genesis.privateLog });
             const epoch = session.keysState().currentEpoch;
             notice({ kind: 'org-offboarded', publicKey: dp.publicKey, group: dp.group });
             if (typeof onEpochRotated === 'function') {
@@ -724,7 +724,7 @@ export function createAdmission(session, {
       observeMembership();
       const me = session.isMember(identity.publicKey);
       const hasHostAdmission = Boolean(session.permissions().admission?.hostKey);
-      const hasCurrentKey = !session.genesis.privateChain || session.currentEpoch() < 0 || session.hasEpochKey(session.currentEpoch());
+      const hasCurrentKey = !session.genesis.privateLog || session.currentEpoch() < 0 || session.hasEpochKey(session.currentEpoch());
       if (!me) {
         if (!wasMember && hasHostAdmission) await attest();
       } else if (hasHostAdmission && hasCurrentKey && (session.isAdministrator(identity.publicKey) || session.isReader(identity.publicKey))) {
@@ -809,7 +809,7 @@ export function createAdmission(session, {
     async 'admission.remove'(publicKey) {
       return administer(async () => {
         if (publicKey === identity.publicKey) throw failure('ADMISSION_SELF_REMOVAL', 'Remove this device from another administrator device.');
-        await session.removeMember(publicKey, { rotateEpoch: session.genesis.privateChain });
+        await session.removeMember(publicKey, { rotateEpoch: session.genesis.privateLog });
         const cur = session.permissions().admission ?? {};
         const removed = [...new Set([...(cur.removed ?? []), publicKey])];
         await session.submit({

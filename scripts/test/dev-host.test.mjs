@@ -46,7 +46,7 @@ async function fixture(t) {
     .map(role => artifact(role, `${role}-${version}.tgz`));
   const body = { format: 'tendriller-release-composition-v1', version, contract: 3,
     core: { repository: 'werg/tendriller', source, sourceTree: tree, dirty: false }, runtime, profiles:FIRST_APP_PROFILES,
-    chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog-db',source:'d'.repeat(40),sourceTree:'e'.repeat(40),dirty:false}])),
+    chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog',source:'d'.repeat(40),sourceTree:'e'.repeat(40),dirty:false}])),
     components: components.map(({ role, file, sha256, size }) => ({ role, file, sha256, size })) };
   const composition = { ...body, id: hash(JSON.stringify(body)) };
   const kit = packTarGz([{ path: 'package.json', bytes: json({ name: 'local-app', private: true }) },

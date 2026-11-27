@@ -8,7 +8,7 @@ import { chromium } from '@playwright/test';
 import { createAgentClient } from '../dist/sdk/client.mjs';
 import { authorityRecordBytes } from '../contract/authority.mjs';
 import { readFixtureHandle } from './review/fixture.mjs';
-import { decodeGenesisBlock, decodeSignedOperation, verifySignedOperation } from '@chronolog/peer-session';
+import { decodeLogGenesis, decodeSignedOperation, verifySignedOperation } from '@chronolog/peer-session';
 
 const project = resolve(process.argv[2]), access = readReviewAccess(process.argv[3]);
 // The project is the review fixture's agent workspace: one account credential, one shared signer, one granted page.
@@ -119,7 +119,7 @@ try {
   assert.deepEqual(await read(), beforeDenied);
   report.checks.push('Reject deletion, another application and an unspecified item without changing state');
   const finalMetadata = await host.peers.application();
-  decodeGenesisBlock(authorityRecordBytes(finalMetadata.genesis));
+  decodeLogGenesis(authorityRecordBytes(finalMetadata.genesis));
   const publication = await host.peers.publication();
   assert.equal(publication.opId, beforePublication);
   if (publication.op) await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication.op)));

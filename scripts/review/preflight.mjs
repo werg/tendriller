@@ -75,7 +75,7 @@ export function reviewComposition(root, { source = sourceIdentity(root) } = {}) 
   const sqlPin = readBrowserSqlPin(root);
   assert.equal(sqlPin.sha256, components.get('session-sql-browser').sha256, 'Composition uses a different browser SQL session than the explicit source pin');
   const sdk = components.get('sdk'), tools = components.get('tools'), session = components.get('session'), sessionSource = composition.chronolog?.session;
-  assert.equal(sessionSource?.repository, 'werg/chronolog-db');
+  assert.equal(sessionSource?.repository, 'werg/chronolog');
   assert.equal(sessionSource?.dirty, false);
   assert(sha.test(sessionSource.source) && sha.test(sessionSource.sourceTree), 'Exact Chronolog session provenance is required');
   const pin = pkg.devDependencies?.['@chronolog/peer-session'];

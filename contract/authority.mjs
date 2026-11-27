@@ -14,7 +14,7 @@ export function authorityRecordBytes(value, limit = 1024 * 1024) {
   return Uint8Array.from(value.record.match(/../g), byte => parseInt(byte, 16));
 }
 
-/** Transport only. Callers verify v2 GenesisBlock, SignedOperation, and FinalityCheckpoint signatures locally. */
+/** Transport only. Callers verify v2 LogGenesis, SignedOperation, and FinalityCheckpoint signatures locally. */
 export function createAuthorityClient(dispatch, { applicationId } = {}) {
   const request = async (path, options) => {
     options?.signal?.throwIfAborted();

@@ -97,7 +97,7 @@ export function onboardingDescriptor(base) {
     },
     sources: {
       core: 'https://github.com/werg/tendriller',
-      chronolog: 'https://github.com/werg/chronolog-db',
+      chronolog: 'https://github.com/werg/chronolog',
       cookbooks: 'https://github.com/werg/tendriller-contrib',
       releases: 'https://github.com/werg/tendriller/releases',
     },

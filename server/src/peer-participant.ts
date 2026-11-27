@@ -50,7 +50,7 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
 
     const state = await readControlState(t);
     if (!state) throw new HttpError(409, 'application_uninitialized');
-    if (request.payload.applicationId !== state.chainId) throw new HttpError(400, 'participant_application_mismatch');
+    if (request.payload.applicationId !== state.logId) throw new HttpError(400, 'participant_application_mismatch');
     if (!state.permissions.openReaders && !state.permissions.readers.has(request.signer)) {
       throw new HttpError(403, 'participant_member_required');
     }
@@ -65,7 +65,7 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
     await freshAuthorityAccess(t, principal);
     return json(authorityRecord(encodeRecord({
       requestId: request.payload.requestId,
-      applicationId: state.chainId,
+      applicationId: state.logId,
       ...synced,
     })));
   } catch (error) {

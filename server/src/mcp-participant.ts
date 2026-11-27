@@ -303,7 +303,7 @@ export async function handlePageMcp(t: Tendril, req: Request, sub: string, princ
 
 /**
  * Blind encrypted-envelope sync for browsers and workspace agents.
- * Validates `chainId` against the stored v2 genesis WITHOUT needing any decryption key,
+ * Validates `logId` against the stored v2 genesis WITHOUT needing any decryption key,
  * retaining encrypted `EncryptedOperationEnvelope` records keyed by `encryptedEnvelopeDigest`
  * so rewrapped envelopes reconcile cleanly too.
  */
@@ -315,7 +315,7 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
 
   const genesisBytes = readStoredGenesisBytes(t);
   if (!genesisBytes) throw new HttpError(409, 'application_uninitialized', 'Application genesis is not initialized yet.');
-  const chainId = selectedApplication(t).id;
+  const logId = selectedApplication(t).id;
 
   const ownerAccount = t.db.get<string | null>('owner_account', null);
   const ent = ownerAccount ? await getAccountEntitlements(t.env, ownerAccount, t.now()) : null;
@@ -329,7 +329,7 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
     let envelope;
     try { envelope = decodeEncryptedEnvelope(raw); }
     catch { throw new HttpError(400, 'invalid_envelope'); }
-    if (bytesToHex(envelope.chainId) !== chainId) throw new HttpError(400, 'invalid_envelope_scope');
+    if (bytesToHex(envelope.logId) !== logId) throw new HttpError(400, 'invalid_envelope_scope');
     const digest = bytesToHex(encryptedEnvelopeDigest(raw));
     const key = ENVELOPE_PREFIX + digest;
     const exists = t.db.one('SELECT 1 AS x FROM mcp_store WHERE k=?', key);

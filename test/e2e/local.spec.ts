@@ -409,7 +409,7 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       import { bootstrapBrowser } from './docs/tutorial/shared/helpers/browser-bootstrap.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
       import { createSigningIdentity, exportSigningIdentity, importSigningIdentity, decodeRecord } from '@chronolog/authority';
-      import { decodeGenesisBlock } from '@chronolog/peer-session';
+      import { decodeLogGenesis } from '@chronolog/peer-session';
       const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view', identityKey=profileId+':identity', storeKey=profileId+':store:';
       const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);
@@ -432,7 +432,7 @@ test('a publication whose app cannot initialize this browser\'s page data gets a
       };
       window.fixture={async snapshot(){
         const raw=await store.get('tendriller/admission/genesis/'+configuration.applicationId),intent=raw&&decodeRecord(raw);
-        const genesis=intent&&decodeGenesisBlock(intent.genesisBytes);
+        const genesis=intent&&decodeLogGenesis(intent.genesisBytes);
         const rootMember=genesis?.initialTopics?.$permissions?.members?.[0]?.publicKey;
         return {profileId,viewId,device:identity.publicKey,draft:view.readDraft('draft'),
           bootstrap:intent&&{publicKey:rootMember,epochKey:Array.from(intent.epoch0Key)}};

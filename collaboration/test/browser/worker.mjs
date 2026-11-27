@@ -1,5 +1,5 @@
 import {
-  createApplicationSession, createChainGenesis, decodeRecord, defineApplication,
+  createApplicationSession, createLogGenesis, decodeRecord, defineApplication,
   defineCommand, defineQuery, encodeRecord,
 } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
@@ -59,7 +59,7 @@ serveBrowserOwner({
           let key = await device.store.get('test/epoch-v2');
           let casNodes = [];
           if (!genesisBytes) {
-            const created = await createChainGenesis({
+            const created = await createLogGenesis({
               creator: {
                 publicKey: device.identity.publicKey,
                 wrapKey: device.wrapKey?.publicKey,

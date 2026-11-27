@@ -9,7 +9,7 @@
  */
 import { bytesToHex, decodeRecord, type FinalityCheckpoint } from '@chronolog/authority';
 import {
-  decodeSignedOperation, genesisChainId, verifySignedOperation,
+  decodeSignedOperation, genesisLogId, verifySignedOperation,
   type KernelOperationInput,
 } from '@chronolog/peer-session/kernel';
 import { sha256Hex } from './ids';
@@ -18,7 +18,7 @@ import { assertFilePath } from '../../contract/index.mjs';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import { requireAgentScope, type Principal } from './access';
 import {
-  activeChainId, authorityAccount, authorityError, freshAuthorityAccess, listCheckpointRows,
+  activeLogId, authorityAccount, authorityError, freshAuthorityAccess, listCheckpointRows,
   listPublicCasRows, listPublicOpRows, readControlState, readStoredGenesisBytes,
   reconcileHostEffects, replayBlindHostControl, verifyPublicControlOp, withAuthorityMutation,
   type ControlRelease,
@@ -127,8 +127,8 @@ export async function exchangePeerPublication(
 
     const value = record(input, ['op', 'assets']);
     const rawOp = authorityRecordBytes(value.op, 512 * 1024);
-    const chainId = activeChainId(t);
-    const parsed = await verifyPublicControlOp(rawOp, chainId);
+    const logId = activeLogId(t);
+    const parsed = await verifyPublicControlOp(rawOp, logId);
     const pubUpdate = parsed.kernelInput.core.updates.find(u => u.topic === '$publications');
     if (!pubUpdate || !pubUpdate.input || typeof pubUpdate.input !== 'object' || Array.isArray(pubUpdate.input)) {
       throw new HttpError(400, 'peer_publication_invalid', 'Publication operation must update $publications');

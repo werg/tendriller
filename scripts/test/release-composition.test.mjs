@@ -28,7 +28,7 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
     mkdirSync(dirname(tutorialSource(root, file)), { recursive: true });
     writeFileSync(tutorialSource(root, file), `fixture ${file}\n`);
   }
-  const chronolog = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40),
+  const chronolog = { repository: 'werg/chronolog', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40),
     dirty: false, profile: 'chronolog-crdt-v2' };
   const authorityProof = { ...chronolog, source: authoritySource, format: 'chronolog-authority-package/v2',
     sha256: { 'control.mjs': digest('authority fixture') } };

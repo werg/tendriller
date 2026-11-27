@@ -14,6 +14,19 @@ export interface SignedPublicationLike {
 
 export interface BlobCapableSession {
   readonly content?: {
+    put?(bytes: Uint8Array, options?: {
+      readonly visibility?: 'public' | 'private';
+      readonly mediaType?: string;
+      readonly deduplicate?: boolean;
+      readonly signal?: AbortSignal;
+    }): Promise<{ readonly hash?: string; readonly id?: string; readonly bytes: number }>;
+    get?(target: string | { readonly hash: string; readonly bytes: number; readonly profile: 'chronolog-blob-v2'; readonly visibility: 'public' }, options?: {
+      readonly expectedBytes?: number;
+      readonly maxBytes?: number;
+      readonly localOnly?: boolean;
+      readonly cache?: boolean;
+      readonly signal?: AbortSignal;
+    }): Promise<Uint8Array | null>;
     putBlob?(bytes: Uint8Array, options?: { readonly signal?: AbortSignal }): Promise<{ readonly hash: string; readonly bytes: number }>;
     getBlob?(hash: string, options?: {
       readonly expectedBytes?: number;

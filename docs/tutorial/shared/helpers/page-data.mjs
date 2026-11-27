@@ -1,9 +1,9 @@
 // Agent-first Chronolog v2 page data. `npm run init -- <slug>` creates the page's
-// v2 GenesisBlock (pinning `$reducers` ES Modules, `$permissions`, `$keys`, `$finality`,
+// v2 LogGenesis (pinning `$reducers` ES Modules, `$permissions`, `$keys`, `$finality`,
 // `$publications`, and the host attestation key) and epoch 0 key before any browser exists.
 import { openPageGenesis } from '@tendriller/core/admission';
 
-export async function initializePageData(context, { imports, topics, browserFirst = false, ownerGrant, authority, privateChain, finalitySchedule } = {}) {
+export async function initializePageData(context, { imports, topics, browserFirst = false, ownerGrant, authority, privateLog, finalitySchedule } = {}) {
   const marker = { applicationId: context.page.applicationId, publicKey: context.signer.publicKey, creator: browserFirst ? 'browser' : 'agent' };
   const existing = await context.readPrivate('initialized.json', true);
   if (existing && JSON.stringify({ ...existing, creator: marker.creator }) !== JSON.stringify(marker)) {
@@ -22,7 +22,7 @@ export async function initializePageData(context, { imports, topics, browserFirs
         applicationId: context.page.applicationId,
         imports,
         topics,
-        ...(privateChain === undefined ? {} : { privateChain }),
+        ...(privateLog === undefined ? {} : { privateLog }),
         ...(authority === undefined ? {} : { authority }),
         finalitySchedule,
         create: !browserFirst,

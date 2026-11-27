@@ -26,7 +26,7 @@ test('supplemental browser SQL pin requires explicit in-checkout bytes and rejec
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture() {
-  const identity = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
+  const identity = { repository: 'werg/chronolog', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
   const files = new Map(Object.entries({ 'index.mjs': 'export {};' }).map(([name, text]) => [name, Buffer.from(text)]));
   const proof = { ...identity, format: 'chronolog-peer-session-package/v2', profile: 'chronolog-crdt-v2', zeroNativeBuild: true };
   const pkg = { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './browser', './worker', './kernel', './websocket'].map(key => [key, './index.mjs'])) };

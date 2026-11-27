@@ -18,7 +18,7 @@ There are **no separate events-only vs. SQL engine builds**, **no native C/C++ a
 Bind any topic (or multiple topics) directly to the audited built-in `chronolog/sql` reducer — **zero custom JS reducer code required**:
 
 ```js
-const created = await createChainGenesis({
+const created = await createLogGenesis({
   creator: { publicKey: identity.publicKey, wrapKey: wrapKey.publicKey, administrator: true, publisher: true },
   topics: {
     inventory: { module: 'chronolog/sql' },

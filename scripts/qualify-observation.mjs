@@ -59,12 +59,12 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}/`); await page.waitForFunction(() => window.identity);
     const owningWorker = await created, browserId = await page.evaluate(() => window.identity);
     device = await openNativeDevice({ path: join(temporary, 'native.sqlite'), create: true });
-    const chain = await p.createChainGenesis({
+    const chain = await p.createLogGenesis({
       creator: { publicKey: device.identity.publicKey, reader: true, writer: true, administrator: true, publisher: true, finalizer: false },
       members: [{ publicKey: browserId, reader: true, writer: true, administrator: false, publisher: false, finalizer: false }],
-      privateChain: true,
+      privateLog: true,
     });
-    const applicationId = chain.chainId;
+    const applicationId = chain.logId;
     const key = chain.epoch0Key;
     session = await p.createApplicationSession({
       device,

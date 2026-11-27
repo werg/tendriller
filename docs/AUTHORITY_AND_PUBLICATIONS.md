@@ -1,7 +1,7 @@
 # Authority records and signed publications (Chronolog v2)
 
 Tendriller's Cloudflare Worker Durable Object acts as a **blind public-control participant** in Chronolog v2. It stores only:
-- the canonical `GenesisBlock` (`v2_genesis`),
+- the canonical `LogGenesis` (`v2_genesis`),
 - verified public-control `SignedOperation` records (`v2_public_ops`, strictly `$*` topics),
 - verified public CAS nodes (`v2_public_cas`, e.g. `$reducers` ES Module sources),
 - verified finality checkpoints (`v2_checkpoints`), and
@@ -11,7 +11,7 @@ It executes `TopicKernel({ blindHostMode: true })` over ONLY public-control oper
 
 ## Host SDK operations (`@tendriller/core/authority`)
 
-Canonical Chronolog v2 records (`GenesisBlock`, `SignedOperation`, `FinalityCheckpoint`, `SignedHostAttestationV2`) are transported as `{ record: "<lowercaseHex>" }` via `authorityRecord` / `authorityRecordBytes`.
+Canonical Chronolog v2 records (`LogGenesis`, `SignedOperation`, `FinalityCheckpoint`, `SignedHostAttestationV2`) are transported as `{ record: "<lowercaseHex>" }` via `authorityRecord` / `authorityRecordBytes`.
 
 | Method | Purpose |
 | --- | --- |
@@ -19,7 +19,7 @@ Canonical Chronolog v2 records (`GenesisBlock`, `SignedOperation`, `FinalityChec
 | `prepare(configuration)` | Optional pre-genesis metadata (`publisherKeys`, `executionProfile`, `tools`). |
 | `challenge(publicKey)` / `enroll(proof, invite?)` | Signed-in browser proves its Ed25519 + X25519 keys at the exact page origin and receives a `signHostAttestationV2` attestation. |
 | `enrollAgent()` | Granted agent receives a `signHostAttestationV2` attestation for its registered keys. |
-| `initialize({ genesis, casNodes?, publicOps? })` | Store the creator's canonical `GenesisBlock` and public CAS nodes once; validated via blind-host `TopicKernel` before commit. |
+| `initialize({ genesis, casNodes?, publicOps? })` | Store the creator's canonical `LogGenesis` and public CAS nodes once; validated via blind-host `TopicKernel` before commit. |
 | `syncControl({ publicOps?, casNodes?, checkpoints?, knownOpIds?, knownCasHashes? })` | Bidirectionally merge verified public-control operations, public CAS nodes, and finality checkpoints. Automatically prunes admitted pending attestations, closes revoked peer sockets, and reconciles active code releases. |
 | `admissions()` | Read pending `signHostAttestationV2` records for keys not yet present in `$permissions.members`. |
 | `publication(id?)` / `publish(op, assets)` | Read the current (or historical) `$publications` receipt, or submit a signed `$publications` public-control op plus canonical base64 asset bytes not already in R2. |

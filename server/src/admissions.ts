@@ -11,7 +11,7 @@ import { selectedApplication } from './application';
 import { requireHostAttestationIdentity, signHostAttestationV2 } from './host-attestation';
 import { HttpError } from './http';
 import { notifyDiscoveryWatchers } from './discovery';
-import { activeChainId, readControlState, withAuthorityMutation, type ControlInvite, type MaterializedControlState } from './authority';
+import { activeLogId, readControlState, withAuthorityMutation, type ControlInvite, type MaterializedControlState } from './authority';
 import { maybeSignGroupAttestation } from './groups/org-groups';
 import type { Tendril } from './tendril';
 
@@ -88,7 +88,7 @@ async function signAttestation(
   const payload: HostAttestationV2Payload = {
     subject: fields.subject,
     pageId: t.tid,
-    applicationId: activeChainId(t),
+    applicationId: activeLogId(t),
     accountId: fields.accountId,
     email: fields.email,
     publicKey: fields.publicKey,

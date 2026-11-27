@@ -53,6 +53,7 @@ export async function createTestPage(options: { application?: { id: string }; li
   const relay = (base: string, headers: Record<string, string>) => (channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live', extra: Record<string, string> = {}) => testPeerSocket(() => request(
     `${base}peers/relay?${new URLSearchParams({ channel, peerId, remotePeerId, lane, ...extra })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL } }), traffic, 'relay');
   return {
+    pageUrl: handle.page_url,
     /** Exact observed requests/frame bytes, excluding synthetic identity/page setup. */
     get hostTraffic() { return Object.freeze({ ...traffic }); },
     rendezvousSocket: rendezvous(handle.api + '/', { Authorization: `Bearer ${handle.token}` }),

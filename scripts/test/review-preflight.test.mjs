@@ -21,7 +21,7 @@ function fixture(t) {
   // These synthetic bytes test identity matching; package execution is qualified separately.
   const components = ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'session-sql-browser', 'starter'].map(role => artifact(role, role + '.tgz', 'current-' + role));
   const body = { format: 'tendriller-release-composition-v1', version: '0.3.0-test', contract: 3, core: source,
-    runtime: 'e'.repeat(64), profiles:FIRST_APP_PROFILES, chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog-db',source:'c'.repeat(40),sourceTree:'d'.repeat(40),dirty:false}])), components };
+    runtime: 'e'.repeat(64), profiles:FIRST_APP_PROFILES, chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog',source:'c'.repeat(40),sourceTree:'d'.repeat(40),dirty:false}])), components };
   const composition = { ...body, id: hash(JSON.stringify(body)) };
   const extras = [artifact('composition', 'composition.json', JSON.stringify(composition)), artifact('first-app', 'tendriller-first-app-0.3.0-test.tgz', 'complete-kit'), artifact('first-app-sql','tendriller-first-app-sql-0.3.0-test.tgz','sql-kit')];
   const manifest = { format: 'tendriller-core-release', version: body.version, contract: 3, source_commit: source.source,

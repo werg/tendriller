@@ -13,10 +13,10 @@ const p = await import(process.env.AGENT_ACCEPTANCE_AUTHORITY_SOURCE ?? '@chrono
 const revision = { digest: 'ca'.repeat(32), view: 'local', stateRoot: 'ed'.repeat(32), historyDigest: 'fd'.repeat(32) };
 const clone = value => structuredClone(value);
 
-async function makePubOp(chainId, signer, { operationId, revision: rev = 0, previous = null, entry = 'index.html', files }) {
+async function makePubOp(logId, signer, { operationId, revision: rev = 0, previous = null, entry = 'index.html', files }) {
   const signed = await p.signOperationCore({
     version: 1,
-    chainId: p.hexToBytes(chainId),
+    logId: p.hexToBytes(logId),
     author: p.hexToBytes(signer.publicKey),
     authorTimestampMs: BigInt(Date.now()),
     operationId,
@@ -33,17 +33,17 @@ async function fixture(t, { native = true } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'authored-observer-')), runDirectory = join(directory, 'run'), project = join(runDirectory, 'project');
   mkdirSync(project, { recursive: true }); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const root = await p.createSigningIdentity(), browserSigner = await p.createSigningIdentity(), publisher = await p.createSigningIdentity();
-  const created = await p.createChainGenesis({
+  const created = await p.createLogGenesis({
     creator: { publicKey: root.publicKey, reader: true, writer: true, administrator: true, publisher: true, finalizer: false },
     members: [{ publicKey: browserSigner.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false }],
-    privateChain: true,
+    privateLog: true,
   });
-  const applicationId = created.chainId;
+  const applicationId = created.logId;
   const genesisRecord = authorityRecord(created.genesisBytes);
   const proposalId = 'ab'.repeat(32), operationId = 'original-local-operation';
   const rawEnvelope = p.encodeEncryptedEnvelope({
     version: 1,
-    chainId: p.hexToBytes(applicationId),
+    logId: p.hexToBytes(applicationId),
     opId: p.hexToBytes(proposalId),
     author: p.hexToBytes(root.publicKey),
     epoch: 0,
@@ -147,12 +147,12 @@ async function fixture(t, { native = true } = {}) {
   };
 }
 
-test('Chronolog v2 genesis verification pins chainId and checks writer grants on encrypted envelopes', async t => {
+test('Chronolog v2 genesis verification pins logId and checks writer grants on encrypted envelopes', async t => {
   const f = await fixture(t), authority = await verifiedAuthority(f.created.genesisBytes, f.loaded.descriptor, p);
-  assert.equal(authority.chainId, f.applicationId);
+  assert.equal(authority.logId, f.applicationId);
   await verifySignedOperation(f.rawEnvelope, authority, p);
   const wrongChain = p.encodeEncryptedEnvelope({
-    version: 1, chainId: p.hexToBytes('00'.repeat(32)), opId: p.hexToBytes(f.state.proposalId),
+    version: 1, logId: p.hexToBytes('00'.repeat(32)), opId: p.hexToBytes(f.state.proposalId),
     author: p.hexToBytes(f.root.publicKey), epoch: 0, nonce: new Uint8Array(12), ciphertext: Uint8Array.of(1),
   });
   await assert.rejects(verifySignedOperation(wrongChain, authority, p), /operation-authority-application/);
@@ -336,7 +336,7 @@ test('multiple encrypted envelopes preserve one stable proposal and retry select
   const f = await fixture(t);
   const before = await sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey });
   const other = p.encodeEncryptedEnvelope({
-    version: 1, chainId: p.hexToBytes(f.applicationId), opId: p.hexToBytes(f.state.proposalId),
+    version: 1, logId: p.hexToBytes(f.applicationId), opId: p.hexToBytes(f.state.proposalId),
     author: p.hexToBytes(f.root.publicKey), epoch: 1,
     nonce: Uint8Array.of(9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9), ciphertext: Uint8Array.of(7, 8),
   });

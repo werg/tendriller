@@ -7,8 +7,8 @@ import { CORE_RELEASE } from '../../contract/index.mjs';
 import { base64url, challengeFor, oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
 import {
-  bytesToHex, createChainGenesis, createSigningIdentity, encodeGenesisBlock,
-  exportSigningIdentity, genesisChainId,
+  bytesToHex, createLogGenesis, createSigningIdentity, encodeLogGenesis,
+  exportSigningIdentity, genesisLogId,
 } from '@chronolog/peer-session';
 import { authorityRecord } from '../../contract/authority.mjs';
 import { sealHostedKeys } from '../src/mcp-crypto';
@@ -115,7 +115,7 @@ async function seedPageGenesisV2(
   topics: Record<string, { module: string; initialState?: any }>,
 ) {
   const hostKey = JSON.parse(env.HOST_ATTESTATION_KEY!).publicKey as string;
-  const created = await createChainGenesis({
+  const created = await createLogGenesis({
     creator: {
       publicKey: writers[0],
       wrapKey: '11'.repeat(32),
@@ -125,7 +125,7 @@ async function seedPageGenesisV2(
       publisher: true,
       finalizer: false,
     },
-    privateChain: true,
+    privateLog: true,
     hostPublicKey: hostKey,
     imports,
     topics,
@@ -135,10 +135,10 @@ async function seedPageGenesisV2(
   for (const pk of writers.slice(1)) {
     perms.members.push({ publicKey: pk, wrapKey: '22'.repeat(32), reader: true, writer: true, administrator: false, publisher: false, finalizer: false });
   }
-  const genesisBytes = encodeGenesisBlock(genesis);
-  const chainId = bytesToHex(genesisChainId(genesisBytes));
+  const genesisBytes = encodeLogGenesis(genesis);
+  const logId = bytesToHex(genesisLogId(genesisBytes));
   await inDO(page.id, t => {
-    t.db.set('application', { id: chainId });
+    t.db.set('application', { id: logId });
     t.db.set('application_pinned', true);
     t.db.set('v2_genesis', authorityRecord(genesisBytes));
     for (const node of created.casNodes) {
@@ -147,8 +147,8 @@ async function seedPageGenesisV2(
       t.db.run('INSERT OR IGNORE INTO v2_public_cas(hash, bytes) VALUES(?, ?)', node.hash, copy.buffer);
     }
   });
-  page.application.id = chainId;
-  return { chainId, genesisBytes, epoch0Key: created.epoch0Key! };
+  page.application.id = logId;
+  return { logId, genesisBytes, epoch0Key: created.epoch0Key! };
 }
 
 it('first-party OAuth stays disabled until explicitly configured and remains on the service origin', async () => {

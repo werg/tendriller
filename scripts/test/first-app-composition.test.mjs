@@ -34,7 +34,7 @@ async function fixture(t) {
     archives[role] = path;
     components.push({ role, file, sha256: digest(bytes), size: bytes.byteLength });
   }
-  const chronolog = {repository:'werg/chronolog-db',source:'c'.repeat(40),sourceTree:'d'.repeat(40),dirty:false};
+  const chronolog = {repository:'werg/chronolog',source:'c'.repeat(40),sourceTree:'d'.repeat(40),dirty:false};
   for (const role of ['authority','session']) {
     const dir=join(directory,role); await mkdir(join(dir,'package'),{recursive:true});
     await writeFile(join(dir,'package/package.json'),JSON.stringify({name:role==='authority'?'@chronolog/authority':'@chronolog/peer-session'}));

@@ -66,8 +66,10 @@ Page application session (attaches to tendril agent run; --page <slug|id>):
   watch [--events [--cursor CURSOR] [--topics JSON] [--limit N]]   Without --page: every running page, cursors per page
   logs [--topics JSON] [--latest]
   signal <topic> <json> [--ttl MILLISECONDS]
-  finality close|vote --through MS | finality submit <canonical-proof-record>
-  definition | publication | publication-operation <id>
+  topic <name> | sql <query|exec|migrate|rls|schema|tables> [json] [--topic sql] [--operation ID]
+  reducers [inspect|set <json>] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite <json>] [--operation ID]
+  finality status | finality close --through MS | finality submit <canonical-checkpoint-record>
+  definition | publication | publication-operation <id> | publication-recover <rev|opId> [dir] | publication-rollback <rev|opId> --operation ID
   publish <directory> [--operation ID] [--entry index.html]
 
 --workspace DIR (or TENDRIL_WORKSPACE) selects the workspace; otherwise the nearest
@@ -79,14 +81,18 @@ Chronolog owns signing, exact retry and durable identity. Finality is optional;
 a timed out waiter preserves its original stored proposal and author timestamp.`;
 
 const sessionCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'query', 'command', 'command-batch', 'operation', 'retry',
-  'events', 'watch', 'logs', 'signal', 'finality', 'definition', 'publication', 'publication-operation', 'publish']);
+  'events', 'watch', 'logs', 'signal', 'topic', 'sql', 'reducers', 'permissions', 'finality',
+  'definition', 'publication', 'publication-operation', 'publication-recover', 'publication-rollback', 'publish']);
 const hostCommands = new Set(['info', 'meta', 'release', 'link', 'notify', 'activity', 'remove']);
 const flagsByCommand = {
   self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'author-time', 'wait'],
   'command-batch': ['wait'], operation: [],
   retry: ['wait'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
   logs: ['topics', 'latest'],
-  signal: ['ttl'], finality: ['through'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
+  signal: ['ttl'], topic: [], sql: ['topic', 'operation', 'author-time', 'wait'],
+  reducers: ['operation', 'author-time', 'wait'], permissions: ['operation', 'author-time', 'wait'],
+  finality: ['through'], definition: [], publication: [], 'publication-operation': [],
+  'publication-recover': [], 'publication-rollback': ['operation', 'author-time', 'wait'], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'], changelog: ['server', 'since', 'since-core', 'category', 'limit'],
@@ -96,8 +102,10 @@ const flagsByCommand = {
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
-  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], finality: [1, 2], definition: [0, 0], publication: [0, 0],
-  'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
+  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], topic: [1, 1], sql: [1, 2], reducers: [0, 2], permissions: [0, 2],
+  finality: [1, 2], definition: [0, 0], publication: [0, 0],
+  'publication-operation': [1, 1], 'publication-recover': [1, 2], 'publication-rollback': [1, 1],
+  publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], changelog: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], connection: [1, 2], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
 const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts', 'changelog']);

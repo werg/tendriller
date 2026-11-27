@@ -28,7 +28,7 @@ const signPublicationOp = async (payload = intent) => {
   const who = payload.author === author ? signer : otherSigner;
   const signed = await signOperationCore({
     version: 1,
-    chainId: hexToBytes(payload.applicationId),
+    logId: hexToBytes(payload.applicationId),
     author: hexToBytes(payload.author),
     authorTimestampMs: BigInt(Date.now()),
     operationId: payload.operationId,

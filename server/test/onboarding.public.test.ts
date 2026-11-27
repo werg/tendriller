@@ -75,7 +75,7 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
   }
   expect(value.sources).toEqual({
     core: 'https://github.com/werg/tendriller',
-    chronolog: 'https://github.com/werg/chronolog-db',
+    chronolog: 'https://github.com/werg/chronolog',
     cookbooks: 'https://github.com/werg/tendriller-contrib',
     releases: 'https://github.com/werg/tendriller/releases',
   });

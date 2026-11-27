@@ -35,7 +35,7 @@ const imports = { 'app/connections': CONNECTION_REDUCER };
 const topics = { 'connections/page-key': { module: 'app/connections' } };
 
 function createInMemoryHost({ hostIdentity, ownerAccount }) {
-  let chainId = '88'.repeat(32);
+  let logId = '88'.repeat(32);
   let genesis = null;
   let genesisBytes = null;
   let groupPolicy = null;
@@ -65,7 +65,7 @@ function createInMemoryHost({ hostIdentity, ownerAccount }) {
   const isMember = pk => (controlPerms.members ?? []).some(m => m.publicKey === pk);
 
   const metadata = () => ({
-    selection: { id: chainId },
+    selection: { id: logId },
     configuration: null,
     genesis,
     hostAttestationKey: hostIdentity.publicKey,
@@ -77,7 +77,7 @@ function createInMemoryHost({ hostIdentity, ownerAccount }) {
     async initialize({ genesis: rec, casNodes = [] }) {
       genesisBytes = authorityRecordBytes(rec, 1024 * 1024);
       genesis = rec;
-      chainId = p.bytesToHex(p.genesisChainId(genesisBytes));
+      logId = p.bytesToHex(p.genesisLogId(genesisBytes));
       for (const n of casNodes) {
         const bytes = p.hexToBytes(n.bytes);
         if (computeCasHash(bytes) !== n.hash) throw new Error('cas_hash_mismatch');
@@ -107,7 +107,7 @@ function createInMemoryHost({ hostIdentity, ownerAccount }) {
       };
     },
     async challenge(publicKey) {
-      return { applicationId: chainId, publicKey, challenge: '11'.repeat(32), expiresAt: Date.now() + 60_000 };
+      return { applicationId: logId, publicKey, challenge: '11'.repeat(32), expiresAt: Date.now() + 60_000 };
     },
     async enroll(proofRec) {
       const proof = decode(proofRec);
@@ -115,7 +115,7 @@ function createInMemoryHost({ hostIdentity, ownerAccount }) {
       const att = await p.signHostAttestationV2({
         subject: 'device',
         pageId: 'aaaaaaaaaaaa',
-        applicationId: chainId,
+        applicationId: logId,
         accountId,
         email: `${accountId}@acme.test`,
         publicKey: proof.payload.publicKey,
@@ -130,7 +130,7 @@ function createInMemoryHost({ hostIdentity, ownerAccount }) {
       if (accountId === 'alice_org') {
         const ga = await p.signRecord('tendriller-group-attestation-v1', {
           pageId: 'aaaaaaaaaaaa',
-          applicationId: chainId,
+          applicationId: logId,
           accountId,
           publicKey: proof.payload.publicKey,
           wrapKey: proof.payload.wrapKey,
@@ -170,7 +170,7 @@ function createInMemoryHost({ hostIdentity, ownerAccount }) {
     async emitDeparture(accountId, publicKey, group = 'github-team:acme/eng') {
       const dep = await p.signRecord('tendriller-org-departure-v1', {
         pageId: 'aaaaaaaaaaaa',
-        applicationId: chainId,
+        applicationId: logId,
         accountId,
         publicKey,
         group,
