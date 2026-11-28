@@ -66,11 +66,13 @@ export function servePageWorker({
               quickJsWasmPromise,
             ]);
             const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
+            const mirrorBase = new URL('_tendril', configuration.page_url).href.replace(/\/+$/u, '');
             session = await createApplicationSession({
               device,
               applicationId: configuration.applicationId,
               genesis: opened.genesisBytes,
               casNodes: opened.casNodes,
+              casMirrors: [mirrorBase],
               wasmModule,
               ...(sqliteWasmLoader ? { sqliteWasmLoader } : {}),
               ...(epochKeys ? { epochKeys } : {}),

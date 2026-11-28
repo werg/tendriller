@@ -430,16 +430,48 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     }
     if (sub === 'publish') {
       const specifier = required(args[1], 'a module specifier (e.g. @app/custom)');
-      const filePath = required(args[2], 'an ES Module reducer file path');
-      const source = readFileSync(filePath, 'utf8');
-      const bytes = new TextEncoder().encode(source);
+      const filePath = required(args[2], 'an ES Module or TypeScript reducer file path');
+      const usePack = Boolean(options.pack) || /\.(?:ts|tsx|mts)$/u.test(filePath);
       const { computeCasHash, dryRunReducerUpgrade } = await import('@chronolog/peer-session/kernel');
-      if (!options['skip-dry-run']) {
-        const dry = await dryRunReducerUpgrade({ specifier, source });
-        if (!dry.ok) throw Error(`Reducer dry-run failed for ${specifier}: ${dry.error ?? 'unknown error'}`);
+      let hash, casUri, casNodes, packedMeta;
+      if (usePack) {
+        const { packReducers } = await import('@chronolog/pack');
+        const packed = await packReducers({ entries: { [specifier]: filePath } });
+        const entry = packed.entries[specifier];
+        hash = entry.pkgHash;
+        casUri = entry.pkgRef;
+        casNodes = packed.casNodes.map(n => ({ hash: n.hash, bytes: n.bytes, partition: 'public' }));
+        packedMeta = { drvRef: entry.drvRef ?? null, builtins: entry.manifest.builtins ?? [], diagnostics: packed.diagnostics };
+        if (!options['skip-dry-run']) {
+          const dry = await dryRunReducerUpgrade({
+            specifier,
+            pkg: {
+              name: entry.manifest.name,
+              version: entry.manifest.version,
+              files: Object.fromEntries(
+                Object.entries(entry.manifest.files).map(([p, ref]) => {
+                  const h = ref.replace(/^cas:sha256-/u, '');
+                  const node = packed.casNodes.find(n => n.hash === h);
+                  return [p, node ? new TextDecoder().decode(node.bytes) : ''];
+                }),
+              ),
+              exports: entry.manifest.exports,
+              ...(entry.manifest.builtins ? { builtins: entry.manifest.builtins } : {}),
+            },
+          });
+          if (!dry.ok) throw Error(`Packed reducer dry-run failed for ${specifier}: ${dry.error ?? 'unknown error'}`);
+        }
+      } else {
+        const source = readFileSync(filePath, 'utf8');
+        const bytes = new TextEncoder().encode(source);
+        if (!options['skip-dry-run']) {
+          const dry = await dryRunReducerUpgrade({ specifier, source });
+          if (!dry.ok) throw Error(`Reducer dry-run failed for ${specifier}: ${dry.error ?? 'unknown error'}`);
+        }
+        hash = computeCasHash(bytes, []);
+        casUri = `cas:sha256-${hash}`;
+        casNodes = [{ hash, bytes, partition: 'public' }];
       }
-      const hash = computeCasHash(bytes, []);
-      const casUri = `cas:sha256-${hash}`;
       const topicBindings = {};
       if (typeof options.bind === 'string' && options.bind.trim()) {
         for (const entry of options.bind.split(',').map(s => s.trim()).filter(Boolean)) {
@@ -455,7 +487,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       await session.mergeFacts({
         publicOps: [],
         encryptedEnvelopes: [],
-        casNodes: [{ hash, bytes, partition: 'public' }],
+        casNodes,
         retentions: [],
         checkpoints: [],
       });
@@ -470,9 +502,78 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
           },
         }],
       });
-      return { specifier, hash, casUri, topics: topicBindings, operation: await observe(op, options, signal) };
+      return { specifier, hash, casUri, packed: usePack, ...(packedMeta ? { package: packedMeta } : {}), topics: topicBindings, operation: await observe(op, options, signal) };
     }
-    throw Error('Use reducers inspect, reducers set <json> --operation ID, or reducers publish <specifier> <file.mjs> [--bind topic=spec[:export]] --operation ID');
+    throw Error('Use reducers inspect, reducers set <json> --operation ID, or reducers publish <specifier> <file.mjs|.ts> [--pack] [--skip-dry-run] [--bind topic=spec[:export]] --operation ID');
+  }
+  if (command === 'mount') {
+    const sub = args[0] ?? 'inspect';
+    if (sub === 'inspect') return session.topic('$mounts');
+    if (sub === 'set') {
+      const alias = required(args[1], 'a mount alias');
+      const spec = jsonInput(args[2], 'mount spec JSON ({ logId, stateRoot, topics?, casRoots? })');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$mounts', input: { action: 'setMount', alias, ...spec } }],
+      });
+      return observe(op, options, signal);
+    }
+    if (sub === 'remove') {
+      const alias = required(args[1], 'a mount alias to remove');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$mounts', input: { action: 'removeMount', alias } }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use mount inspect, mount set <alias> <json> --operation ID, or mount remove <alias> --operation ID');
+  }
+  if (command === 'builders') {
+    const sub = args[0] ?? 'inspect';
+    if (sub === 'inspect') return session.topic('$builders');
+    if (sub === 'add') {
+      const publicKey = required(args[1], 'a 64-hex builder Ed25519 public key');
+      const extra = args[2] ? jsonInput(args[2], 'builder metadata JSON ({ label?, runtimes? })') : {};
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$builders', input: { action: 'addBuilder', publicKey, ...extra } }],
+      });
+      return observe(op, options, signal);
+    }
+    if (sub === 'remove') {
+      const publicKey = required(args[1], 'a 64-hex builder Ed25519 public key');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$builders', input: { action: 'removeBuilder', publicKey } }],
+      });
+      return observe(op, options, signal);
+    }
+    if (sub === 'set-policy') {
+      const policy = jsonInput(args[1], 'builders policy JSON ({ threshold?, runtimes? })');
+      const op = await session.submit({
+        visibility: 'public',
+        ...identity(options),
+        updates: [{ topic: '$builders', input: { action: 'setPolicy', ...policy } }],
+      });
+      return observe(op, options, signal);
+    }
+    throw Error('Use builders inspect, builders add <pk> [json] --operation ID, builders remove <pk> --operation ID, or builders set-policy <json> --operation ID');
+  }
+  if (command === 'derive') {
+    const rawTarget = required(args[0], 'a derivation cas:sha256-... reference or derivation JSON');
+    if (typeof session.evaluateDerivation !== 'function') {
+      throw Error('Derivation evaluation is unavailable on this session.');
+    }
+    const target = rawTarget.trim().startsWith('{') ? jsonInput(rawTarget, 'derivation JSON') : rawTarget.trim();
+    const { createWasiCasRunner } = await import('@chronolog/peer-session/kernel');
+    const result = await session.evaluateDerivation(target, {
+      wasiRunner: createWasiCasRunner(),
+    });
+    return result;
   }
   if (command === 'permissions') {
     const sub = args[0] ?? 'inspect';

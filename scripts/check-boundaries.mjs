@@ -52,7 +52,7 @@ assert.ok(engine.some(input => controlArtifacts.has(input)), 'The deployed engin
 const toolGraph = join(root, 'dist/tools-inputs.json');
 if (existsSync(toolGraph)) for (const input of JSON.parse(readFileSync(toolGraph))) {
   const path = input.replaceAll('\\', '/');
-  const publicChronolog = /(?:^|\/)node_modules\/@chronolog\/(?:authority|peer-session)(?:\/|$)/.test(path);
+  const publicChronolog = /(?:^|\/)node_modules\/@chronolog\/(?:authority|peer-session|pack)(?:\/|$)/.test(path);
   assert.ok(!/^(?:server\/src|runtime\/src|runtime\/types|contract)\//.test(path) && (!application.test(path) || publicChronolog),
     `Tools must consume public artifacts, not private source: ${input}`);
 }

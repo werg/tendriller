@@ -80,6 +80,20 @@ raw bytes only for rows the caller lacks; dependency-aware `Db` invalidation; TU
 cold load to data 2.6 s (7.8 s throttled), warm reload 0.54 s, fresh device with 200 notes 6.1 s
 (3–4 s CPU after the worker is ready), browser→browser op 44 ms.
 
+**Client boot** (`perf/perf-boot`, paired `npm run bench` medians on a loaded 16-core host, before → after):
+
+| | cold applicationReady | cold dataRendered | warm current data (tendrilReady) | warm first paint | fresh-large dataRendered |
+|---|---|---|---|---|---|
+| loopback | ~2.7 s → ~1.63 s | ~4.8 s → ~3.6 s | parity (0.85–1.1 s both) | ~0.9 s → ~0.12 s | 9.6 s → 7.2 s |
+| throttled | 5.8 s → 2.7 s | 9.1 s → 5.3 s | 1.17 s → 0.90 s | 1.17 s → 0.27 s | not measured |
+
+Changes: page and Worker bundled separately (page has no Worker/QuickJS code), the document preloads
+configuration.json and the Worker's whole module graph + WASM, `tendril.js` is deferred, the service
+worker saves the release only after `tendril.ready()` and through the HTTP cache, serves a saved release
+stale-while-revalidate, and starter pages paint the persisted live-view snapshot before the session opens.
+A single flat Worker module was tried and measured ~190 ms slower on warm reloads (compile before the
+first reply), so the Worker keeps its chunks. The remaining cold time is admission (`canAuthor`).
+
 **Admission push** (branch `perf/perf-admission`, `npm run bench -- --runs 5`, before/after measured
 back to back on a shared loaded machine, load average 7–26): discovery notifications now carry a
 per-scope host revision vector (`{"type":"changed","rev":"<nonce>.<control>.<admissions>.<directory>.<mailbox>"}`);

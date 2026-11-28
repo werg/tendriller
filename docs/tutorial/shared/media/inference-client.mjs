@@ -56,12 +56,16 @@ export function createPeerInferenceClient({ session, workerDeviceId, prompt,
         if (await abortable(sha256(bytes), lifetime) !== captured.sha256) throw inferenceError('source');
         // Content references accept a canonical type/subtype, not MIME
         // parameters. Keep the original Blob and bytes; do not transcode.
-        const upload = await abortable(session.content.stage({ bytes: bytes.length, mediaType }), lifetime);
-        for (let offset = 0; offset < bytes.length; offset += 65_536) {
-          lifetime.throwIfAborted();
-          await abortable(upload.write(offset / 65_536, bytes.slice(offset, offset + 65_536)), lifetime);
-        }
-        reference = await abortable(upload.commit(), lifetime);
+        reference = typeof session.content.put === 'function'
+          ? await abortable(session.content.put(bytes, { mediaType, signal: lifetime }), lifetime)
+          : await (async () => {
+              const upload = await abortable(session.content.stage({ bytes: bytes.length, mediaType }), lifetime);
+              for (let offset = 0; offset < bytes.length; offset += 65_536) {
+                lifetime.throwIfAborted();
+                await abortable(upload.write(offset / 65_536, bytes.slice(offset, offset + 65_536)), lifetime);
+              }
+              return abortable(upload.commit(), lifetime);
+            })();
         lifetime.throwIfAborted();
         dispatched = true;
         await session.signals.send(INFERENCE_TOPICS.request, { workerDeviceId, requestId, candidateId: captured.id,

@@ -31,13 +31,20 @@ export function servePeerInference({ session, allowedDevices, maxRequests = 1, m
     const timer = setTimeout(() => owner.abort(inferenceError('deadline')), timeoutMs);
     try {
       requestSignal.throwIfAborted();
-      const bytes = new Uint8Array(request.reference.bytes); let offset = 0;
-      for await (const chunk of session.content.read(request.reference, { signal: requestSignal })) {
-        requestSignal.throwIfAborted();
-        if (!(chunk instanceof Uint8Array) || offset + chunk.length > bytes.length) throw inferenceError('source');
-        bytes.set(chunk, offset); offset += chunk.length;
+      let bytes;
+      if (typeof session.content.get === 'function') {
+        bytes = await session.content.get(request.reference, { signal: requestSignal });
+        if (!(bytes instanceof Uint8Array) || bytes.length !== request.reference.bytes) throw inferenceError('source');
+      } else {
+        bytes = new Uint8Array(request.reference.bytes); let offset = 0;
+        for await (const chunk of session.content.read(request.reference, { signal: requestSignal })) {
+          requestSignal.throwIfAborted();
+          if (!(chunk instanceof Uint8Array) || offset + chunk.length > bytes.length) throw inferenceError('source');
+          bytes.set(chunk, offset); offset += chunk.length;
+        }
+        if (offset !== bytes.length) throw inferenceError('source');
       }
-      if (offset !== bytes.length || await sha256(bytes) !== request.sha256) throw inferenceError('source');
+      if (await sha256(bytes) !== request.sha256) throw inferenceError('source');
       requestSignal.throwIfAborted();
       // No session, signer, credential or command function is passed to the
       // provider. Its only output is JSON for an authored review interface.

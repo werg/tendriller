@@ -71,7 +71,9 @@ Page application session (attaches to tendril agent run; --page <slug|id>):
   logs [--topics JSON] [--latest]
   signal <topic> <json> [--ttl MILLISECONDS]
   topic <name> | sql <query|exec|migrate|migrate-file|rls|schema|tables|audit|conflicts|resolve-conflict|history> [json|file.sql|opId] [--topic sql] [--table T] [--limit N] [--all] [--op ID|--at MS] [--resolution TEXT] [--policies file.json] [--operation ID]
-  reducers [inspect|set <json>|publish <spec> <file.mjs> [--bind topic=spec[:export]]] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|set-antispam|vouch-author|compartment|multisig-propose|multisig-approve|multisig-cancel|recovery-status|recovery-setup|recovery-request|recovery-approve|recovery-complete <json|id>] [--operation ID]
+  reducers [inspect|set <json>|publish <spec> <file.mjs|.ts> [--pack] [--skip-dry-run] [--bind topic=spec[:export]]] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|set-antispam|vouch-author|compartment|multisig-propose|multisig-approve|multisig-cancel|recovery-status|recovery-setup|recovery-request|recovery-approve|recovery-complete <json|id>] [--operation ID]
+  mount [inspect|set <alias> <json>|remove <alias>] [--operation ID] | builders [inspect|add <pk> [json]|remove <pk>|set-policy <json>] [--operation ID]
+  derive <drv-ref|drv-json> [--wasi] | registry init [out.json] [--name TEXT]
   finality status | finality op <opId> | finality notarize [--include op1,op2] | finality schedule --kind none|signed-frontier|fixed-validator [--signer PK] [--effective-after MS] --operation ID | finality close --through MS | finality submit <record>
   blueprint export [out.json] [--title TEXT] [--no-schema]
   definition | publication | publication-history | publication-operation <id> | publication-recover <rev|opId> [dir] | publication-rollback <rev|opId> --operation ID
@@ -87,7 +89,7 @@ Chronolog owns signing, exact retry and durable identity. Finality is optional;
 a timed out waiter preserves its original stored proposal and author timestamp.`;
 
 const sessionCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'query', 'command', 'command-batch', 'operation', 'retry',
-  'events', 'watch', 'logs', 'signal', 'topic', 'sql', 'reducers', 'permissions', 'finality', 'blueprint', 'content',
+  'events', 'watch', 'logs', 'signal', 'topic', 'sql', 'reducers', 'mount', 'builders', 'derive', 'permissions', 'finality', 'blueprint', 'content',
   'definition', 'publication', 'publication-history', 'publication-operation', 'publication-recover', 'publication-rollback', 'publish']);
 const hostCommands = new Set(['info', 'meta', 'release', 'link', 'notify', 'activity', 'remove']);
 const flagsByCommand = {
@@ -96,7 +98,12 @@ const flagsByCommand = {
   retry: ['wait'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
   logs: ['topics', 'latest'],
   signal: ['ttl'], topic: [], sql: ['topic', 'policies', 'table', 'limit', 'all', 'op', 'at', 'resolution', 'operation', 'author-time', 'wait'],
-  reducers: ['bind', 'operation', 'author-time', 'wait'], permissions: ['operation', 'author-time', 'wait'],
+  reducers: ['bind', 'pack', 'skip-dry-run', 'operation', 'author-time', 'wait'],
+  mount: ['operation', 'author-time', 'wait'],
+  builders: ['operation', 'author-time', 'wait'],
+  derive: ['wasi'],
+  registry: ['name'],
+  permissions: ['operation', 'author-time', 'wait'],
   finality: ['through', 'kind', 'signer', 'validators', 'threshold', 'effective-after', 'include', 'operation', 'author-time', 'wait'], blueprint: ['title', 'no-schema'], content: ['visibility', 'no-dedup', 'type'], definition: [], publication: [], 'publication-history': [], 'publication-operation': [],
   'publication-recover': [], 'publication-rollback': ['operation', 'author-time', 'wait'], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
@@ -108,13 +115,13 @@ const flagsByCommand = {
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
-  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], topic: [1, 1], sql: [1, 2], reducers: [0, 3], permissions: [0, 2],
+  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], topic: [1, 1], sql: [1, 2], reducers: [0, 3], mount: [0, 3], builders: [0, 3], derive: [1, 1], registry: [1, 2], permissions: [0, 2],
   finality: [1, 2], blueprint: [1, 2], content: [2, 3], definition: [0, 0], publication: [0, 0], 'publication-history': [0, 0],
   'publication-operation': [1, 1], 'publication-recover': [1, 2], 'publication-rollback': [1, 1],
   publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], changelog: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], connection: [1, 2], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
-const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts', 'changelog']);
+const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts', 'changelog', 'registry']);
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
@@ -128,6 +135,32 @@ async function publicCommand(command, args, flags, signal) {
   if (command === 'handoff') {
     if (args[0] !== 'source') throw invalid('Use: tendril handoff source <output.tgz> [--project DIR]');
     return exportSourceHandoff(flags.project ?? process.cwd(), args[1]);
+  }
+  if (command === 'registry') {
+    if (args[0] !== 'init') throw invalid('Use: tendril registry init [out.json] [--name TEXT]');
+    const [{ createRegistryGenesis, createSigningIdentity, bytesToHex }, { mkdirSync, writeFileSync }, { dirname }] = await Promise.all([
+      import('@chronolog/peer-session'),
+      import('node:fs'),
+      import('node:path'),
+    ]);
+    const creator = await createSigningIdentity();
+    const { genesisBytes, logId, casNodes } = await createRegistryGenesis({
+      creatorPublicKey: creator.publicKey,
+      ...(typeof flags.name === 'string' && flags.name.trim() ? { name: flags.name.trim() } : {}),
+    });
+    const out = {
+      format: 'chronolog-registry-genesis/v1',
+      logId: bytesToHex(logId),
+      creatorPublicKey: creator.publicKey,
+      genesisBase64: Buffer.from(genesisBytes).toString('base64'),
+      casNodeCount: casNodes.length,
+    };
+    if (args[1]) {
+      mkdirSync(dirname(args[1]), { recursive: true });
+      writeFileSync(args[1], JSON.stringify(out, null, 2) + '\n');
+      return { ...out, writtenTo: args[1] };
+    }
+    return out;
   }
   if (command === 'changelog') {
     const wsRoot = flags.workspace ?? (process.env.TENDRIL_WORKSPACE || (!flags.server ? findWorkspace() : null));

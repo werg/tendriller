@@ -1,5 +1,6 @@
 // Build the application-neutral engine and its public SDK/runtime artifacts.
 import { build } from "esbuild";
+import { createWorkerdWasmPlugin } from "@chronolog/peer-session/workerd-plugin";
 import { cpSync, mkdirSync, existsSync, readdirSync, copyFileSync, rmSync, watch, writeFileSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -157,33 +158,11 @@ export async function buildEngine() {
   };
   const authority = authoritySnapshot();
   const wasmAssets = new Set();
-  const wasmBundlePlugin = {
-    name: 'worker-wasm-assets',
-    setup(builder) {
-      builder.onResolve({ filter: /(?:\.wasm$|^@jitl\/quickjs-ng-wasmfile-release-sync\/wasm$|^@chronolog\/peer-session\/sqlite-cas\.wasm$)/ }, args => {
-        let resolved;
-        if (args.path === '@jitl/quickjs-ng-wasmfile-release-sync/wasm') {
-          resolved = join(root, 'node_modules/@jitl/quickjs-ng-wasmfile-release-sync/dist/emscripten-module.wasm');
-        } else if (args.path === '@chronolog/peer-session/sqlite-cas.wasm') {
-          resolved = join(root, 'node_modules/@chronolog/peer-session/wasm/sqlite-cas.wasm');
-        } else {
-          resolved = join(args.resolveDir, args.path);
-        }
-        const name = basename(resolved);
-        copyFileSync(resolved, join(dist, 'engine', name));
-        wasmAssets.add(name);
-        return { path: `./${name}`, external: true };
-      });
-      builder.onResolve({ filter: /^module$/ }, () => ({
-        path: 'workerd-empty-module',
-        namespace: 'workerd-stub',
-      }));
-      builder.onLoad({ filter: /.*/, namespace: 'workerd-stub' }, () => ({
-        contents: 'export function createRequire() { throw new Error("node:module is unavailable in Cloudflare Workers"); }',
-        loader: 'js',
-      }));
-    },
-  };
+  const wasmBundlePlugin = createWorkerdWasmPlugin({
+    outDir: join(dist, 'engine'),
+    rootDir: root,
+    onAsset: name => wasmAssets.add(name),
+  });
   const result = await build({
     entryPoints: [join(root, "server/src/index.ts")],
     outfile: join(dist, "engine/worker.mjs"),

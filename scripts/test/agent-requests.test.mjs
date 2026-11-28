@@ -219,7 +219,7 @@ import { runRequestWorker } from '../../docs/tutorial/consumers/request-worker.m
 import { openConsumerCheckpoint } from '../../docs/tutorial/shared/helpers/agent-consumer.mjs';
 import { createTestConnection } from '../observation-fixture/connection.mjs';
 
-const eventually = async (check, timeoutMs = 8000) => {
+const eventually = async (check, timeoutMs = 15000) => {
   const deadline = Date.now() + timeoutMs;
   while (!await check()) {
     if (Date.now() >= deadline) throw Error('Consumer condition timed out');

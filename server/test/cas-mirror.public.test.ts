@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import quickJsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import {
   casRef, ContentAddressedStore, MemoryBytesStore, putPackageDag, putTreeDag, signBuildAttestation,
 } from '@chronolog/peer-session/kernel';
-import { createCasMirrorClient } from '@chronolog/peer-session/mirror';
+import { createCasMirrorClient, createHttpSyncClient, FactIdSet, type HttpSyncFactItem } from '@chronolog/peer-session/mirror';
+import { createLogGenesis, createApplicationSession, openApplicationDevice } from '@chronolog/peer-session';
 import { createSigningIdentity } from '@chronolog/authority';
+import { authorityRecord } from '../../contract/authority.mjs';
 import { createTestPage } from './public-fixture';
 import { ownerHeaders, req } from './helpers';
 
@@ -80,5 +83,94 @@ describe('Tendriller Edge CAS & Derivation Mirror (/_tendril/cas, /_tendril/deri
     });
     expect(fetched.attestations).toHaveLength(1);
     expect(fetched.trusted?.outputRef).toBe(pkg.ref);
+  });
+
+  it('reconciles public control ops and blind encrypted mailbox envelopes via binary CBOR sync-v3 (/_tendril/sync/{control,mailbox})', async () => {
+    const page = await createTestPage();
+    const mirrorBase = `${page.pageUrl}_tendril`;
+    const baseHeaders = ownerHeaders(page.pageUrl);
+    const authedFetch: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const headers = new Headers(init?.headers);
+      for (const [k, v] of Object.entries(baseHeaders)) headers.set(k, v);
+      return req(url, { ...init, headers });
+    };
+
+    // Initialize a real Chronolog v2 private log genesis on the page
+    const signer = await createSigningIdentity();
+    const wrapKey = '07'.repeat(32);
+    const created = await createLogGenesis({
+      privateLog: true,
+      creator: { publicKey: signer.publicKey, wrapKey },
+      imports: { '@app/kv': 'chronolog/kv' },
+      topics: { items: { module: '@app/kv' } },
+    });
+    const initRes = await authedFetch(`${page.pageUrl}_tendril/peers/enrollment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'initialize',
+        genesis: authorityRecord(created.genesisBytes),
+        casNodes: created.casNodes.map(n => ({ hash: n.hash, bytes: Buffer.from(n.bytes).toString('hex') })),
+      }),
+    });
+    expect(initRes.status).toBe(200);
+
+    // Author an encrypted op locally with a real ApplicationSession
+    const device = await openApplicationDevice({ store: new MemoryBytesStore(), managedSigner: signer, create: true });
+    const session = await createApplicationSession({
+      device,
+      genesis: created.genesisBytes,
+      casNodes: created.casNodes,
+      epochKeys: new Map([[0, created.epoch0Key!]]),
+      wasmModule: quickJsWasm,
+    });
+    await session.submit({
+      visibility: 'encrypted',
+      operationId: 'sync-v3-op-1',
+      updates: [{ topic: 'items', input: { action: 'set', key: 'hello', value: 'world' } }],
+    });
+    const exported = await session.exportFacts();
+    expect(exported.encryptedEnvelopes.length).toBe(1);
+    const { encryptedEnvelopeDigest, bytesToHex } = await import('@chronolog/peer-session');
+    const envRaw = exported.encryptedEnvelopes[0]!;
+    const envDigest = bytesToHex(encryptedEnvelopeDigest(envRaw));
+
+    const syncClient = createHttpSyncClient(mirrorBase, { fetch: authedFetch });
+
+    // 1. Control sync returns revision metadata cleanly
+    const ctrl = await syncClient.reconcile('control', {
+      ids: new FactIdSet(),
+      getFacts: async () => [],
+      onReceive: async () => {},
+    });
+    expect(typeof ctrl.meta?.revision).toBe('string');
+
+    // 2. Peer A pushes encrypted envelope via binary CBOR sync-v3 /_tendril/sync/mailbox
+    const peerAIds = new FactIdSet();
+    peerAIds.add(envDigest);
+    const peerAReceived: HttpSyncFactItem[] = [];
+    const pushRes = await syncClient.reconcile('mailbox', {
+      ids: peerAIds,
+      getFacts: async ids => ids.includes(envDigest) ? [{ id: envDigest, bytes: envRaw }] : [],
+      onReceive: async items => { peerAReceived.push(...items); },
+    });
+    expect(pushRes.pushed).toBe(1);
+    expect(peerAReceived).toHaveLength(0);
+
+    // 3. Peer B starts empty and pulls the exact encrypted envelope in 1 RTT
+    const peerBIds = new FactIdSet();
+    const peerBReceived: HttpSyncFactItem[] = [];
+    const pullRes = await syncClient.reconcile('mailbox', {
+      ids: peerBIds,
+      getFacts: async () => [],
+      onReceive: async items => { peerBReceived.push(...items); },
+    });
+    expect(pullRes.pulled).toBe(1);
+    expect(peerBReceived).toHaveLength(1);
+    expect(peerBReceived[0]!.id).toBe(envDigest);
+    expect(Buffer.from(peerBReceived[0]!.bytes)).toEqual(Buffer.from(envRaw));
+
+    await session.close();
   });
 });

@@ -88,11 +88,15 @@ export async function openNativePage(context, { definition, imports, topics, ass
       signal: context.signal,
     });
     const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
+    const mirrorUrl = context.page?.page_url
+      ? new URL('_tendril', context.page.page_url).href.replace(/\/+$/u, '')
+      : null;
     session = await createApplicationSession({
       device,
       applicationId: context.page.applicationId,
       genesis: opened.genesisBytes,
       casNodes: opened.casNodes,
+      ...(mirrorUrl ? { casMirrors: [mirrorUrl] } : {}),
       ...(epochKeys ? { epochKeys } : {}),
       definition,
     });

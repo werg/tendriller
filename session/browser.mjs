@@ -1,9 +1,13 @@
-import { connectApplicationOwner, SessionError } from '@chronolog/peer-session/browser';
+import {
+  connectApplicationOwner,
+  coordinateNetworkLeader as chronologCoordinateNetworkLeader,
+  requestPersistentStorage,
+  SessionError,
+} from '@chronolog/peer-session/browser';
 import { startTabRtcHost } from './browser-rtc.mjs';
 
 export const TAB_OWNER_PROTOCOL = 'tendriller/tab-owner/v3';
-const netLockName = profileId => `tendriller:net:${profileId}`;
-const netChannelName = profileId => `tendriller:net:${profileId}`;
+export { requestPersistentStorage };
 
 function validate(options) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(options.profileId)) throw new SessionError('INVALID_PROFILE');
@@ -60,164 +64,8 @@ async function connectFacade(endpoint, { applicationId, context }, { signal, tim
   }
 }
 
-/**
- * Non-blocking, stealable networking leader election across concurrent tabs/PWAs
- * of the same profile. Never blocks local IndexedDB reads or writes — follower tabs
- * stay 100% interactive via shared IndexedDB + BroadcastChannel `syncFromStore()`,
- * while at most one live tab maintains host discovery/invitation sockets so the server
- * never bounces sockets with `4000 Discovery listener replaced`.
- */
-function coordinateNetworkLeader(profileId, { tabId, signal, onRole }) {
-  const locks = globalThis.navigator?.locks;
-  const doc = globalThis.document;
-  if (typeof locks?.request !== 'function') {
-    onRole(true);
-    return () => {};
-  }
-  const lockName = netLockName(profileId);
-  const channel = typeof globalThis.BroadcastChannel === 'function' ? new BroadcastChannel(netChannelName(profileId)) : null;
-  let stopped = false;
-  let holding = false;
-  let releaseHeld = null;
-  let hiddenTimer;
-  let trying = false;
-
-  const isVisible = () => !doc || doc.visibilityState !== 'hidden';
-  const setHolding = next => {
-    if (holding === next) return;
-    holding = next;
-    try { onRole(next); } catch {}
-  };
-  const dropLeadership = () => {
-    clearTimeout(hiddenTimer);
-    hiddenTimer = undefined;
-    if (!releaseHeld) return;
-    const rel = releaseHeld;
-    releaseHeld = null;
-    setHolding(false);
-    rel();
-    try { channel?.postMessage({ type: 'net-released', from: tabId }); } catch {}
-  };
-
-  const pingHolder = () => new Promise(resolve => {
-    if (!channel) { resolve(null); return; }
-    const id = crypto.randomUUID();
-    const timer = setTimeout(() => {
-      channel.removeEventListener('message', onPong);
-      resolve(null);
-    }, 500);
-    timer.unref?.();
-    const onPong = ({ data }) => {
-      if (data?.type !== 'net-pong' || data.id !== id) return;
-      clearTimeout(timer);
-      channel.removeEventListener('message', onPong);
-      resolve({ visible: Boolean(data.visible) });
-    };
-    channel.addEventListener('message', onPong);
-    try { channel.postMessage({ type: 'net-ping', id, from: tabId }); } catch {
-      clearTimeout(timer);
-      channel.removeEventListener('message', onPong);
-      resolve(null);
-    }
-  });
-
-  const holdLock = (options) => new Promise(resolve => {
-    let resolved = false;
-    const finish = acquired => {
-      if (!resolved) { resolved = true; resolve(acquired); }
-    };
-    void locks.request(lockName, options, lock => {
-      if (!lock || stopped || signal?.aborted) {
-        finish(false);
-        return Promise.resolve();
-      }
-      return new Promise(release => {
-        releaseHeld = release;
-        setHolding(true);
-        finish(true);
-      });
-    }).catch(() => {
-      // Steal or abort can reject the previous holder's lock promise cleanly.
-      if (releaseHeld) { releaseHeld = null; setHolding(false); }
-      finish(false);
-    });
-  });
-
-  const tryAcquire = async () => {
-    if (stopped || signal?.aborted || holding || trying) return;
-    trying = true;
-    try {
-      if (await holdLock({ ifAvailable: true })) return;
-      if (!isVisible() || stopped || signal?.aborted) return;
-      // Another tab holds the lock. Probe liveness: if it is frozen/zombie on Android
-      // (no pong within 500ms) or hidden while we are visible, steal the lock cleanly.
-      const holder = await pingHolder();
-      if (stopped || signal?.aborted || holding) return;
-      if (holder === null || !holder.visible) {
-        await holdLock({ steal: true });
-      }
-    } finally {
-      trying = false;
-    }
-  };
-
-  const onChannel = ({ data }) => {
-    if (stopped || !data || data.from === tabId) return;
-    if (data.type === 'net-ping' && holding) {
-      try { channel?.postMessage({ type: 'net-pong', id: data.id, from: tabId, visible: isVisible() }); } catch {}
-    } else if (data.type === 'net-released' && !holding && isVisible()) {
-      void tryAcquire();
-    }
-  };
-  channel?.addEventListener('message', onChannel);
-
-  const onVisibility = () => {
-    if (stopped) return;
-    if (isVisible()) {
-      clearTimeout(hiddenTimer);
-      hiddenTimer = undefined;
-      if (!holding) void tryAcquire();
-    } else if (holding) {
-      clearTimeout(hiddenTimer);
-      hiddenTimer = setTimeout(() => { hiddenTimer = undefined; if (!isVisible()) dropLeadership(); }, 10_000);
-      hiddenTimer.unref?.();
-    }
-  };
-  const onFreeze = () => dropLeadership();
-  const onFocus = () => { if (!stopped && !holding && isVisible()) void tryAcquire(); };
-
-  doc?.addEventListener?.('visibilitychange', onVisibility);
-  doc?.addEventListener?.('freeze', onFreeze);
-  doc?.addEventListener?.('resume', onFocus);
-  globalThis.addEventListener?.('focus', onFocus);
-  globalThis.addEventListener?.('pagehide', onFreeze);
-
-  void tryAcquire();
-
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    clearTimeout(hiddenTimer);
-    doc?.removeEventListener?.('visibilitychange', onVisibility);
-    doc?.removeEventListener?.('freeze', onFreeze);
-    doc?.removeEventListener?.('resume', onFocus);
-    globalThis.removeEventListener?.('focus', onFocus);
-    globalThis.removeEventListener?.('pagehide', onFreeze);
-    channel?.removeEventListener('message', onChannel);
-    dropLeadership();
-    channel?.close();
-  };
-  signal?.addEventListener('abort', stop, { once: true });
-  return stop;
-}
-
-/** Ask the browser to keep this origin's storage (device key, journal, unsent work)
- * out of best-effort eviction under storage pressure. Never throws; null = unsupported. */
-export function requestPersistentStorage() {
-  const storage = globalThis.navigator?.storage;
-  if (typeof storage?.persist !== 'function') return Promise.resolve(null);
-  return (async () => { try { return await storage.persisted?.() || await storage.persist(); } catch { return false; } })();
-}
+const coordinateNetworkLeader = (profileId, { tabId, signal, onRole }) =>
+  chronologCoordinateNetworkLeader(profileId, { tabId, signal, onRole, namespace: 'tendriller' });
 
 /**
  * Lock-free multi-tab browser session owner:

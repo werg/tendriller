@@ -8,7 +8,7 @@
  * and late-revocation reconciliation obey the exact same CRDT semantics as every replica.
  */
 import { bytesToHex, decodeRecord, type FinalityCheckpoint } from '@chronolog/authority';
-import type { KernelOperationInput } from '@chronolog/peer-session/kernel';
+import { computeBlobDagHash, decodeCasNode, type KernelOperationInput } from '@chronolog/peer-session/kernel';
 import { sha256Hex } from './ids';
 import { authorityRecordBytes } from '../../contract/authority.mjs';
 import { assertFilePath } from '../../contract/index.mjs';
@@ -184,7 +184,8 @@ export async function exchangePeerPublication(
       const bytes = assetBytes(asset.bytes);
       total += bytes.byteLength;
       if (total > CONTENT_LIMIT) throw new HttpError(413, 'peer_publication_too_large');
-      if (bytes.byteLength !== required.get(asset.hash)!.size || (await sha256Hex(bytes)) !== asset.hash) {
+      const matchesDigest = (await sha256Hex(bytes)) === asset.hash || computeBlobDagHash(bytes) === asset.hash;
+      if (bytes.byteLength !== required.get(asset.hash)!.size || !matchesDigest) {
         throw new HttpError(400, 'peer_publication_assets_invalid', 'Asset content hash or size mismatch');
       }
       supplied.set(asset.hash, bytes);
@@ -193,6 +194,18 @@ export async function exchangePeerPublication(
       const stored = t.db.one<{ size: number; status: string }>('SELECT size,status FROM stored_files WHERE hash=?', hash);
       if (stored?.status === 'ready' && stored.size === file.size) continue;
       if (!supplied.has(hash)) {
+        // Check if the asset was already uploaded into unified public CAS (e.g. via POST /_tendril/cas/batch)
+        const casRow = t.db.one<{ bytes: ArrayBuffer | Uint8Array }>('SELECT bytes FROM v2_public_cas WHERE hash=?', hash);
+        if (casRow) {
+          try {
+            const raw = casRow.bytes instanceof Uint8Array ? casRow.bytes : new Uint8Array(casRow.bytes);
+            const node = decodeCasNode(raw);
+            if (node.links.length === 0 && node.bytes.byteLength === file.size) {
+              supplied.set(hash, node.bytes);
+              continue;
+            }
+          } catch { /* fall through */ }
+        }
         throw new HttpError(409, 'peer_publication_content_missing', 'A code publication requires every referenced asset');
       }
     }

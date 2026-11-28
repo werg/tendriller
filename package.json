@@ -49,8 +49,9 @@
     "bench": "node scripts/bench/run.mjs"
   },
   "devDependencies": {
-    "@chronolog/authority": "file:test/artifacts/chronolog-authority-09fbe1fa.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-09fbe1fa.tgz",
+    "@chronolog/authority": "file:test/artifacts/chronolog-authority-7ffb662d.tgz",
+    "@chronolog/pack": "file:test/artifacts/chronolog-pack-7ffb662d.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-7ffb662d.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",

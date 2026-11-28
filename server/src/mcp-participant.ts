@@ -14,11 +14,10 @@
 import quickJsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import sqliteCasWasm from '@chronolog/peer-session/sqlite-cas.wasm';
 import {
-  bytesToHex, createApplicationSession, decodeEncryptedEnvelope, decodeRecord,
-  encryptedEnvelopeDigest, importSigningIdentity, openApplicationDevice,
-  type FinalityCheckpoint, type SessionCasNode,
+  bytesToHex, decodeRecord, encryptedEnvelopeDigest, importSigningIdentity,
+  type ApplicationSession, type FinalityCheckpoint,
 } from '@chronolog/peer-session';
-import { MemoryBytesStore } from '@chronolog/peer-session/kernel';
+import { runEphemeralHostedSession } from '@chronolog/peer-session/kernel';
 import { activeGrant } from './accounts/oauth-data';
 import { allows, type PagePrincipal } from './access';
 import { addActivity } from './activity';
@@ -379,7 +378,7 @@ async function withHostedSession<T>(
   wrapPublicKey: string,
   wrapPrivateKey: Uint8Array,
   work: (ctx: {
-    session: Awaited<ReturnType<typeof createApplicationSession>>;
+    session: ApplicationSession;
     roster: ReturnType<typeof pageAgents>;
     requests: Record<string, { fingerprint: string; proposalId: string; materialized?: any }>;
     markRequestsDirty: () => void;
@@ -407,36 +406,19 @@ async function withHostedSession<T>(
     if (Number.isSafeInteger(epoch) && epoch >= 0) epochKeys.set(epoch, parseHex(keyHex));
   }
 
-  const memStore = new MemoryBytesStore();
-  const device = await openApplicationDevice({
-    store: memStore,
-    managedSigner: signer,
-    create: true,
-  });
-
-  const publicCasMap = new Map<string, SessionCasNode>();
-  for (const r of listPublicCasRows(t)) publicCasMap.set(r.hash, { hash: r.hash, bytes: r.bytes, partition: 'public' });
+  const publicCasMap = new Map<string, { hash: string; bytes: Uint8Array }>();
+  for (const r of listPublicCasRows(t)) publicCasMap.set(r.hash, { hash: r.hash, bytes: r.bytes });
   for (const r of listMailboxPublicCasRows(t)) {
-    if (!publicCasMap.has(r.hash)) publicCasMap.set(r.hash, { hash: r.hash, bytes: r.bytes, partition: 'public' });
+    if (!publicCasMap.has(r.hash)) publicCasMap.set(r.hash, { hash: r.hash, bytes: r.bytes });
   }
-  const publicCas = [...publicCasMap.values()];
+  const publicCasNodes = [...publicCasMap.values()];
   const casContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}:cas`;
-  const privCas: SessionCasNode[] = [];
-  const hydratedPrivHashes = new Set<string>();
-  for (const item of listSealedPrivCasRows(t, row.grant_id)) {
-    const opened = await unsealHostedRequests(material.signingSeedHex, `${casContext}:${item.hash}`, item.sealed);
-    if (opened) {
-      privCas.push({ hash: item.hash, bytes: opened, partition: 'private' });
-      hydratedPrivHashes.add(item.hash);
-    }
-  }
+  const sealedPrivateCas = listSealedPrivCasRows(t, row.grant_id);
 
   const controlPublicOpRows = listPublicOpRows(t);
   const mailboxPublicOpRows = listMailboxPublicOpRows(t);
   const publicOps = [...controlPublicOpRows.map(r => r.raw), ...mailboxPublicOpRows.map(r => r.raw)];
-  const existingPublicOpIds = new Set(controlPublicOpRows.map(r => r.op_id));
   const envelopeRows = listMailboxEnvelopeRows(t);
-  const hydratedEnvelopeDigests = new Set(envelopeRows.map(r => r.digest));
   const checkpoints = listCheckpointRows(t).map(r => decodeRecord<FinalityCheckpoint>(r.raw));
 
   // Load cached epoch-AEAD-encrypted materialized snapshot for O(1) / suffix-only cold start
@@ -446,16 +428,6 @@ async function withHostedSession<T>(
     ? null
     : t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', snapshotKey);
   const materializedSnapshot = savedSnapRow ? asBytes(savedSnapRow.v) : undefined;
-
-  const session = await createApplicationSession({
-    device,
-    genesis: genesisBytes,
-    casNodes: [...publicCas, ...privCas],
-    epochKeys,
-    ...(materializedSnapshot ? { materializedSnapshot } : {}),
-    wasmModule: quickJsWasm,
-    sqliteWasmModule: sqliteCasWasm,
-  });
 
   const requestsKey = `${HOSTED_REQUESTS_PREFIX}${row.grant_id}`;
   const requestsContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}:requests`;
@@ -469,83 +441,67 @@ async function withHostedSession<T>(
     }
   }
 
+  const { value, delta } = await runEphemeralHostedSession(
+    {
+      genesisBytes,
+      signer,
+      epochKeys,
+      publicOps,
+      encryptedEnvelopes: envelopeRows.map(r => r.raw),
+      publicCasNodes,
+      sealedPrivateCas,
+      checkpoints,
+      ...(materializedSnapshot ? { materializedSnapshot } : {}),
+      wasmModule: quickJsWasm,
+      sqliteWasmModule: sqliteCasWasm,
+      unsealPrivateCas: (hash, sealed) => unsealHostedRequests(material.signingSeedHex, `${casContext}:${hash}`, sealed),
+      sealPrivateCas: (hash, plain) => sealHostedRequests(material.signingSeedHex, `${casContext}:${hash}`, plain),
+    },
+    session => work({ session, roster: pageAgents(t), requests, markRequestsDirty: () => { requestsDirty = true; } }),
+  );
+
+  const now = t.now();
   try {
-    if (publicOps.length > 0 || envelopeRows.length > 0 || checkpoints.length > 0) {
-      await session.mergeFacts({
-        publicOps,
-        encryptedEnvelopes: envelopeRows.map(r => r.raw),
-        casNodes: [...publicCas, ...privCas],
-        retentions: [],
-        checkpoints,
-      });
+    if (requestsDirty) {
+      const sealedReq = await sealHostedRequests(material.signingSeedHex, requestsContext, new TextEncoder().encode(JSON.stringify(requests)));
+      const copy = new Uint8Array(sealedReq.byteLength);
+      copy.set(sealedReq);
+      t.db.run('INSERT OR REPLACE INTO mcp_store(k, v) VALUES(?, ?)', requestsKey, copy.buffer);
     }
-    return await work({ session, roster: pageAgents(t), requests, markRequestsDirty: () => { requestsDirty = true; } });
-  } finally {
-    let addedEnvelopes = 0;
-    const now = t.now();
-    try {
-      if (requestsDirty) {
-        const sealedReq = await sealHostedRequests(material.signingSeedHex, requestsContext, new TextEncoder().encode(JSON.stringify(requests)));
-        const copy = new Uint8Array(sealedReq.byteLength);
-        copy.set(sealedReq);
-        t.db.run('INSERT OR REPLACE INTO mcp_store(k, v) VALUES(?, ?)', requestsKey, copy.buffer);
-      }
-      const exported = await session.exportFacts();
-      for (const rawEnv of exported.encryptedEnvelopes) {
-        const digest = bytesToHex(encryptedEnvelopeDigest(rawEnv));
-        if (!hydratedEnvelopeDigests.has(digest)) {
-          const decodedEnv = decodeEncryptedEnvelope(rawEnv);
-          const copy = new Uint8Array(rawEnv.byteLength);
-          copy.set(rawEnv);
-          t.db.run(
-            'INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
-            digest, decodedEnv.epoch, bytesToHex(decodedEnv.author), copy.buffer, now,
-          );
-          hydratedEnvelopeDigests.add(digest);
-          addedEnvelopes++;
-        }
-      }
-      const activePrivHashes = new Set<string>();
-      for (const node of exported.casNodes) {
-        if (node.partition === 'private') {
-          activePrivHashes.add(node.hash);
-          if (!hydratedPrivHashes.has(node.hash)) {
-            const sealed = await sealHostedRequests(material.signingSeedHex, `${casContext}:${node.hash}`, node.bytes);
-            const copy = new Uint8Array(sealed.byteLength);
-            copy.set(sealed);
-            t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', `${PRIV_CAS_PREFIX}${row.grant_id}/${node.hash}`, copy.buffer);
-            hydratedPrivHashes.add(node.hash);
-          }
-        }
-      }
-      // Prune unreferenced private CAS rows for this grant once GC'd out of session export.
-      if (hydratedPrivHashes.size > activePrivHashes.size + 32) {
-        for (const oldHash of hydratedPrivHashes) {
-          if (!activePrivHashes.has(oldHash)) {
-            t.db.run('DELETE FROM mcp_store WHERE k = ?', `${PRIV_CAS_PREFIX}${row.grant_id}/${oldHash}`);
-          }
-        }
-      }
-      // Persist opaque epoch-AEAD-encrypted materialized snapshot so subsequent /mcp calls skip replay.
-      const nextSnap = await session.exportMaterializedSnapshot();
-      if (nextSnap && nextSnap.byteLength <= 1024 * 1024) {
-        const copy = new Uint8Array(nextSnap.byteLength);
-        copy.set(nextSnap);
-        t.db.run('INSERT OR REPLACE INTO mcp_store(k, v) VALUES(?, ?)', snapshotKey, copy.buffer);
-      }
-      // Persist any new public control ops (if hosted MCP authored one, e.g. with admin rights).
-      if (exported.publicOps.length > existingPublicOpIds.size) {
-        const state = await readControlState(t);
-        if (state) reconcileHostEffects(t, state);
-      }
-    } catch { /* Best-effort encrypted export */ }
-    if (addedEnvelopes > 0) {
-      notifyMcpSyncWatchers(t);
-      notifyDiscoveryWatchers(t, 'm');
+    for (const env of delta.newEnvelopes) {
+      const copy = new Uint8Array(env.raw.byteLength);
+      copy.set(env.raw);
+      t.db.run(
+        'INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
+        env.digest, env.epoch, env.author, copy.buffer, now,
+      );
     }
-    try { await session.close(); } catch { /* ignore */ }
-    epochKeys.clear();
+    for (const item of delta.newSealedPrivateCas) {
+      const copy = new Uint8Array(item.sealed.byteLength);
+      copy.set(item.sealed);
+      t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', `${PRIV_CAS_PREFIX}${row.grant_id}/${item.hash}`, copy.buffer);
+    }
+    if (delta.prunedPrivateCasHashes.length > 32) {
+      for (const oldHash of delta.prunedPrivateCasHashes) {
+        t.db.run('DELETE FROM mcp_store WHERE k = ?', `${PRIV_CAS_PREFIX}${row.grant_id}/${oldHash}`);
+      }
+    }
+    if (delta.snapshot) {
+      const copy = new Uint8Array(delta.snapshot.byteLength);
+      copy.set(delta.snapshot);
+      t.db.run('INSERT OR REPLACE INTO mcp_store(k, v) VALUES(?, ?)', snapshotKey, copy.buffer);
+    }
+    if (delta.newPublicOps.length > 0) {
+      const state = await readControlState(t);
+      if (state) reconcileHostEffects(t, state);
+    }
+  } catch { /* Best-effort encrypted export */ }
+  if (delta.newEnvelopes.length > 0) {
+    notifyMcpSyncWatchers(t);
+    notifyDiscoveryWatchers(t, 'm');
   }
+  epochKeys.clear();
+  return value;
 }
 
 /** DO-side handler for authenticated `/mcp` and `/v1/apps/:appId/*` calls. */
