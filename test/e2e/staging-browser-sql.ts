@@ -14,7 +14,7 @@ type CapabilityReport = {
   secureContext: boolean;
   dedicatedWorker: boolean;
   events: { supported: boolean; reason?: string };
-  opfs: { syncAccessHandle: boolean };
+  indexedDb: { supported: boolean; writable: boolean };
 };
 
 export async function openBrowserSqlSpecimen(options: {
@@ -89,7 +89,7 @@ export async function openBrowserSqlSpecimen(options: {
       }), { bootstrap, name });
       expect(report.secureContext).toBe(true);
       expect(report.dedicatedWorker).toBe(true);
-      expect(report.opfs.syncAccessHandle).toBe(true);
+      expect(report.indexedDb).toEqual({ supported: true, writable: true });
       fixtures.push({ page, name, id });
     } finally {
       await page.unroute(bootstrap);
