@@ -1,4 +1,4 @@
-import { defineApplication } from '@chronolog/peer-session';
+import { defineApplication } from '@chronolog/peer-session/browser';
 import { agentRequestCommands, agentRequestQueries, agentRequestTopics } from '../../shared/helpers/agent-requests.mjs';
 import { callCommands, callQueries, callTopics } from '../../shared/helpers/call-domain.mjs';
 

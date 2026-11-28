@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 
 const str = (minLength, maxLength) => ({ type: 'string', minLength, maxLength });
 

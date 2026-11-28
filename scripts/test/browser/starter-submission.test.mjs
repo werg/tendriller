@@ -25,7 +25,7 @@ async function bundles() {
       builder.onResolve({ filter: /^@tendriller\/core\/browser-owner$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       builder.onResolve({ filter: /^@tendriller\/core\/authority$/ }, () => ({ path: root + 'contract/authority.mjs' }));
       // The real peer-session view store, live view and domain definitions; only the backend registration is a no-op.
-      builder.onResolve({ filter: /^@chronolog\/peer-session$/ }, args => ({ path: args.path, namespace: 'fixture-session' }));
+      builder.onResolve({ filter: /^@chronolog\/peer-session(\/browser)?$/ }, args => ({ path: args.path, namespace: 'fixture-session' }));
       builder.onLoad({ filter: /.*/, namespace: 'fixture-session' }, () => ({ resolveDir: root, contents:
         `export * from ${JSON.stringify(session)}; export const createApplicationBackend = () => ({});` }));
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `

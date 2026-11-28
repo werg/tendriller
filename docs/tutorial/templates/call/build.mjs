@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { bundlePage } from '../../shared/page-build.mjs';
 
 async function bundleDynamicModules(bundle, root, output, folder) {
   const dir = new URL(`./${folder}/`, root);
@@ -48,21 +49,7 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       pageId: context.page.id,
     }, null, 2) + '\n');
     await copyFile(new URL('index.html', root), new URL('index.html', output));
-    await bundle({
-      absWorkingDir: fileURLToPath(root),
-      entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
-      outdir: fileURLToPath(output),
-      bundle: true,
-      minify: true,
-      splitting: true,
-      format: 'esm',
-      platform: 'browser',
-      target: 'es2022',
-      outExtension: { '.js': '.mjs' },
-      chunkNames: 'chunks/[name]-[hash]',
-      assetNames: 'assets/[name]-[hash]',
-      loader: { '.wasm': 'file' },
-    });
+    await bundlePage(bundle, { root, output });
     if (existsSync(new URL('facets.json', root))) {
       await copyFile(new URL('facets.json', root), new URL('facets.json', output));
     }

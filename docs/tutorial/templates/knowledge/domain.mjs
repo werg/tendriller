@@ -1,4 +1,4 @@
-import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 import {
   DEFAULT_EMBED_DIMS,
   HYBRID_MEMORY_REDUCER_SOURCE,

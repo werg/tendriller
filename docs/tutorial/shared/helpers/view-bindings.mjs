@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 
 // Tier-2 per-participant / per-device view bindings stored as normal Chronolog events.
 // Lets one Chronolog stateful pipe render dedicated UIs for different people or devices

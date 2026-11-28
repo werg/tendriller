@@ -4,11 +4,12 @@ import {mountDiagnosticsPanel,registerLifecycleFlush} from '../../shared/helpers
 import {mountDevTelemetry} from '../../shared/helpers/dev-telemetry.mjs';
 import { createOperationView } from '../../shared/helpers/operation-view.mjs';
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
-import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session';
+import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session/browser';
 import { decodeRecord } from '@chronolog/authority';
 import { authorityRecordBytes } from '@tendriller/core/authority';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
+import { forgetSnapshot, liveViewKey, persistedSnapshot } from '../../shared/helpers/persisted-view.mjs';
 import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { mountFinality } from '../../shared/helpers/finality-view.mjs';
 import { deriveNotes } from './domain.mjs';
@@ -22,6 +23,7 @@ let storage, viewId, persistence = true;
 try { storage = localStorage; viewId = sessionStorage.getItem(`${profileId}:view`) || crypto.randomUUID(); sessionStorage.setItem(`${profileId}:view`, viewId); }
 catch { const map = new Map(); storage = { get length() { return map.size; }, key: i => [...map.keys()][i] ?? null, getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) }; viewId = crypto.randomUUID(); persistence = false; }
 const local = createViewStore({ storage, applicationId: configuration.applicationId, profileId, viewId });
+const viewKey = liveViewKey(storage, profileId, 'notes');
 const read = (key, fallback) => { try { return local.readDraft(key) ?? fallback; } catch { persistence = false; return fallback; } };
 const save = (key, value) => { try { local.writeDraft(value, key); } catch { persistence = false; $('#draft-help').textContent = 'This browser could not persist the draft. Keep this page open or copy unsent text before leaving.'; } };
 let editor = read('editor', { id: crypto.randomUUID(), isNew: true }), drafts = read('drafts', {}), intents = read('intents', {});
@@ -51,7 +53,7 @@ function renderDetail() {
 }
 function renderNotes(snapshot) {
   const focus = document.activeElement, x = scrollX, y = scrollY;
-  notes = snapshot.value; hasSnapshot = true; stale = false; $('#view-error').hidden = true;
+  notes = snapshot.value; hasSnapshot = true; stale = snapshot.stale === true; if (!stale) $('#view-error').hidden = true;
   const wanted = new Set(notes.map(note => note.id));
   for (const [id, node] of nodes) if (!wanted.has(id)) { node.item.remove(); nodes.delete(id); }
   for (const note of notes) {
@@ -62,7 +64,7 @@ function renderNotes(snapshot) {
     const detailUrl = new URL(location.href); detailUrl.hash = 'note=' + encodeURIComponent(note.id); node.link.href = detailUrl.href;
     $('#notes').append(node.item);
   }
-  $('#count').textContent = `${notes.length} ${notes.length === 1 ? 'note' : 'notes'} · local snapshot ${snapshot.revision.digest.slice(0, 12)} · revisable`;
+  $('#count').textContent = `${notes.length} ${notes.length === 1 ? 'note' : 'notes'} · local snapshot ${snapshot.revision.digest.slice(0, 12)} · ${stale ? 'saved on this device, refreshing' : 'revisable'}`;
   $('#empty').hidden = notes.length !== 0; renderDetail();
   if (focus?.isConnected && document.activeElement !== focus) focus.focus({ preventScroll: true });
   scrollTo(x, y);
@@ -154,7 +156,7 @@ async function connect() {
     };
     session.onStatus(status => { lastStatus = status; submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); renderConnectionStatus(); });
     stopAdmission?.();
-    stopAdmission = session.extensions?.subscribe?.(message => { if (message?.topic === 'admission' && message.state) { admissionState = message.state; submission.admission(admissionState); renderConnectionStatus(); } });
+    stopAdmission = session.extensions?.subscribe?.(message => { if (message?.topic === 'admission' && message.state) { admissionState = message.state; if (admissionState.phase === 'removed') forgetSnapshot(viewKey, storage); submission.admission(admissionState); renderConnectionStatus(); } });
     void session.extensions?.call?.('admission.state', []).then(next => { if (next) { admissionState = next; submission.admission(admissionState); renderConnectionStatus(); } }).catch(() => {});
 
     window.tendril.application.install(createApplicationBackend(session));
@@ -164,7 +166,8 @@ async function connect() {
   unregisterFlush=registerLifecycleFlush(()=>telemetry.sendSnapshot());
     devices = mountDevices({ root: $('#devices'), session, pageUrl: configuration.page_url, storage });
     mountFinality({ root: $('#finality-status').parentElement, session });
-    live = createLiveView(session, deriveNotes, { onError: viewError });
+    // Every current snapshot is persisted for the next launch's first paint.
+    live = createLiveView(session, deriveNotes, { onError: viewError, persistKey: viewKey, storage });
     live.subscribe(renderNotes);
     media=mountReviewedMedia({container:$('#media-panel'),session,runtime:window.tendril,inferenceParticipantKey:configuration.optionalAnalysisPeer,
       getContext:()=>live.snapshot?{revision:live.snapshot.revision,collection:'shared-notes'}:{viewCurrent:false},
@@ -179,6 +182,8 @@ async function connect() {
   } catch (error) { $('#connection-status').textContent = `Local session could not open: ${error.message}. Retain this browser profile and original work.`; $('#reconnect').hidden = false; }
 }
 $('#reconnect').addEventListener('click', () => { if (session) location.reload(); else void connect(); });
+// Stale-while-revalidate first paint: this device's last snapshot, before the Worker opens.
+{ const saved = persistedSnapshot(viewKey, storage); if (saved) renderNotes(saved); }
 window.addEventListener('pagehide', event => { stopOperationObservation(); retainEditor(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); media?.close(); window.appRequests?.close(); live?.close(); stopAdmission?.(); devices?.close(); void attachment?.detach().catch(() => {}); } });
 window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });
 void connect();

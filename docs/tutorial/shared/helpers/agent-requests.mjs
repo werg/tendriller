@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 
 // Multi-agent Chronolog communication pipe.
 // Use the authenticated event.author, never a claimed author in an input.

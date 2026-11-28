@@ -1,10 +1,11 @@
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
-import { createLiveView, createViewStore } from '@chronolog/peer-session';
+import { createLiveView, createViewStore } from '@chronolog/peer-session/browser';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { mountGovernanceBanner } from '../../shared/helpers/governance.mjs';
 import { enableHostedMcp } from '../../shared/helpers/hosted-mcp.mjs';
 import { deriveKnowledge } from './domain.mjs';
+import { liveViewKey, persistedSnapshot } from '../../shared/helpers/persisted-view.mjs';
 
 const $ = sel => document.querySelector(sel);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(r => {
@@ -23,6 +24,7 @@ try {
   viewId = crypto.randomUUID();
 }
 const local = createViewStore({ storage, applicationId: configuration.applicationId, profileId, viewId });
+const viewKey = liveViewKey(storage, profileId, 'knowledge');
 const readDraft = (k, fb) => { try { return local.readDraft(k) ?? fb; } catch { return fb; } };
 const writeDraft = (k, v) => { try { local.writeDraft(v, k); } catch {} };
 
@@ -44,10 +46,10 @@ function setWriteEnabled(enabled) {
 
 function renderResults(snapshot) {
   const data = snapshot.value;
-  $('#view-error').hidden = true;
+  if (!snapshot.stale) $('#view-error').hidden = true;
   $('#init-banner').hidden = data.initialized;
   $('#summary').textContent = data.initialized
-    ? `${data.items.length} shown of ${data.total} memories · mode: ${data.mode} · rev ${snapshot.revision.digest.slice(0, 10)}`
+    ? `${data.items.length} shown of ${data.total} memories · mode: ${data.mode} · rev ${snapshot.revision.digest.slice(0, 10)}${snapshot.stale ? ' · saved on this device, refreshing' : ''}`
     : 'Database not initialized yet — click Initialize memory database to create FTS5 + sqlite-vec tables.';
 
   const tagButtons = [
@@ -165,6 +167,9 @@ $('#mem-form').addEventListener('submit', e => {
   void runCommand('upsertMemory', { id, title, body, tags });
 });
 
+// Stale-while-revalidate first paint: this device's last snapshot, before the Worker opens.
+{ const saved = persistedSnapshot(viewKey, storage); if (saved) try { renderResults(saved); } catch { /* repainted by the live view */ } }
+
 try {
   attachment = await openBrowserOwner({
     workerUrl: new URL('./worker.mjs', import.meta.url),
@@ -186,7 +191,8 @@ try {
     session,
     view => deriveKnowledge(view, { query: $('#search-q').value, mode: $('#search-mode').value, tag: activeTag }),
     {
-      persistKey: `tendril:view:knowledge:${configuration.applicationId}`,
+      persistKey: viewKey,
+      storage,
       onError(err) { $('#view-error').hidden = false; $('#view-error').textContent = err.message ?? String(err); },
     },
   );

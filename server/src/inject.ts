@@ -70,7 +70,11 @@ export function runtimeTags(cfg: InjectConfig, installTags = `<link rel="manifes
     `<base href="${attr(documentBase)}">` +
     installTags +
     `<script>window.__TENDRIL__=${scriptSafeJson(conf)};</script>` +
-    `<script src="${attr(runtimeBase)}tendril.js"></script>`
+    // Deferred (non-blocking): it downloads in parallel with the document and runs
+    // after parsing, in document order before the page's module scripts, so
+    // `window.tendril` exists for every module script and DOMContentLoaded listener.
+    // Inline classic scripts in the page body run before it and must not use it.
+    `<script defer src="${attr(runtimeBase)}tendril.js"></script>`
   );
 }
 

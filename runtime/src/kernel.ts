@@ -106,19 +106,23 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     registration = undefined;
     throw error;
   });
-  // Auto-register the scoped Service Worker on idle or PWA install/standalone launch
-  // so repeat visits serve immutable assets + SWR HTML instantaneously without requiring
-  // a manual "Save offline" click. Honors `__TENDRIL_NO_SW__` for tests/isolation.
+  // Auto-register the scoped Service Worker so repeat visits serve the saved release
+  // (stale-while-revalidate HTML, immutable assets) without requiring a manual "Save
+  // offline" click. Registering installs the worker, which saves the whole release; that
+  // must not compete with boot, so it waits until the page reports ready (its first
+  // live data) or BOOT_GRACE_MS, then for an idle period. Honors `__TENDRIL_NO_SW__`
+  // for tests/isolation.
   if (options.watchPublication === true && cfg.publication && typeof navigator !== "undefined" && "serviceWorker" in navigator && !(window as any).__TENDRIL_NO_SW__) {
-    const autoWarmSw = () => { void registerOffline().catch(() => {}); };
-    const standalone = typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches;
-    if (standalone) {
-      autoWarmSw();
-    } else if (typeof (window as any).requestIdleCallback === "function") {
-      (window as any).requestIdleCallback(autoWarmSw, { timeout: 3000 });
-    } else {
-      setTimeout(autoWarmSw, 1500);
-    }
+    const BOOT_GRACE_MS = 10_000;
+    let warmed = false;
+    const autoWarmSw = () => { if (!warmed) { warmed = true; void registerOffline().catch(() => {}); } };
+    const whenIdle = () => {
+      if (typeof (window as any).requestIdleCallback === "function") (window as any).requestIdleCallback(autoWarmSw, { timeout: 3000 });
+      else setTimeout(autoWarmSw, 500);
+    };
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const offReady = core.bus.on("ready", () => { clearTimeout(grace); offReady(); whenIdle(); });
+    grace = setTimeout(() => { offReady(); whenIdle(); }, BOOT_GRACE_MS);
     window.addEventListener("appinstalled", autoWarmSw, { once: true });
   }
   const tracker = installSensorWrappers();
@@ -168,6 +172,11 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   let p2pAssetProvider: ((req: { url: string; sha256?: string; type?: string; path?: string; publicationId?: string }) => Promise<{ bytes: Uint8Array; type?: string } | null>) | null = null;
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", event => {
+      // The service worker served this document from its saved copy and the
+      // background revalidation found that access changed (sign-in redirect,
+      // refusal, removed page). It already dropped the copy, so one reload reaches
+      // the host's own navigation response.
+      if (event.data?.t === "navigation_stale") { location.reload(); return; }
       if (event.data?.t !== "p2p_asset_request") return;
       const port = event.ports?.[0];
       if (!port) return;

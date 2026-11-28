@@ -105,6 +105,9 @@ export async function measureLoad({ profile, page, url, reload = false, until = 
   let timedOut = null;
   try { await waitForMark(page, until, timeoutMs); }
   catch (error) { timedOut = String(error.message).split('\n')[0]; }
+  // A persisted (stale-while-revalidate) first paint can render the data before the
+  // session opens; still record when the page's current data is ready.
+  if (!timedOut && until !== 'tendrilReady') await waitForMark(page, 'tendrilReady', timeoutMs).catch(() => {});
   await page.waitForTimeout(settleMs);
   const snapshot = await page.evaluate(() => {
     const navigation = performance.getEntriesByType('navigation')[0]?.toJSON() ?? null;

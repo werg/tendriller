@@ -2,7 +2,7 @@ import {mountDiagnosticsPanel,registerLifecycleFlush} from '../../shared/helpers
 import {mountDevTelemetry} from '../../shared/helpers/dev-telemetry.mjs';
 import { createOperationView } from '../../shared/helpers/operation-view.mjs';
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
-import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session';
+import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session/browser';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
 import { mountDevices } from '../../shared/helpers/devices-view.mjs';
@@ -12,6 +12,7 @@ import { listUnresolvedConflicts, resolveConflictEntry } from '../../shared/help
 import { renderProposalCard } from '../../shared/ui/proposal-card.mjs';
 import { mountRecoveryPanel } from '../../shared/ui/recovery-panel.mjs';
 import { deriveInventory } from './domain.mjs';
+import { forgetSnapshot, liveViewKey, persistedSnapshot } from '../../shared/helpers/persisted-view.mjs';
 const $ = id => document.querySelector(id);
 const diagnostics = mountDiagnosticsPanel($('main') ?? document.body, { appName: 'Shared inventory' });
 let telemetry, unregisterFlush;
@@ -21,6 +22,7 @@ let storage, viewId;
 try { storage = localStorage; viewId = sessionStorage.getItem(`${profileId}:view`) || crypto.randomUUID(); sessionStorage.setItem(`${profileId}:view`, viewId); }
 catch { const map = new Map(); storage = { get length() { return map.size; }, key: i => [...map.keys()][i], getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) }; viewId = crypto.randomUUID(); }
 const local = createViewStore({ storage, applicationId: configuration.applicationId, profileId, viewId });
+const viewKey = liveViewKey(storage, profileId, 'inventory');
 const read = (key, fallback) => { try { return local.readDraft(key) ?? fallback; } catch { return fallback; } };
 const save = (key, value) => { try { local.writeDraft(value, key); } catch { $('#result').textContent = 'Draft/reference storage failed. Copy unsent fields and the original operation ID before leaving this page.'; } };
 const draftIds = ['from', 'to', 'units', 'expected-source', 'expected-destination', 'bin-id', 'bin-units', 'bin-expected', 'bin-label', 'sql-grantee', 'author-time'];
@@ -37,7 +39,7 @@ function renderDetail() {
   $('#bin-detail').textContent = bin ? `${bin.id}: ${bin.units} units${bin.label !== undefined ? ` · label ${bin.label || '(empty)'}` : ''}. ${stale ? 'Last snapshot, not current.' : 'Current local projection, revisable.'}` : id ? 'The selected stable bin ID is absent from this projection.' : 'Select a bin to inspect its current balance.';
 }
 function render(value) {
-  snapshot = value; stale = false; $('#view-error').hidden = true;
+  snapshot = value; stale = value.stale === true; if (!stale) $('#view-error').hidden = true;
   const active = document.activeElement, x = scrollX, y = scrollY, wanted = new Set(value.value.stock.map(row => row.id));
   for (const [id, node] of nodes) if (!wanted.has(id)) { node.row.remove(); nodes.delete(id); }
   for (const bin of value.value.stock) {
@@ -46,7 +48,7 @@ function render(value) {
     node.link.textContent = bin.id; const detailUrl = new URL(location.href); detailUrl.hash = 'bin=' + encodeURIComponent(bin.id); node.link.href = detailUrl.href; node.units.textContent = String(bin.units); node.label.textContent = bin.label ?? ''; node.label.hidden = !value.value.hasLabel; $('#stock').append(node.row);
   }
   $('#label-heading').hidden = !value.value.hasLabel; $('#label-editor').hidden = !value.value.hasLabel;
-  $('#summary').textContent = `${value.value.stock.length} bins · ${value.value.stock.reduce((sum, row) => sum + row.units, 0)} total units · local snapshot ${value.revision.digest.slice(0, 12)} (revisable)`;
+  $('#summary').textContent = `${value.value.stock.length} bins · ${value.value.stock.reduce((sum, row) => sum + row.units, 0)} total units · local snapshot ${value.revision.digest.slice(0, 12)} (${stale ? 'saved on this device, refreshing' : 'revisable'})`;
   $('#schema').textContent = `Current columns: ${value.value.columns.join(', ')}. Catalog: ${value.value.catalog.map(item => `${item.name} (${item.type})`).join(', ')}`;
   $('#receipts').replaceChildren(...value.value.transfers.map(receipt => { const item = document.createElement('li'); item.textContent = `${receipt.units} units: ${receipt.from} → ${receipt.to}. Stable receipt ${receipt.id}.`; return item; }));
   renderDetail(); if (active?.isConnected && active !== document.activeElement) active.focus({ preventScroll: true }); scrollTo(x, y);
@@ -162,6 +164,8 @@ $('#sql-grant').addEventListener('click', action(() => command('grantBinWrites',
 $('#op-id').addEventListener('input', () => { ++inspectionToken; const id = $('#op-id').value; save('selected-operation', id); submission.update({ selected: id, pending: intents[id] ?? null, observed: null }); observeSelectedOperation(); });
 $('#inspect').addEventListener('click', action(inspect));
 $('#retry').addEventListener('click', action(async () => { const id = $('#op-id').value, intent = intents[id]; if (intent) return command(intent.command, intent.input, intent); const operation = await session.operations.retry(id); diagnostics.update({lastStoredOperationId:operation.operationId}); show(await operation.inspect()); observeSelectedOperation(); }));
+// Stale-while-revalidate first paint: this device's last snapshot, before the Worker opens.
+{ const saved = persistedSnapshot(viewKey, storage); if (saved) try { render(saved); } catch { /* repainted by the live view */ } }
 $('#offline').addEventListener('click', action(async () => { $('#offline-status').textContent = 'Saving and verifying the complete immutable application and engine graph…'; try { const value = await window.tendril.publication.saveOffline(); $('#offline-status').textContent = `Offline ready: publication ${value.id}. Local identity, keys and operation history are separate retained device state.`; } catch (error) { $('#offline-status').textContent = `Not offline ready: ${error.message}`; } }));
 try {
   attachment = await openBrowserOwner({
@@ -187,7 +191,7 @@ try {
     $('#session-status').textContent = `${accessLabel} · ${lastStatus.connectedPeers} peers · SQL ${lastStatus.database}. Stored submission does not wait for peers or a read.`;
   };
   session.onStatus(status => { lastStatus = status; submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); renderSessionStatus(); });
-  stopAdmission = session.extensions?.subscribe?.(message => { if (message?.topic === 'admission' && message.state) { admissionState = message.state; submission.admission(admissionState); renderSessionStatus(); } });
+  stopAdmission = session.extensions?.subscribe?.(message => { if (message?.topic === 'admission' && message.state) { admissionState = message.state; if (admissionState.phase === 'removed') forgetSnapshot(viewKey, storage); submission.admission(admissionState); renderSessionStatus(); } });
   void session.extensions?.call?.('admission.state', []).then(next => { if (next) { admissionState = next; submission.admission(admissionState); renderSessionStatus(); } }).catch(() => {});
 
   window.tendril.application.install(createApplicationBackend(session));
@@ -199,7 +203,8 @@ try {
   const viewError = error => { stale = true; $('#view-error').hidden = false; $('#view-error').textContent = `View not current: ${error.message}. The last snapshot and your local drafts are retained. On a fresh app, create the initial tables with the ordinary transaction button; storing that intent does not wait for this read.`; $('#summary').textContent = snapshot ? `${snapshot.value.stock.length} bins in last snapshot — not current` : 'No current domain snapshot; schema may not exist yet.'; renderDetail(); };
   live = createLiveView(session, deriveInventory, {
     watchTopics: ['inventory'],
-    persistKey: `tendril:view:inventory:${configuration.applicationId}`,
+    persistKey: viewKey,
+    storage,
     onError: viewError,
   });
   live.subscribe(render);

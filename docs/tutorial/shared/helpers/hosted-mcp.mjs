@@ -5,7 +5,10 @@
 // (an administrator device) generates a revocable Ed25519 identity, signs its
 // membership grant, X25519-seals it with every epoch key to the OAuth grant's
 // `wrap_public_key`, and discards the ephemeral identity.
-import { bytesToHex, createSigningIdentity, decodeEncryptedEnvelope, encryptedEnvelopeDigest, exportSigningIdentity, hexToBytes } from '@chronolog/peer-session';
+// The page imports `enableHostedMcp` at boot, but the Chronolog primitives are only
+// needed when sealing or syncing (normally inside the Worker). Loading them lazily
+// keeps the full peer-session/QuickJS graph out of the page's critical bundle.
+const chronolog = () => import('@chronolog/peer-session');
 
 const encoder = new TextEncoder();
 
@@ -35,6 +38,7 @@ function asBuffer(bytes) {
  * `server/src/mcp-crypto.ts`.
  */
 export async function sealHostedKeys(wrapPublicKeyHex, material, aadContext) {
+  const { bytesToHex, hexToBytes } = await chronolog();
   const recipientPubBytes = hexToBytes(wrapPublicKeyHex);
   const recipientPub = await crypto.subtle.importKey('raw', asBuffer(recipientPubBytes), { name: 'X25519' }, false, []);
   const ephemeral = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
@@ -86,6 +90,7 @@ export function hostedMcpExtensions({ session, admission, base = null, fetchImpl
       if (name !== 'hosted.seal') throw Object.assign(Error('EXTENSION_UNKNOWN'), { code: 'EXTENSION_UNKNOWN' });
       const [{ wrapPublicKey, aad, writer = true }] = args;
       if (!/^[0-9a-f]{64}$/u.test(wrapPublicKey ?? '') || typeof aad !== 'string' || !aad) throw Error('HOSTED_MCP_INPUT_INVALID');
+      const { bytesToHex, createSigningIdentity, exportSigningIdentity } = await chronolog();
       const hostedIdentity = await createSigningIdentity(), exported = await exportSigningIdentity(hostedIdentity);
       await admission.call('admission.addKey', hostedIdentity.publicKey, null, { writer });
       const epochKeys = {};
@@ -177,6 +182,7 @@ export async function syncHostedMcpEnvelopes({
   if (typeof session?.exportFacts !== 'function' || typeof session?.mergeFacts !== 'function') {
     return { supported: false, uploaded: 0, merged: 0 };
   }
+  const { bytesToHex, encryptedEnvelopeDigest } = await chronolog();
   const facts = await session.exportFacts();
   const localEnvelopes = Array.isArray(facts?.encryptedEnvelopes) ? facts.encryptedEnvelopes : [];
   const knownIds = [];

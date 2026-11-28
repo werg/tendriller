@@ -62,7 +62,8 @@ async function worker(net, stores = new Map(), clients = new Map(), { beforePut,
   };
   runInNewContext(built.outputFiles[0].text, { URL, Response, Request, Headers, crypto: webcrypto, caches, fetch: net.fetch, ...timers,
     self: { registration: { scope }, skipWaiting() {}, addEventListener(type, fn) { listeners.set(type, fn); },
-      clients: { async claim() {}, async matchAll() { return [...clients].map(([id, url]) => ({ id, url, postMessage(data) { sent.push({ id, data }); } })); } } },
+      clients: { async claim() {}, async matchAll() { return [...clients].map(([id, url]) => ({ id, url, postMessage(data) { sent.push({ id, data }); } })); },
+        async get(id) { return { id, url: clients.get(id) ?? scope, postMessage(data) { sent.push({ id, data }); } }; } } },
   });
   async function dispatch(type, properties = {}) {
     const pending = []; let response;
@@ -205,7 +206,7 @@ test("reloading pinned A online cannot rewind the latest publication for a new o
   assert.match(await (await sw.request(a.publication.base + "index.html", "a", true)).text(), /<h1>1<\/h1>/);
 });
 
-test("a successful navigation refreshes resident introductions for the next offline launch of the same publication", async () => {
+test("a saved release opens immediately and its navigation refreshes resident introductions for the next launch", async () => {
   const a = release("1"), documentPath = "index.html", url = a.publication.base + documentPath;
   const page = endpoint => `<!doctype html><script>window.__TENDRIL__=${JSON.stringify({
     publication: a.publication, documentPath, application: { id: "peer-history" },
@@ -218,17 +219,52 @@ test("a successful navigation refreshes resident introductions for the next offl
   await sw.install(); await sw.announce("a", a.publication);
   const cache = await sw.caches.open(cacheName("1"));
   assert.equal(await (await cache.match(url)).text(), html);
+  const previous = html;
   html = page("https://replacement.example/introduce");
   const before = net.calls.length;
-  assert.equal(await (await sw.request(url, "a", true)).text(), html);
+  assert.equal(await (await sw.request(url, "a", true)).text(), previous, "stale-while-revalidate: the saved document opens first");
   assert.deepEqual(net.calls.slice(before), [url], "refresh reuses navigation without discovery or asset fetches");
-  assert.equal(await (await cache.match(url)).text(), html);
+  assert.equal(await (await cache.match(url)).text(), html, "the background response refreshes the next launch");
+  assert.equal(await (await sw.request(url, "a", true)).text(), html);
 
   net.online = false;
   const restarted = await worker(net, sw.stores, sw.clients);
   assert.equal(await (await restarted.request("", "a", true)).text(), html);
   assert.equal(await (await restarted.request(url, "a", true)).text(), html);
   assert.equal(await (await restarted.request(a.publication.base + "app.js", "a")).text(), "app-1");
+});
+
+test("a revalidation that shows changed access drops the saved document and asks the page to reload", async () => {
+  const a = release("1"), net = network(a), sw = await worker(net), url = a.publication.base + "index.html";
+  await sw.install(); await sw.announce("a", a.publication);
+  const cache = await sw.caches.open(cacheName("1"));
+  for (const status of [302, 401]) {
+    await sw.announce("a", a.publication);
+    assert.ok(await cache.match(url));
+    net.resources.set(url, () => new Response(null, { status, headers: status === 302 ? { Location: "https://accounts.example/sign-in" } : {} }));
+    assert.match(await (await sw.request(url, "a", true)).text(), /<h1>1<\/h1>/, "the saved document still opens immediately");
+    assert.equal(await cache.match(url), undefined, "the saved document is dropped");
+    assert.equal(JSON.stringify(sw.sent.at(-1)), JSON.stringify({ id: "a", data: { t: "navigation_stale" } }));
+    assert.equal((await sw.request(url, "a", true)).status, status, "the next navigation reaches the host");
+    net.resources.set(url, a.resources.get(url));
+  }
+});
+
+test("saving reads immutable files through the HTTP cache and re-reads a mismatching cached copy once", async () => {
+  const a = release("1"), net = network(a), fetch = net.fetch, modes = [];
+  net.fetch = async (request, init) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === a.publication.base + "app.js") {
+      modes.push(init?.cache);
+      if (init?.cache === "default") return new Response("stale http cache bytes");
+    }
+    return fetch(request, init);
+  };
+  const sw = await worker(net), replies = [];
+  await sw.announce("a", a.publication, replies);
+  assert.equal(replies.at(-1).status, "ready");
+  assert.deepEqual(modes, ["default", "reload"]);
+  assert.equal(await (await (await sw.caches.open(cacheName("1"))).match(a.publication.base + "app.js")).text(), "app-1");
 });
 
 test("navigation refresh requires a matching publication and declared document and respects no-store", async () => {
@@ -243,7 +279,7 @@ test("navigation refresh requires a matching publication and declared document a
   ]) {
     const html = `<script>window.__TENDRIL__=${JSON.stringify({ publication: a.publication, documentPath })};</script>Unsaved`;
     net.resources.set(url, () => new Response(html, { headers: { "X-Tendril-Publication": publicationId, "Cache-Control": cacheControl } }));
-    assert.equal(await (await sw.request(url, "a", true)).text(), html);
+    assert.equal(await (await sw.request(url, "a", true)).text(), saved, "the saved document opens; the response only revalidates");
     assert.equal(await (await cache.match(url)).text(), saved);
     assert.equal(await (await cache.match(a.publication.base + "app.js")).text(), "app-1");
     assert.equal(await cache.match(a.publication.base + "missing.html"), undefined);
@@ -253,7 +289,7 @@ test("navigation refresh requires a matching publication and declared document a
 test("a late network publication cannot rebind or evict a tab already given its offline publication", { timeout: 5000 }, async () => {
   const a = release("1"), b = release("2"), net = network(a), fetch = net.fetch;
   const requested = Promise.withResolvers(), arrived = Promise.withResolvers(), boundOffline = Promise.withResolvers();
-  let delayed = false, deadline;
+  let delayed = false;
   net.fetch = async request => {
     const response = await fetch(request);
     if (delayed && (typeof request === "string" ? request : request.url) === scope) {
@@ -262,7 +298,6 @@ test("a late network publication cannot rebind or evict a tab already given its 
     return response;
   };
   const sw = await worker(net, new Map(), new Map(), {
-    timers: { setTimeout(callback) { deadline = callback; return 1; }, clearTimeout() {} },
     async beforePut(name, url, response) {
       if (delayed && name === "tendril-metadata" && (await response.json()).clients.a === "1") boundOffline.resolve();
     },
@@ -271,7 +306,6 @@ test("a late network publication cannot rebind or evict a tab already given its 
   net.current = b; delayed = true;
   const navigation = sw.request("", "a", true);
   await requested.promise;
-  deadline();
   await boundOffline.promise;
   arrived.resolve();
   assert.match(await (await navigation).text(), /<h1>1<\/h1>/);
@@ -494,7 +528,9 @@ test("a delayed older navigation cannot rewind latest, while a later intentional
   await sw.install(); await sw.announce('a', a.publication);
   const old = sw.request('', 'old', true); await requested.promise;
   net.current = b;
-  assert.match(await (await sw.request('', 'new', true)).text(), /<h1>2<\/h1>/);
+  // Stale-while-revalidate: the saved latest (1) opens; its revalidation selects 2.
+  assert.match(await (await sw.request('', 'new', true)).text(), /<h1>1<\/h1>/);
+  assert.match(await (await sw.request('', 'next', true)).text(), /<h1>2<\/h1>/);
   resume.resolve(); assert.match(await (await old).text(), /<h1>1<\/h1>/);
   net.online = false;
   assert.match(await (await sw.request('', 'fresh', true)).text(), /<h1>2<\/h1>/, 'late old response does not become latest');
