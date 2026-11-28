@@ -27,7 +27,7 @@ import { selectedApplication } from './application';
 import {
   listCheckpointRows, listMailboxEnvelopeRows, listMailboxPublicCasRows, listMailboxPublicOpRows,
   listPublicCasRows, listPublicOpRows, readStoredGenesisBytes,
-  reconcileHostEffects, readControlState,
+  reconcileHostEffects, readControlState, validateMailboxEnvelopes,
 } from './authority';
 import { notifyDiscoveryWatchers } from './discovery';
 import { HttpError, isPlainObject, json, readJson } from './http';
@@ -310,50 +310,48 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
   const known = new Set<string>(Array.isArray(body.knownIds) ? body.knownIds.filter((x: unknown): x is string => typeof x === 'string') : []);
   if (incoming.length > 256) throw new HttpError(400, 'too_many_envelopes', 'Sync at most 256 envelopes per call.');
 
-  const genesisBytes = readStoredGenesisBytes(t);
-  if (!genesisBytes) throw new HttpError(409, 'application_uninitialized', 'Application genesis is not initialized yet.');
-  const logId = selectedApplication(t).id;
+  const state = await readControlState(t);
+  if (!state) throw new HttpError(409, 'application_uninitialized', 'Application genesis is not initialized yet.');
 
   const ownerAccount = t.db.get<string | null>('owner_account', null);
   const ent = ownerAccount ? await getAccountEntitlements(t.env, ownerAccount, t.now()) : null;
   const storeCap = ent?.quotas.mcpStoreBytes ?? null;
   let currentStoreBytes = storeCap !== null ? mcpStoreBytes(t) : 0;
 
-  let stored = 0;
-  const now = t.now();
+  const decodedItems: Uint8Array[] = [];
   for (const item of incoming) {
     if (typeof item !== 'string' || item.length > 256 * 1024) throw new HttpError(400, 'invalid_envelope');
     const raw = unbase64url(item);
-    let envelope;
-    try { envelope = decodeEncryptedEnvelope(raw); }
-    catch { throw new HttpError(400, 'invalid_envelope'); }
-    if (bytesToHex(envelope.logId) !== logId) throw new HttpError(400, 'invalid_envelope_scope');
-    const digest = bytesToHex(encryptedEnvelopeDigest(raw));
-    const exists = t.db.one('SELECT 1 AS x FROM v2_mailbox_envelopes WHERE digest=?', digest);
-    if (!exists) {
-      if (storeCap !== null && currentStoreBytes + raw.byteLength > storeCap) {
-        throw quotaError({
-          env: t.env,
-          status: 413,
-          quota: 'mcp_store',
-          plan: ent?.plan ?? 'free',
-          used: currentStoreBytes,
-          limit: storeCap,
-          resetsAt: null,
-          message: `Hosted MCP encrypted sync storage limit reached for this page (${Math.round(storeCap / (1024 * 1024))} MB on ${ent?.plan ?? 'free'}).`,
-          localAlternative: 'Your local browser and native Chronolog storage are unaffected; run `npm run agent` locally or upgrade for larger hosted MCP retention.',
-        });
-      }
-      const copy = new Uint8Array(raw.byteLength);
-      copy.set(raw);
-      t.db.run(
-        'INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
-        digest, envelope.epoch, bytesToHex(envelope.author), copy.buffer, now,
-      );
-      currentStoreBytes += copy.byteLength;
-      stored++;
+    decodedItems.push(raw);
+    try { known.add(bytesToHex(encryptedEnvelopeDigest(raw))); } catch { /* validated below */ }
+  }
+  const accepted = validateMailboxEnvelopes(t, state, decodedItems);
+
+  let stored = 0;
+  const now = t.now();
+  for (const env of accepted) {
+    if (storeCap !== null && currentStoreBytes + env.raw.byteLength > storeCap) {
+      throw quotaError({
+        env: t.env,
+        status: 413,
+        quota: 'mcp_store',
+        plan: ent?.plan ?? 'free',
+        used: currentStoreBytes,
+        limit: storeCap,
+        resetsAt: null,
+        message: `Hosted MCP encrypted sync storage limit reached for this page (${Math.round(storeCap / (1024 * 1024))} MB on ${ent?.plan ?? 'free'}).`,
+        localAlternative: 'Your local browser and native Chronolog storage are unaffected; run `npm run agent` locally or upgrade for larger hosted MCP retention.',
+      });
     }
-    known.add(digest);
+    const copy = new Uint8Array(env.raw.byteLength);
+    copy.set(env.raw);
+    t.db.run(
+      'INSERT OR IGNORE INTO v2_mailbox_envelopes(digest, epoch, author, raw, stored_at) VALUES(?, ?, ?, ?, ?)',
+      env.digest, env.epoch, env.author, copy.buffer, now,
+    );
+    currentStoreBytes += copy.byteLength;
+    stored++;
+    known.add(env.digest);
   }
   if (stored > 0) {
     notifyMcpSyncWatchers(t);
@@ -507,13 +505,25 @@ async function withHostedSession<T>(
           addedEnvelopes++;
         }
       }
+      const activePrivHashes = new Set<string>();
       for (const node of exported.casNodes) {
-        if (node.partition === 'private' && !hydratedPrivHashes.has(node.hash)) {
-          const sealed = await sealHostedRequests(material.signingSeedHex, `${casContext}:${node.hash}`, node.bytes);
-          const copy = new Uint8Array(sealed.byteLength);
-          copy.set(sealed);
-          t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', `${PRIV_CAS_PREFIX}${row.grant_id}/${node.hash}`, copy.buffer);
-          hydratedPrivHashes.add(node.hash);
+        if (node.partition === 'private') {
+          activePrivHashes.add(node.hash);
+          if (!hydratedPrivHashes.has(node.hash)) {
+            const sealed = await sealHostedRequests(material.signingSeedHex, `${casContext}:${node.hash}`, node.bytes);
+            const copy = new Uint8Array(sealed.byteLength);
+            copy.set(sealed);
+            t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', `${PRIV_CAS_PREFIX}${row.grant_id}/${node.hash}`, copy.buffer);
+            hydratedPrivHashes.add(node.hash);
+          }
+        }
+      }
+      // Prune unreferenced private CAS rows for this grant once GC'd out of session export.
+      if (hydratedPrivHashes.size > activePrivHashes.size + 32) {
+        for (const oldHash of hydratedPrivHashes) {
+          if (!activePrivHashes.has(oldHash)) {
+            t.db.run('DELETE FROM mcp_store WHERE k = ?', `${PRIV_CAS_PREFIX}${row.grant_id}/${oldHash}`);
+          }
         }
       }
       // Persist opaque epoch-AEAD-encrypted materialized snapshot so subsequent /mcp calls skip replay.

@@ -14,7 +14,7 @@ const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelco
 // without storing plaintext keys or plaintext application data at rest.
 const authorityImports = new Set([
   'server/src/authority.ts', 'server/src/admissions.ts', 'server/src/host-attestation.ts',
-  'server/src/peer-publications.ts', 'server/src/peer-participant.ts',
+  'server/src/peer-publications.ts', 'server/src/peer-participant.ts', 'server/src/cas-mirror.ts',
 ]);
 const hostedMcpImports = new Set([
   'server/src/mcp-participant.ts',
@@ -23,14 +23,16 @@ const portableAuthority = new Set([
   '@chronolog/authority',
   ...['codec', 'definition', 'finality'].map(name => '@chronolog/authority/' + name),
   '@chronolog/peer-session/kernel',
+  '@chronolog/peer-session/mirror',
 ]);
 const portablePeerSession = new Set([
   '@chronolog/peer-session',
   '@chronolog/peer-session/kernel',
+  '@chronolog/peer-session/mirror',
   '@chronolog/peer-session/sqlite-cas.wasm',
 ]);
 const controlArtifacts = new Set(['index', 'codec', 'definition', 'finality'].map(name => 'node_modules/@chronolog/authority/' + name + '.mjs'));
-const isPortablePeerSessionArtifact = input => /^node_modules\/@chronolog\/peer-session\/(?:(?:index|kernel)\.mjs|chunks\/[^/]+\.mjs|wasm\/sqlite-cas\.wasm)$/.test(input);
+const isPortablePeerSessionArtifact = input => /^node_modules\/@chronolog\/peer-session\/(?:(?:index|kernel|mirror)\.mjs|chunks\/[^/]+\.mjs|wasm\/sqlite-cas\.wasm)$/.test(input);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
   if (!/\.(ts|mjs|mts)$/.test(path)) continue;
   const rel = relative(root, path);

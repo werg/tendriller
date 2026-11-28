@@ -3,7 +3,7 @@
 // schema DDL + write-RLS policies (strictly ZERO rows / ZERO private data), and optional
 // `$publications` manifest so any page can be safely shared, audited, or remixed into
 // an independent encrypted log with a fresh `logId` and epoch 0 key.
-import { computeCasHash } from '@chronolog/peer-session/kernel';
+import { computeCasHash, decodeCasNode, encodeCasNode, hashCasNode } from '@chronolog/peer-session/kernel';
 import { createPageGenesis } from './admission.mjs';
 
 export const BLUEPRINT_FORMAT = 'tendriller-page-blueprint/v1';
@@ -52,9 +52,10 @@ export async function exportPageBlueprint(session, {
     }
   }
 
-  // Gather custom public CAS ES Module bytes referenced by `$reducers.imports`
+  // Gather custom public CAS ES Modules & transitive chronolog-pkg/v1 DAGs referenced by `$reducers.imports`
   const customImports = {};
   const casModules = [];
+  const rootHashes = [];
   const seenHashes = new Set();
   for (const [spec, uri] of Object.entries(allImports)) {
     if (isStandardModule(spec)) continue;
@@ -62,10 +63,20 @@ export async function exportPageBlueprint(session, {
     customImports[spec] = uri;
     const m = /^cas:sha256-([0-9a-f]{64})$/u.exec(String(uri ?? ''));
     if (m && !seenHashes.has(m[1])) {
-      const decoded = await session.readCasPayload(m[1], 'public');
+      seenHashes.add(m[1]);
+      rootHashes.push(m[1]);
+    }
+  }
+  if (rootHashes.length > 0 && typeof session.exportCasNodes === 'function') {
+    const sub = await session.exportCasNodes(rootHashes, false, { subgraph: true, maxNodes: 512, maxBytes: 16 * 1024 * 1024 });
+    for (const node of sub) {
+      casModules.push({ hash: node.hash, bytesBase64: bytesToBase64(node.bytes) });
+    }
+  } else {
+    for (const hash of rootHashes) {
+      const decoded = await session.readCasPayload(hash, 'public');
       if (decoded?.payload instanceof Uint8Array) {
-        seenHashes.add(m[1]);
-        casModules.push({ hash: m[1], bytesBase64: bytesToBase64(decoded.payload) });
+        casModules.push({ hash, bytesBase64: bytesToBase64(decoded.payload) });
       }
     }
   }
@@ -151,18 +162,24 @@ export function validatePageBlueprint(blueprint) {
     }
   }
   const moduleBytesByHash = new Map();
+  const casNodes = [];
   for (const mod of blueprint.reducers?.casModules ?? []) {
     if (!mod || !HEX64.test(mod.hash ?? '') || typeof mod.bytesBase64 !== 'string') {
       throw Object.assign(new Error('Invalid CAS module entry in blueprint'), { code: 'BLUEPRINT_INVALID' });
     }
     const bytes = base64ToBytes(mod.bytesBase64);
-    const actual = computeCasHash(bytes, []);
-    if (actual !== mod.hash) {
+    if (hashCasNode(bytes) === mod.hash) {
+      const decoded = decodeCasNode(bytes);
+      moduleBytesByHash.set(mod.hash, decoded.bytes);
+      casNodes.push({ hash: mod.hash, bytes, partition: 'public' });
+    } else if (computeCasHash(bytes, []) === mod.hash) {
+      moduleBytesByHash.set(mod.hash, bytes);
+      casNodes.push({ hash: mod.hash, bytes: encodeCasNode(bytes, []), partition: 'public' });
+    } else {
       throw Object.assign(new Error(`Blueprint CAS module hash mismatch for ${mod.hash}`), { code: 'BLUEPRINT_HASH_MISMATCH' });
     }
-    moduleBytesByHash.set(mod.hash, bytes);
   }
-  return { moduleBytesByHash };
+  return { moduleBytesByHash, casNodes };
 }
 
 /**
@@ -182,14 +199,12 @@ export async function createGenesisFromBlueprint({
   privateLog,
   finalitySchedule,
 }) {
-  const { moduleBytesByHash } = validatePageBlueprint(blueprint);
-  const decoder = new TextDecoder();
-  const imports = {};
+  const { casNodes } = validatePageBlueprint(blueprint);
+  const bundleImports = {};
   for (const [spec, uri] of Object.entries(blueprint.reducers?.imports ?? {})) {
     if (isStandardModule(spec)) continue;
-    const m = /^cas:sha256-([0-9a-f]{64})$/u.exec(String(uri ?? ''));
-    if (m && moduleBytesByHash.has(m[1])) {
-      imports[spec] = decoder.decode(moduleBytesByHash.get(m[1]));
+    if (typeof uri === 'string' && /^cas:sha256-[0-9a-f]{64}$/u.test(uri)) {
+      bundleImports[spec] = uri;
     }
   }
   const resolvedPrivateLog = privateLog !== undefined ? privateLog : (blueprint.meta?.privateLog !== false);
@@ -206,7 +221,7 @@ export async function createGenesisFromBlueprint({
     authority: resolvedAuthority,
     admission,
     privateLog: resolvedPrivateLog,
-    imports,
+    ...(Object.keys(bundleImports).length > 0 ? { bundle: { imports: bundleImports, casNodes } } : {}),
     topics: blueprint.reducers.topics,
     finalitySchedule,
   });

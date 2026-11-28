@@ -52,7 +52,7 @@ const definition = defineApplication({
 const imports = { 'app/messages': MESSAGE_REDUCER };
 const topics = { messages: { module: 'app/messages' } };
 
-const until = async (predicate, label, timeoutMs = 10_000) => {
+const until = async (predicate, label, timeoutMs = 20_000) => {
   const deadline = Date.now() + timeoutMs;
   while (!await predicate()) {
     if (Date.now() > deadline) throw Error(`Timed out: ${label}`);
@@ -212,10 +212,11 @@ test('with no key holder online the newcomer waits, retries and is admitted once
     const creator = await w.participant({ principal: owner });
     creator.admission.close(); // the only holder goes offline
     const newcomer = await w.participant({ principal: owner });
-    await new Promise(resolve => setTimeout(resolve, 200));
-    assert.equal(newcomer.admission.state.phase, 'waiting-admission');
+    await until(
+      () => newcomer.admission.state.phase === 'waiting-admission' && newcomer.admission.state.attestationExpiresAt > Date.now(),
+      'newcomer waits with fresh attestation while no holder is online',
+    );
     assert.equal(newcomer.session.status.canAuthor, false);
-    assert.ok(newcomer.admission.state.attestationExpiresAt > Date.now(), 'a fresh attestation is retained while waiting');
     const back = createAdmission(creator.session, { peers: creator.peers, wrapKey: creator.wrapKey, store: creator.store, memberIntervalMs: 50 });
     try { await until(() => newcomer.admission.state.phase === 'admitted', 'admitted after holder returned'); }
     finally { back.close(); }

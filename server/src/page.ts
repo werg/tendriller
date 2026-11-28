@@ -1,5 +1,6 @@
 import { watchPublication } from "./publication-watch";
 import { PEER_ROUTE, handlePeers } from "./peers";
+import { CAS_MIRROR_ROUTE, handleCasMirror } from "./cas-mirror";
 import { handleApplication, selectedApplication } from "./application";
 // Page routes under P (PROTOCOL section 2.1), executed inside the Tendril Durable Object.
 import type { Tendril } from "./tendril";
@@ -90,6 +91,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   const sub = rest.slice("_tendril/".length);
   const m = req.method;
   if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
+  if (CAS_MIRROR_ROUTE.test(sub)) return handleCasMirror(t, req, sub, principal);
   if (sub === "application") return handleApplication(t, req, principal);
   if (sub === 'manage') {
     if (principal.openPublic) throw new HttpError(403, 'forbidden');

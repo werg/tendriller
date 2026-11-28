@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import type { Tendril } from "./tendril";
 import type { VersionFile } from "./files";
 import { fileKey } from "./files";
+import { immutableObject } from "./immutable-cache";
 import { emojiIconSvg, iconSvg, maskableEmojiIconSvg, maskableIconSvg } from "./inject";
 import { DEFAULT_THEME_COLOR, iconMediaType, isEmojiIcon } from "./pwa";
 import { currentIconRaster, iconRasterTag } from "./icon-raster";
@@ -354,11 +355,11 @@ export async function serveIconBlob(t: Tendril, tag: string, file: string, head:
 
   if (file === "authored") {
     if (resolved.kind === "published") {
-      const obj = await t.env.FILES.get(fileKey(t, resolved.hash));
+      const obj = await immutableObject(t.env, fileKey(t, resolved.hash), { head, context: t.ctx });
       if (!obj) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
       return new Response(head ? null : obj.body, {
         status: 200,
-        headers: { ...baseHeaders, "Content-Type": resolved.type, "Content-Length": String(obj.size) },
+        headers: { ...baseHeaders, "Content-Type": resolved.type, ...(obj.headers.get("Content-Length") ? { "Content-Length": obj.headers.get("Content-Length")! } : {}) },
       });
     }
     if (resolved.kind === "data") {
@@ -378,11 +379,11 @@ export async function serveIconBlob(t: Tendril, tag: string, file: string, head:
     if (resolved.kind === "emoji") svg = maskable ? maskableEmojiIconSvg(resolved.emoji, resolved.themeColor) : emojiIconSvg(resolved.emoji);
     else if (resolved.kind === "generated") svg = maskable ? maskableIconSvg(resolved.name, resolved.themeColor) : iconSvg(resolved.name, resolved.themeColor);
     else if (!maskable && resolved.kind === "published" && resolved.type === "image/svg+xml") {
-      const obj = await t.env.FILES.get(fileKey(t, resolved.hash));
+      const obj = await immutableObject(t.env, fileKey(t, resolved.hash), { head, context: t.ctx });
       if (!obj) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
       return new Response(head ? null : obj.body, {
         status: 200,
-        headers: { ...baseHeaders, "Content-Type": "image/svg+xml", "Content-Length": String(obj.size) },
+        headers: { ...baseHeaders, "Content-Type": "image/svg+xml", ...(obj.headers.get("Content-Length") ? { "Content-Length": obj.headers.get("Content-Length")! } : {}) },
       });
     } else if (!maskable && resolved.kind === "data" && resolved.type === "image/svg+xml") {
       const decoded = decodeDataUri(resolved.dataUri);
@@ -409,7 +410,7 @@ export async function resolvedSvgResponse(t: Tendril, maskable: boolean, head: b
   const resolved = resolvePageIcon(t);
   const headers = { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" };
   if (resolved.kind === "published" && resolved.type === "image/svg+xml" && !maskable) {
-    const obj = await t.env.FILES.get(fileKey(t, resolved.hash));
+    const obj = await immutableObject(t.env, fileKey(t, resolved.hash), { head, context: t.ctx });
     if (obj) return new Response(head ? null : obj.body, { headers });
   }
   if (resolved.kind === "data" && resolved.type === "image/svg+xml" && !maskable) {

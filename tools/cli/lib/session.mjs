@@ -433,7 +433,11 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       const filePath = required(args[2], 'an ES Module reducer file path');
       const source = readFileSync(filePath, 'utf8');
       const bytes = new TextEncoder().encode(source);
-      const { computeCasHash } = await import('@chronolog/peer-session/kernel');
+      const { computeCasHash, dryRunReducerUpgrade } = await import('@chronolog/peer-session/kernel');
+      if (!options['skip-dry-run']) {
+        const dry = await dryRunReducerUpgrade({ specifier, source });
+        if (!dry.ok) throw Error(`Reducer dry-run failed for ${specifier}: ${dry.error ?? 'unknown error'}`);
+      }
       const hash = computeCasHash(bytes, []);
       const casUri = `cas:sha256-${hash}`;
       const topicBindings = {};

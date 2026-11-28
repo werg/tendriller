@@ -193,7 +193,6 @@ function prepareWorkspaceSkeleton() {
   cpSync(join(ROOT, "dist/tools"), join(nm, "@tendriller/tools"), { recursive: true });
   ensureLink(join(ROOT, "node_modules/@chronolog/authority"), join(nm, "@chronolog/authority"));
   ensureLink(join(ROOT, "node_modules/@chronolog/peer-session"), join(nm, "@chronolog/peer-session"));
-  ensureLink(join(ROOT, "node_modules/@chronolog/signals"), join(nm, "@chronolog/signals"));
   ensureLink(join(ROOT, "node_modules/@jitl/quickjs-ng-wasmfile-release-sync"), join(nm, "@jitl/quickjs-ng-wasmfile-release-sync"));
   ensureLink(join(ROOT, "node_modules/quickjs-emscripten-core"), join(nm, "quickjs-emscripten-core"));
   ensureLink(join(ROOT, "node_modules/esbuild"), join(nm, "esbuild"));

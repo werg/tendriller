@@ -38,32 +38,10 @@ const fail = (code, message, extra = {}) => Object.assign(new Error(message), { 
 const sha256Hex = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = value => encoder.encode(JSON.stringify(value, null, 2) + '\n');
 
-/**
- * The outer file is a Chronolog checkpoint of an in-memory store. The pinned public session
- * exports no in-memory store, so this implements only the documented public `BytesStore`
- * contract (atomic replace, deterministic enumeration, empty-store initialization).
- */
-class ContainerStore {
-  #values = new Map();
-  async get(key) { return this.#values.get(key)?.slice() ?? null; }
-  async put(key, bytes) { this.#values.set(key, bytes.slice()); }
-  async putMany(entries) { for (const { key, value } of entries) this.#values.set(key, value.slice()); }
-  async delete(key) { this.#values.delete(key); }
-  async entries() { return [...this.#values].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, value]) => ({ key, value: value.slice() })); }
-  async *iterateEntries() { yield* await this.entries(); }
-  async putAllIfEmpty(entries) { if (this.#values.size) return false; await this.putMany(entries); return true; }
-  async putStreamIfEmpty(entries) {
-    if (this.#values.size) return false;
-    const staged = [];
-    for await (const entry of entries) staged.push(entry);
-    await this.putMany(staged); return true;
-  }
-}
-
 async function chronolog() {
   const [kernel, native] = await Promise.all([import('@chronolog/peer-session'), import('@chronolog/peer-session/native')]);
   if (typeof kernel.exportDeviceCheckpoint !== 'function' || typeof kernel.restoreDeviceCheckpoint !== 'function' ||
-      typeof native.NativeBytesStore?.open !== 'function')
+      typeof kernel.MemoryBytesStore !== 'function' || typeof native.NativeBytesStore?.open !== 'function')
     throw fail('CHECKPOINT_LIBRARY_UNSUPPORTED', 'Install the matching Chronolog session with device checkpoints.');
   return { kernel, native };
 }
@@ -238,7 +216,7 @@ export async function exportWorkspaceCheckpoint({ root, outputPath, secret }) {
       agent: config.agent, publicKey: signer.publicKey, innerKey: kernel.encodeCheckpointKeyHex(innerKey),
       identity: { manifestSha256: agentSnapshot.exported.metadata.manifestSha256 }, pages };
     entries.push({ key: MANIFEST_KEY, value: json(manifest) });
-    const container = new ContainerStore();
+    const container = new kernel.MemoryBytesStore();
     await container.putMany(entries);
     mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
     const sealed = await kernel.exportDeviceCheckpoint(container, { secret: userSecret, limits: WORKSPACE_LIMITS,
@@ -334,7 +312,7 @@ export async function restoreWorkspaceCheckpoint({ root, inputPath, secret }) {
   const size = statSync(input).size;
   if (size > MAX_FILE_BYTES) throw fail('CHECKPOINT_LIMIT_EXCEEDED', 'The checkpoint exceeds its 192 MiB bound.');
   const { kernel, native } = await chronolog();
-  const container = new ContainerStore();
+  const container = new kernel.MemoryBytesStore();
   const sealed = await kernel.restoreDeviceCheckpoint(container, new Uint8Array(readFileSync(input)), { secret: secretValue(kernel, secret), limits: WORKSPACE_LIMITS });
   const values = new Map((await container.entries()).map(entry => [entry.key, entry.value]));
   const { manifest, config } = readContainer(values);

@@ -5,6 +5,18 @@
 
 const HEX_SHA256 = /^[0-9a-f]{64}$/u;
 
+let cachedBlobDagHash;
+async function getBlobDagHashFn() {
+  if (cachedBlobDagHash !== undefined) return cachedBlobDagHash;
+  try {
+    const mod = await import('@chronolog/peer-session');
+    cachedBlobDagHash = typeof mod.computeBlobDagHash === 'function' ? mod.computeBlobDagHash : null;
+  } catch {
+    cachedBlobDagHash = null;
+  }
+  return cachedBlobDagHash;
+}
+
 async function sha256Hex(bytes) {
   const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes));
   let hex = '';
@@ -12,8 +24,14 @@ async function sha256Hex(bytes) {
   return hex;
 }
 
+async function matchesHash(bytes, expectedHash) {
+  if (await sha256Hex(bytes) === expectedHash) return true;
+  const dagHash = await getBlobDagHashFn();
+  return dagHash !== null && dagHash(bytes) === expectedHash;
+}
+
 async function verifyAsset(file, bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== file.size || await sha256Hex(bytes) !== file.hash) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== file.size || !(await matchesHash(bytes, file.hash))) {
     throw Object.assign(new Error(`Publication asset verification failed for ${file.path ?? file.hash}`), {
       code: 'PUBLICATION_ASSET_INVALID',
     });
@@ -61,7 +79,7 @@ export async function retainPublicationBlobs(session, assets, { pin = true, sign
     }
     seen.add(asset.hash);
     const bytes = toBytes(asset.bytes);
-    if (await sha256Hex(bytes) !== asset.hash) {
+    if (!(await matchesHash(bytes, asset.hash))) {
       throw Object.assign(new Error(`Publication asset hash mismatch for ${asset.hash}`), { code: 'PUBLICATION_HASH_MISMATCH' });
     }
     const info = await session.content.put(bytes, {
@@ -69,7 +87,8 @@ export async function retainPublicationBlobs(session, assets, { pin = true, sign
       ...(typeof asset.type === 'string' && asset.type.length > 0 ? { mediaType: asset.type } : {}),
       ...(signal === undefined ? {} : { signal }),
     });
-    if (info.hash !== asset.hash) {
+    const dagHash = await getBlobDagHashFn();
+    if (info.hash !== asset.hash && (dagHash === null || info.hash !== dagHash(bytes))) {
       throw Object.assign(new Error(`Publication asset hash mismatch for ${asset.hash}`), { code: 'PUBLICATION_HASH_MISMATCH' });
     }
     if (pin && typeof session.content.pin === 'function') {

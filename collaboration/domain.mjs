@@ -10,26 +10,22 @@ const parse = (value, limit = 8192) => canonicalJson(JSON.parse(value), limit);
 const compositeRecordId = (type, ...parts) => `${type}:${parts.map(value => `${identifier(value).length}:${value}`).join('')}`;
 
 /**
- * Chronolog v2 ES Module reducer for addressed collaboration over `chronolog:sqlite`.
- * Replaces 200+ lines of fragile recursive-CTE SQLite triggers with readable, deterministic
- * JavaScript + SQLite-CAS (`actor()`, `op_id()`, `op_time()`).
+ * Pure, static, content-addressable Chronolog ES Module reducer for addressed collaboration
+ * over `chronolog:sqlite`. Reads per-log `limits` and `administrators` from `ctx.config` so
+ * every Tendriller collaboration log deduplicates onto the exact same CAS hash.
  */
-export function createCollaborationReducerSource({ administrators = [], limits: configured = {} } = {}) {
-  const limits = { ...COLLABORATION_LIMITS, ...configured };
-  for (const [key, value] of Object.entries(limits)) {
-    if (!Object.hasOwn(COLLABORATION_LIMITS, key) || !Number.isSafeInteger(value) || value < 1 || value > COLLABORATION_LIMITS[key]) {
-      throw new CollaborationError('INVALID_LIMIT', `Invalid collaboration bound: ${key}`);
-    }
-  }
-  const admins = [...new Set(administrators.map(signerId))];
-
-  return `
+export const COLLABORATION_REDUCER_SOURCE = `
 import { openDb } from 'chronolog:sqlite';
 
-const LIMITS = ${JSON.stringify(limits)};
-const STATIC_ADMINS = new Set(${JSON.stringify(admins)});
+const DEFAULT_LIMITS = ${JSON.stringify(COLLABORATION_LIMITS)};
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/;
 const HEX64_RE = /^[0-9a-f]{64}$/;
+
+function resolveLimits(ctx) {
+  const cfg = ctx && ctx.config && typeof ctx.config === 'object' ? ctx.config.limits : null;
+  if (!cfg || typeof cfg !== 'object') return DEFAULT_LIMITS;
+  return { ...DEFAULT_LIMITS, ...cfg };
+}
 
 function ensureSchema(db) {
   db.exec(\`
@@ -51,7 +47,8 @@ function ensureSchema(db) {
 }
 
 function isAdmin(ctx, author) {
-  if (STATIC_ADMINS.has(author)) return true;
+  const staticAdmins = ctx && ctx.config && Array.isArray(ctx.config.administrators) ? ctx.config.administrators : null;
+  if (staticAdmins && staticAdmins.includes(author)) return true;
   const checked = ctx.query('$permissions', { check: 'administrator', actor: author });
   if (typeof checked === 'boolean') return checked;
   const perms = ctx.topic('$permissions');
@@ -94,6 +91,7 @@ function validSigner(v) { return typeof v === 'string' && HEX64_RE.test(v); }
 
 export default {
   reduce(state, tx, ctx) {
+  const LIMITS = resolveLimits(ctx);
   const payload = tx.payload;
   if (!payload || typeof payload !== 'object' || typeof payload.type !== 'string' || typeof payload.recordId !== 'string') {
     return { ok: false, code: 'collab_envelope' };
@@ -284,6 +282,17 @@ export default {
   },
 };
 `.trimStart();
+
+/** Validate collaboration bounds and administrators and return the static content-addressable reducer source. */
+export function createCollaborationReducerSource({ administrators = [], limits: configured = {} } = {}) {
+  const limits = { ...COLLABORATION_LIMITS, ...configured };
+  for (const [key, value] of Object.entries(limits)) {
+    if (!Object.hasOwn(COLLABORATION_LIMITS, key) || !Number.isSafeInteger(value) || value < 1 || value > COLLABORATION_LIMITS[key]) {
+      throw new CollaborationError('INVALID_LIMIT', `Invalid collaboration bound: ${key}`);
+    }
+  }
+  administrators.forEach(signerId);
+  return COLLABORATION_REDUCER_SOURCE;
 }
 
 /**
@@ -413,10 +422,23 @@ export function createCollaborationDefinition({
     queries,
   });
 
+  const admins = [...new Set(administrators.map(signerId))];
+  const topicConfig = Object.freeze({ limits: Object.freeze(limits), administrators: Object.freeze(admins) });
   return Object.freeze({
     definition,
     reducerSource,
     imports: Object.freeze({ 'tendriller/collab': reducerSource }),
-    topics: Object.freeze({ collab: Object.freeze({ module: 'tendriller/collab' }) }),
+    packages: Object.freeze({
+      'tendriller/collab': Object.freeze({
+        name: 'tendriller/collab',
+        version,
+        files: Object.freeze({ 'index.js': reducerSource }),
+        exports: Object.freeze({ '.': 'index.js' }),
+        builtins: Object.freeze(['chronolog:sqlite']),
+      }),
+    }),
+    topics: Object.freeze({
+      collab: Object.freeze({ module: 'tendriller/collab', config: topicConfig }),
+    }),
   });
 }

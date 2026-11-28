@@ -91,6 +91,20 @@ export async function deleteUnreferencedContent(t: Tendril, hash: string, olderT
   });
 }
 
+/** Remove orphaned v2_pub_version/v2_pub_receipt meta entries pointing to a pruned host version. */
+function cleanupPrunedVersionMeta(t: Tendril, prunedVersion: number): void {
+  const rows = t.db.all<{ k: string; v: string }>(
+    "SELECT k, v FROM meta WHERE k >= 'v2_pub_version:' AND k < 'v2_pub_version;'",
+  );
+  for (const row of rows) {
+    if (Number(row.v) === prunedVersion) {
+      const opId = row.k.slice('v2_pub_version:'.length);
+      t.db.del(row.k);
+      t.db.del(`v2_pub_receipt:${opId}`);
+    }
+  }
+}
+
 /**
  * Evict the oldest non-current host publication version and immediately garbage-collect
  * any content-addressed blobs that are no longer referenced. Never touches `servedVersion(t)`.
@@ -110,6 +124,7 @@ export async function pruneOldestNonCurrentVersion(t: Tendril): Promise<{ pruned
     t.db.run("DELETE FROM version_files WHERE version = ?", oldest.version);
     t.db.run("DELETE FROM versions WHERE version = ?", oldest.version);
     t.db.run("DELETE FROM trusted_versions WHERE version = ?", oldest.version);
+    cleanupPrunedVersionMeta(t, oldest.version);
     return { version: oldest.version, hashes };
   });
   if (!pruned) return { prunedVersion: null, freedBytes: 0 };
@@ -307,6 +322,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
         t.db.run("DELETE FROM version_files WHERE version = ?", old.version);
         t.db.run("DELETE FROM versions WHERE version = ?", old.version);
         t.db.run("DELETE FROM trusted_versions WHERE version = ?", old.version);
+        cleanupPrunedVersionMeta(t, old.version);
       }
     }
     return next;

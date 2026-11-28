@@ -18,9 +18,10 @@ import {
   type FinalityCheckpoint, type FinalityInclusionV2, type FinalityPolicyV2, type Signed,
 } from '@chronolog/authority';
 import {
-  computeCasHash, ContentAddressedStore, decodeCasNode, decodeEncryptedEnvelope, decodeLogGenesis, decodeOperationCore, decodeSignedOperation,
-  encryptedEnvelopeDigest, genesisLogId, hashCasNode, isControlTopic, MemoryBytesStore, operationIdDigest, seedStandardModules, TopicKernel,
-  verifySignedOperation, type LogGenesis, type KernelOperationInput, type SignedOperation,
+  collectControlReferencedCasHashes, computeCasHash, decodeCasNode, decodeEncryptedEnvelope, decodeLogGenesis,
+  decodeOperationCore, decodeSignedOperation, encryptedEnvelopeDigest, genesisLogId, hashCasNode, isControlTopic,
+  operationIdDigest, replayBlindHostControl as chronologReplayBlindHostControl, verifySignedOperation,
+  type LogGenesis, type KernelOperationInput, type SignedOperation,
 } from '@chronolog/peer-session/kernel';
 import {
   authorityRecord, authorityRecordBytes, type AuthorityRecord, type HostAppConfig, type HostApplication,
@@ -38,7 +39,7 @@ import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestat
 import { selectedApplication } from './application';
 import { HttpError, json, readBody, readJson } from './http';
 import { sha256Hex } from './ids';
-import { etagMatches } from './immutable-cache';
+import { etagMatches, immutableObject } from './immutable-cache';
 import { pageHostForLabel, pageUrl } from './urls';
 import { isActiveCustomDomainForPage } from './custom-domains';
 import { isActiveSubdomainForPage } from './subdomains';
@@ -244,59 +245,23 @@ export interface MaterializedControlState {
   readonly referencedCasHashes: ReadonlySet<string>;
 }
 
-const CAS_URI_RE = /^cas:sha256-([0-9a-f]{64})$/u;
-const HEX64_RE = /^[0-9a-f]{64}$/u;
-
-function collectCasRefsFromValue(value: unknown, casMap: Map<string, Uint8Array>, out: Set<string>, depth = 0): void {
-  if (depth > 32 || value === null || value === undefined) return;
-  if (typeof value === 'string') {
-    const uriMatch = CAS_URI_RE.exec(value);
-    if (uriMatch) { out.add(uriMatch[1]!); return; }
-    if (HEX64_RE.test(value) && casMap.has(value)) out.add(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectCasRefsFromValue(item, casMap, out, depth + 1);
-    return;
-  }
-  if (typeof value === 'object') {
-    for (const v of Object.values(value as Record<string, unknown>)) {
-      collectCasRefsFromValue(v, casMap, out, depth + 1);
-    }
-  }
-}
-
 /**
  * Computes the exact set of public CAS hashes reachable from genesis, public control ops,
- * and materialized public control topic states (excluding internal `seenOps` blobs).
+ * and materialized public control topic states (`$reducers`, `$mounts`, `$builders`, `$publications`,
+ * including transitive `chronolog-pkg/v1` / `chronolog-tree/v1` / `chronolog-drv/v1` links).
  */
-export function collectReferencedPublicCasHashes(
-  genesis: unknown,
+export async function collectReferencedPublicCasHashes(
+  genesis: LogGenesis,
   publicOps: readonly KernelOperationInput[],
   topics: Record<string, unknown>,
   casMap: Map<string, Uint8Array>,
-): Set<string> {
-  const roots = new Set<string>();
-  collectCasRefsFromValue(genesis, casMap, roots);
-  for (const op of publicOps) collectCasRefsFromValue(op.core.updates, casMap, roots);
-  collectCasRefsFromValue(topics, casMap, roots);
-
-  const reachable = new Set<string>();
-  const queue = [...roots];
-  while (queue.length > 0) {
-    const hash = queue.pop()!;
-    if (reachable.has(hash)) continue;
-    const raw = casMap.get(hash);
-    if (!raw) continue;
-    reachable.add(hash);
-    try {
-      const decoded = decodeCasNode(raw);
-      for (const link of decoded.links ?? []) {
-        if (typeof link === 'string' && !reachable.has(link) && casMap.has(link)) queue.push(link);
-      }
-    } catch { /* raw unframed module blob has no child links */ }
-  }
-  return reachable;
+): Promise<Set<string>> {
+  return collectControlReferencedCasHashes({
+    genesis,
+    topics: topics as Readonly<Record<string, any>>,
+    publicOps: publicOps.map(op => op.core),
+    casNodes: casMap,
+  });
 }
 
 /** True once the page has either prepared configuration or an initialized v2 genesis. */
@@ -485,8 +450,8 @@ export async function verifyPublicControlOp(
 }
 
 /**
- * Pure deterministic blind-host materialization of a genesis + public CAS + public ops + checkpoints.
- * Used both for cached reads and candidate validation before committing new ops/publications.
+ * Pure deterministic blind-host materialization powered by Chronolog's upstream
+ * `replayBlindHostControl()` (`@chronolog/peer-session/kernel`).
  */
 export async function replayBlindHostControl(input: {
   genesisBytes: Uint8Array;
@@ -496,179 +461,73 @@ export async function replayBlindHostControl(input: {
 }): Promise<MaterializedControlState> {
   const genesis = decodeLogGenesis(input.genesisBytes);
   const logId = bytesToHex(genesisLogId(input.genesisBytes));
-  const cas = new ContentAddressedStore({ store: new MemoryBytesStore() });
-  await seedStandardModules(cas);
-  for (const node of input.publicCas) {
-    if (hashCasNode(node.bytes) === node.hash) {
-      decodeCasNode(node.bytes);
-      await cas.putRaw(node.hash, node.bytes, 'public');
-    } else {
-      await cas.put(node.bytes, [], 'public');
-    }
-  }
-
-  const kernel = new TopicKernel({
+  const result = await chronologReplayBlindHostControl({
     genesis,
-    cas,
-    blindHostMode: true,
+    publicOps: input.publicOps,
+    publicCasNodes: input.publicCas,
+    checkpoints: input.checkpoints,
     wasmModule: quickJsWasm,
   });
 
-  // Evaluate initial readers via $permissions.query() before replaying ops so revocations are detected
-  // regardless of the $permissions reducer's internal state schema!
-  const evaluatePermissions = async (k: TopicKernel): Promise<MaterializedControlState['permissions']> => {
-    const parseKeyList = (val: unknown): { keys: Set<string>; open: boolean } => {
-      const keys = new Set<string>();
-      let open = false;
-      if (Array.isArray(val)) {
-        for (const item of val) {
-          if (item === '*') open = true;
-          else if (typeof item === 'string') keys.add(item);
-        }
-      }
-      return { keys, open };
-    };
-    const parseMembers = (val: unknown): ControlMember[] =>
-      Array.isArray(val)
-        ? val.filter((m): m is ControlMember => m !== null && typeof m === 'object' && typeof (m as ControlMember).publicKey === 'string')
-        : [];
-
-    try {
-      const summary = await k.query('$permissions', { summary: true });
-      if (
-        summary !== null && typeof summary === 'object' && !Array.isArray(summary) &&
-        Array.isArray((summary as Record<string, unknown>).administrators) &&
-        Array.isArray((summary as Record<string, unknown>).readers)
-      ) {
-        const s = summary as Record<string, unknown>;
-        const readers = parseKeyList(s.readers);
-        const writers = parseKeyList(s.writers);
-        const admins = parseKeyList(s.administrators);
-        const pubs = parseKeyList(s.publishers);
-        const blocked = parseKeyList(s.blockedAuthors);
-        const admission = (s.admission !== null && typeof s.admission === 'object' && !Array.isArray(s.admission))
-          ? s.admission as ControlAdmissionPolicy
-          : null;
-        return {
-          members: parseMembers(s.members),
-          readers: readers.keys,
-          writers: writers.keys,
-          administrators: admins.keys,
-          publishers: pubs.keys,
-          openReaders: s.openReaders === true || readers.open,
-          openWriters: s.openWriters === true || writers.open,
-          blockedAuthors: blocked.keys,
-          admission,
-        };
-      }
-      const [rRaw, wRaw, aRaw, pRaw, mRaw, admRaw, blkRaw] = await Promise.all([
-        k.query('$permissions', { list: 'readers' }).catch(() => null),
-        k.query('$permissions', { list: 'writers' }).catch(() => null),
-        k.query('$permissions', { list: 'administrators' }).catch(() => null),
-        k.query('$permissions', { list: 'publishers' }).catch(() => null),
-        k.query('$permissions', { list: 'members' }).catch(() => null),
-        k.query('$permissions', { admission: true }).catch(() => null),
-        k.query('$permissions', { list: 'blockedAuthors' }).catch(() => null),
-      ]);
-      if (Array.isArray(rRaw) || Array.isArray(wRaw) || Array.isArray(aRaw)) {
-        const readers = parseKeyList(rRaw);
-        const writers = parseKeyList(wRaw);
-        const admins = parseKeyList(aRaw);
-        const pubs = parseKeyList(pRaw);
-        const blocked = parseKeyList(blkRaw);
-        const admission = (admRaw !== null && typeof admRaw === 'object' && !Array.isArray(admRaw))
-          ? admRaw as ControlAdmissionPolicy
-          : null;
-        return {
-          members: parseMembers(mRaw),
-          readers: readers.keys,
-          writers: writers.keys,
-          administrators: admins.keys,
-          publishers: pubs.keys,
-          openReaders: readers.open,
-          openWriters: writers.open,
-          blockedAuthors: blocked.keys,
-          admission,
-        };
-      }
-    } catch {
-      // Fall back to raw topic inspection below
-    }
-
-    const raw = k.topic('$permissions') as { members?: ControlMember[]; admission?: ControlAdmissionPolicy | null } | null;
-    const members = parseMembers(raw?.members);
-    return {
-      members,
-      readers: new Set(members.filter(m => m.reader).map(m => m.publicKey)),
-      writers: new Set(members.filter(m => m.writer || m.administrator).map(m => m.publicKey)),
-      administrators: new Set(members.filter(m => m.administrator).map(m => m.publicKey)),
-      publishers: new Set(members.filter(m => m.publisher || m.administrator).map(m => m.publicKey)),
-      openReaders: false,
-      openWriters: false,
-      blockedAuthors: new Set(),
-      admission: raw?.admission ?? null,
-    };
-  };
+  const toMembers = (raw: readonly Record<string, unknown>[]): ControlMember[] =>
+    raw
+      .filter((m): m is Record<string, unknown> => m !== null && typeof m === 'object' && typeof m.publicKey === 'string')
+      .map(m => ({
+        publicKey: String(m.publicKey),
+        ...(typeof m.wrapKey === 'string' ? { wrapKey: m.wrapKey } : {}),
+        reader: Boolean(m.reader),
+        writer: Boolean(m.writer),
+        administrator: Boolean(m.administrator),
+        publisher: Boolean(m.publisher),
+        finalizer: Boolean(m.finalizer),
+      }));
 
   const everMembers = new Set<string>();
-  const initialPerms = await evaluatePermissions(kernel);
-  for (const pk of initialPerms.readers) everMembers.add(pk);
-  for (const m of initialPerms.members) everMembers.add(m.publicKey);
+  for (const pk of result.initialPermissions.readers) everMembers.add(pk);
+  for (const m of result.initialPermissions.members) if (typeof m.publicKey === 'string') everMembers.add(m.publicKey);
+  for (const pk of result.permissions.readers) everMembers.add(pk);
+  for (const m of result.permissions.members) if (typeof m.publicKey === 'string') everMembers.add(m.publicKey);
 
-  const materialized = await kernel.materialize(input.publicOps);
-  const permissions = await evaluatePermissions(kernel);
-  for (const pk of permissions.readers) everMembers.add(pk);
-  for (const m of permissions.members) everMembers.add(m.publicKey);
-  const topics = kernel.topics as Record<string, any>;
+  const permissions: MaterializedControlState['permissions'] = {
+    members: toMembers(result.permissions.members as readonly Record<string, unknown>[]),
+    readers: new Set(result.permissions.readers),
+    writers: new Set(result.permissions.writers),
+    administrators: new Set(result.permissions.administrators),
+    publishers: new Set(result.permissions.publishers),
+    openReaders: result.permissions.openRead,
+    openWriters: result.permissions.openWrite,
+    blockedAuthors: new Set(result.permissions.blockedAuthors),
+    admission: (result.permissions.admission !== null && typeof result.permissions.admission === 'object' && !Array.isArray(result.permissions.admission))
+      ? result.permissions.admission as unknown as ControlAdmissionPolicy
+      : null,
+  };
+
+  const topics = result.topics as Record<string, any>;
   const keys = (topics.$keys ?? { currentEpoch: -1, epochs: {} }) as MaterializedControlState['keys'];
   const finality = (topics.$finality ?? { schedule: [{ effectiveAfterMs: -1, policy: { kind: 'none' } }] }) as MaterializedControlState['finality'];
   const publications = (topics.$publications ?? { revision: 0, current: null, history: [] }) as MaterializedControlState['publications'];
-
   const schedule = parseFinalitySchedule(finality);
   const hasActiveFinality = schedule.some(entry => entry.policy.kind !== 'none');
-
-  let closedThroughMs: bigint | null = null;
-  let finalizedPublications: MaterializedControlState['finalizedPublications'] = null;
-  if (input.checkpoints.length > 0) {
-    const verified = await verifyFinalityV2({
-      logId,
-      schedule,
-      checkpoints: input.checkpoints,
-      knownOps: input.publicOps.map(op => ({ opId: bytesToHex(op.opId), authorTimestampMs: op.core.authorTimestampMs })),
-    });
-    closedThroughMs = verified.closedThroughMs;
-    if (closedThroughMs !== null) {
-      const finalOps = input.publicOps.filter(op => verified.includedOpIds.has(bytesToHex(op.opId)));
-      const finalKernel = new TopicKernel({
-        genesis,
-        cas,
-        blindHostMode: true,
-        wasmModule: quickJsWasm,
-      });
-      await finalKernel.materialize(finalOps);
-      const fPub = (finalKernel.topics as Record<string, any>).$publications ?? { revision: 0, current: null };
-      finalizedPublications = { revision: fPub.revision ?? 0, current: fPub.current ?? null };
-    }
-  }
-
-  const casMap = new Map(input.publicCas.map(n => [n.hash, n.bytes]));
-  const referencedCasHashes = collectReferencedPublicCasHashes(genesis, input.publicOps, topics, casMap);
+  const fPub = result.finalizedTopics ? (result.finalizedTopics as Record<string, any>).$publications : null;
+  const finalizedPublications = fPub
+    ? { revision: fPub.revision ?? 0, current: fPub.current ?? null }
+    : null;
 
   return {
     logId,
     genesis,
     genesisBytes: input.genesisBytes,
-    stateRoot: materialized.revision.stateRoot,
-    historyDigest: materialized.revision.historyDigest,
+    stateRoot: result.stateRoot,
+    historyDigest: result.historyDigest,
     permissions,
     keys,
     finality,
     publications,
     finalizedPublications,
     hasActiveFinality,
-    closedThroughMs,
+    closedThroughMs: result.finality.closedThroughMs,
     everMembers,
-    referencedCasHashes,
+    referencedCasHashes: new Set(result.referencedCasHashes),
   };
 }
 
@@ -1150,6 +1009,45 @@ export function isSeenOpsCasBlob(encoded: Uint8Array): boolean {
   }
 }
 
+/**
+ * Canonical blind encrypted-envelope validation shared by `syncMailbox` and hosted MCP `handleEnvelopeSync`.
+ * Validates logId, enforces `$permissions` write capability, and deduplicates by `encryptedEnvelopeDigest`.
+ */
+export function validateMailboxEnvelopes(
+  t: Tendril,
+  state: MaterializedControlState,
+  rawItems: readonly Uint8Array[],
+  options: { readonly enforceWritePermission?: boolean; readonly maxItems?: number; readonly maxTotalBytes?: number } = {},
+): Array<{ digest: string; epoch: number; author: string; raw: Uint8Array }> {
+  const canWrite = (author: string): boolean => {
+    if (state.permissions.blockedAuthors.has(author)) return false;
+    return state.permissions.openWriters || state.permissions.writers.has(author) || state.permissions.administrators.has(author);
+  };
+  const existingDigests = new Set(t.db.all<{ digest: string }>('SELECT digest FROM v2_mailbox_envelopes').map(r => r.digest));
+  const existingBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(raw)), 0) AS total FROM v2_mailbox_envelopes')?.total ?? 0;
+  const maxItems = options.maxItems ?? MAX_MAILBOX_ITEMS;
+  const maxTotalBytes = options.maxTotalBytes ?? MAX_MAILBOX_TOTAL_BYTES;
+  const enforceWrite = options.enforceWritePermission !== false;
+  const accepted: Array<{ digest: string; epoch: number; author: string; raw: Uint8Array }> = [];
+  let addedBytes = 0;
+
+  for (const raw of rawItems) {
+    let env;
+    try { env = decodeEncryptedEnvelope(raw); }
+    catch { throw new HttpError(400, 'mailbox_envelope_invalid'); }
+    if (bytesToHex(env.logId) !== state.logId) throw new HttpError(400, 'mailbox_log_mismatch');
+    const author = bytesToHex(env.author);
+    if (enforceWrite && !canWrite(author)) continue;
+    const digest = bytesToHex(encryptedEnvelopeDigest(raw));
+    if (existingDigests.has(digest) || accepted.some(e => e.digest === digest)) continue;
+    if (existingDigests.size + accepted.length >= maxItems) break;
+    if (existingBytes + addedBytes + raw.byteLength > maxTotalBytes) break;
+    accepted.push({ digest, epoch: env.epoch, author, raw });
+    addedBytes += raw.byteLength;
+  }
+  return accepted;
+}
+
 async function syncMailbox(t: Tendril, principal: Principal, input: Record<string, any>) {
   const state = await readControlState(t);
   if (!state) throw new HttpError(409, 'application_uninitialized', 'Application genesis has not been initialized');
@@ -1164,28 +1062,9 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
   // Validate incoming encrypted envelopes (private logs only, 100% blind)
   const rawEnvs = Array.isArray(input.encryptedEnvelopes) ? input.encryptedEnvelopes : [];
   if (rawEnvs.length > 128) throw new HttpError(400, 'too_many_envelopes');
-  const existingEnvDigests = new Set(t.db.all<{ digest: string }>('SELECT digest FROM v2_mailbox_envelopes').map(r => r.digest));
-  const existingEnvBytes = t.db.one<{ total: number }>('SELECT COALESCE(SUM(LENGTH(raw)), 0) AS total FROM v2_mailbox_envelopes')?.total ?? 0;
-  const newEnvs: Array<{ digest: string; epoch: number; author: string; raw: Uint8Array }> = [];
-  let addedEnvBytes = 0;
-
-  if (state.genesis.privateLog) {
-    for (const item of rawEnvs) {
-      const raw = authorityRecordBytes(item, MAX_MAILBOX_ITEM_BYTES);
-      let env;
-      try { env = decodeEncryptedEnvelope(raw); }
-      catch { throw new HttpError(400, 'mailbox_envelope_invalid'); }
-      if (bytesToHex(env.logId) !== logId) throw new HttpError(400, 'mailbox_log_mismatch');
-      const author = bytesToHex(env.author);
-      if (!canWrite(author)) continue;
-      const digest = bytesToHex(encryptedEnvelopeDigest(raw));
-      if (existingEnvDigests.has(digest) || newEnvs.some(e => e.digest === digest)) continue;
-      if (existingEnvDigests.size + newEnvs.length >= MAX_MAILBOX_ITEMS) break;
-      if (existingEnvBytes + addedEnvBytes + raw.byteLength > MAX_MAILBOX_TOTAL_BYTES) break;
-      newEnvs.push({ digest, epoch: env.epoch, author, raw });
-      addedEnvBytes += raw.byteLength;
-    }
-  }
+  const newEnvs = state.genesis.privateLog
+    ? validateMailboxEnvelopes(t, state, rawEnvs.map(item => authorityRecordBytes(item, MAX_MAILBOX_ITEM_BYTES)))
+    : [];
 
   // Validate incoming public application ops (public logs only, Ed25519-verified, blockedAuthors rejected)
   const rawOps = Array.isArray(input.publicOps) ? input.publicOps : [];
@@ -1774,13 +1653,14 @@ export async function handleSnapshot(t: Tendril, req: Request, principal: Princi
       headers.set('Content-Length', String(meta.size));
       return new Response(null, { status: 200, headers });
     }
-    const obj = await t.env.FILES.get(`t/${t.tid}/snapshots/${meta.hash}`);
-    if (!obj) {
+    const cached = await immutableObject(t.env, `t/${t.tid}/snapshots/${meta.hash}`, { context: t.ctx });
+    if (!cached) {
       t.db.del(SNAPSHOT_META_KEY);
       return new Response(null, { status: 204, headers: { 'Cache-Control': 'private, no-cache' } });
     }
-    headers.set('Content-Length', String(obj.size));
-    return new Response(obj.body, { status: 200, headers });
+    const len = cached.headers.get('Content-Length');
+    if (len) headers.set('Content-Length', len);
+    return new Response(cached.body, { status: 200, headers });
   }
 
   if (req.method === 'POST') {
@@ -1842,6 +1722,14 @@ export async function handleSnapshot(t: Tendril, req: Request, principal: Princi
       uploadedAt: t.now(),
     };
     t.db.set(SNAPSHOT_META_KEY, nextMeta);
+    // Compact superseded older-epoch mailbox envelopes when a newer-epoch snapshot is stored
+    // so long-lived private logs never wedge against MAX_MAILBOX_ITEMS.
+    if (nextMeta.epoch > 0) {
+      const envCount = t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM v2_mailbox_envelopes')?.n ?? 0;
+      if (envCount > 1024) {
+        t.db.run('DELETE FROM v2_mailbox_envelopes WHERE epoch < ?', nextMeta.epoch);
+      }
+    }
     if (prev && prev.hash !== hash) {
       t.ctx.waitUntil(t.env.FILES.delete(`t/${t.tid}/snapshots/${prev.hash}`).catch(() => {}));
     }

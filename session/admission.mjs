@@ -113,7 +113,8 @@ function buildAuthorityTopic(authority, identity, wrapKey) {
  */
 export async function createPageGenesis({
   identity, wrapKey, hostKey, accounts = [], mode = 'attested', ownerGrant = DEFAULT_OWNER_GRANT,
-  subject = 'device', authority = undefined, admission = undefined, privateLog = undefined, imports, topics, finalitySchedule, frozenReducers, salt,
+  subject = 'device', authority = undefined, admission = undefined, privateLog = undefined,
+  imports, privateImports, packages, bundle, enableMounts, builders, topics, finalitySchedule, frozenReducers, salt,
 }) {
   if (!HEX.test(identity?.publicKey ?? '') || !HEX.test(wrapKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
@@ -133,6 +134,7 @@ export async function createPageGenesis({
     creator: {
       publicKey: identity.publicKey,
       wrapKey,
+      ...(subject ? { subject } : {}),
       reader: true,
       writer: true,
       administrator: true,
@@ -140,51 +142,24 @@ export async function createPageGenesis({
       finalizer: true,
     },
     privateLog: resolvedPrivateLog,
-    ...(hostAttested ? { hostPublicKey: hostKey } : {}),
-    imports,
-    topics: resolvedTopics,
-    finalitySchedule,
-    frozenReducers,
-    salt,
+    ...(hostAttested
+      ? { admission: { hostKey, mode, accounts: [...accounts], grant, invites: [] } }
+      : {}),
+    ...(imports === undefined ? {} : { imports }),
+    ...(privateImports === undefined ? {} : { privateImports }),
+    ...(packages === undefined ? {} : { packages }),
+    ...(bundle === undefined ? {} : { bundle }),
+    ...(enableMounts === undefined ? {} : { enableMounts }),
+    ...(builders === undefined ? {} : { builders }),
+    ...(resolvedTopics === undefined ? {} : { topics: resolvedTopics }),
+    ...(finalitySchedule === undefined ? {} : { finalitySchedule }),
+    ...(frozenReducers === undefined ? {} : { frozenReducers }),
+    ...(salt === undefined ? {} : { salt }),
   });
-  if (!hostAttested) {
-    if (subject && Array.isArray(created.genesis.initialTopics?.$permissions?.members) && created.genesis.initialTopics.$permissions.members[0]) {
-      const genesis = structuredClone(created.genesis);
-      genesis.initialTopics.$permissions.members[0] = { ...genesis.initialTopics.$permissions.members[0], subject };
-      const { encodeLogGenesis } = await import('@chronolog/peer-session');
-      const genesisBytes = encodeLogGenesis(genesis);
-      return {
-        logId: bytesToHex(genesisLogId(genesisBytes)),
-        genesis,
-        genesisBytes,
-        casNodes: created.casNodes,
-        epoch0Key: created.epoch0Key,
-      };
-    }
-    return {
-      logId: created.logId,
-      genesis: created.genesis,
-      genesisBytes: created.genesisBytes,
-      casNodes: created.casNodes,
-      epoch0Key: created.epoch0Key,
-    };
-  }
-  // Embed full Tendriller admission policy into initial $permissions.admission and re-encode deterministically.
-  const genesis = structuredClone(created.genesis);
-  if (subject && Array.isArray(genesis.initialTopics?.$permissions?.members) && genesis.initialTopics.$permissions.members[0]) {
-    genesis.initialTopics.$permissions.members[0] = { ...genesis.initialTopics.$permissions.members[0], subject };
-  }
-  genesis.initialTopics.$permissions = {
-    ...genesis.initialTopics.$permissions,
-    admission: { hostKey, mode, accounts: [...accounts], grant, invites: [] },
-  };
-  const { encodeLogGenesis } = await import('@chronolog/peer-session');
-  const genesisBytes = encodeLogGenesis(genesis);
-  const logId = bytesToHex(genesisLogId(genesisBytes));
   return {
-    logId,
-    genesis,
-    genesisBytes,
+    logId: created.logId,
+    genesis: created.genesis,
+    genesisBytes: created.genesisBytes,
     casNodes: created.casNodes,
     epoch0Key: created.epoch0Key,
   };
@@ -545,7 +520,7 @@ export function createAdmission(session, {
       } catch {}
     }
     if (typeof session.topic === 'function') {
-      for (const name of ['$reducers', '$permissions', '$keys', '$finality', '$publications']) {
+      for (const name of ['$reducers', '$permissions', '$keys', '$finality', '$publications', '$mounts', '$builders']) {
         try { scan(session.topic(name)); } catch {}
       }
     }
