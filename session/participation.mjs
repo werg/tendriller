@@ -145,7 +145,7 @@ export function participateApplication(session, {
     clearPeerRetry(peer.identity);
     const controller = new AbortController(), connectionSignal = AbortSignal.any([runSignal, controller.signal]);
     opening.set(peer.identity, controller); introduced.set(peer.identity, invitation?.channel); changed();
-    let connection, route;
+    let connection, route, shouldRetryPeer = false;
     try {
       const target = { peer, ...(invitation === undefined ? {} : { invitation }) };
       connection = await (promote ? adapter.transport.upgrade(target, { signal: connectionSignal }) : adapter.transport.open(target, { signal: connectionSignal }));
@@ -155,7 +155,7 @@ export function participateApplication(session, {
       if (runSignal.aborted || link.signal.aborted) {
         if (descriptions.get(peer.identity) === route) descriptions.delete(peer.identity);
         await link.close();
-        if (!runSignal.aborted) schedulePeerRetry(peer);
+        if (!runSignal.aborted) shouldRetryPeer = true;
         return;
       }
       links.set(peer.identity, link); connectionRevision++; error = null;
@@ -187,9 +187,13 @@ export function participateApplication(session, {
         if (code === 'PEER_MESSAGE_FRAME_TOO_LARGE') {
           void maybeCollectGarbage({ force: true });
         }
-        schedulePeerRetry(peer);
+        shouldRetryPeer = true;
       }
-    } finally { if (opening.get(peer.identity) === controller) opening.delete(peer.identity); changed(); }
+    } finally {
+      if (opening.get(peer.identity) === controller) opening.delete(peer.identity);
+      changed();
+      if (shouldRetryPeer) schedulePeerRetry(peer);
+    }
   }
 
   const promoted = new Map();
@@ -399,13 +403,13 @@ export function participateApplication(session, {
 
   function scheduleMailboxSync() {
     if (signal.aborted || !networkActive || mergingFromMailbox || typeof peers.syncMailbox !== 'function') return;
-    if (Date.now() < mailboxCooldownUntil) return;
+    // Live connected peers replicate directly over WebRTC/relay at zero host cost;
+    // only push to the blind store-and-forward mailbox on fact changes when no peer link is open.
+    if (links.size > 0 || Date.now() < mailboxCooldownUntil) return;
     if (mailboxTimer !== undefined) return;
-    // Always push new local encrypted envelopes (deduped by uploadedDigests) even when live
-    // peers are connected, so offline/reloading devices and Hosted MCP converge without delay.
     mailboxTimer = setTimeout(() => {
       mailboxTimer = undefined;
-      if (!networkActive || signal.aborted) return;
+      if (links.size > 0 || !networkActive || signal.aborted) return;
       void syncMailbox({ force: true });
     }, 250);
     mailboxTimer.unref?.();

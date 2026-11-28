@@ -120,3 +120,77 @@ test('a peer link that stays healthy for stableLinkMs resets reconnect retryCoun
     await stop();
   }
 });
+
+test('a failed connection attempt still schedules a peer retry after clearing opening state', async () => {
+  const selfKey = '11'.repeat(32);
+  const remoteKey = '22'.repeat(32);
+  const sessionAbort = new AbortController();
+  let dialCount = 0;
+  const peers = {
+    async discover() {
+      return { peers: [{ advertisement: { version: 1, peerId: remoteKey, storageId: 'remote-store', routes: [{ kind: 'invitation', peerId: remoteKey }] } }] };
+    },
+    async advertise() { return { ok: true }; },
+    async withdraw() { return { ok: true }; },
+    watchDiscovery(_id, { signal }) {
+      return {
+        ready: Promise.resolve(),
+        closed: Promise.resolve({ code: 1000, reason: '' }),
+        notifications: {
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'ready' };
+            if (!signal?.aborted) await new Promise(resolve => signal?.addEventListener('abort', resolve, { once: true }));
+          },
+        },
+        close() {},
+      };
+    },
+    listenInvitations(_id, { signal }) {
+      return {
+        ready: Promise.resolve(),
+        closed: Promise.resolve({ code: 1000, reason: '' }),
+        invitations: {
+          async *[Symbol.asyncIterator]() {
+            if (!signal?.aborted) await new Promise(resolve => signal?.addEventListener('abort', resolve, { once: true }));
+          },
+        },
+        close() {},
+      };
+    },
+    async invite() { return { invited: remoteKey, channel: 'ch' }; },
+    rendezvous() { return { ready: Promise.resolve({ role: 'offerer', session: 'sess-1' }), close() {} }; },
+    relay() { throw new Error('relay_rate_limited'); },
+  };
+  const session = {
+    identity: { publicKey: selfKey },
+    device: { storageId: 'self-store' },
+    signal: sessionAbort.signal,
+    isReader: key => key === remoteKey,
+    onChange: () => () => {},
+    async connectPeer({ connection }) {
+      const linkAbort = new AbortController();
+      return { signal: linkAbort.signal, async close() { linkAbort.abort(); await connection.close(); } };
+    },
+  };
+  const controller = participateApplication(session, {
+    peers,
+    passiveDialDelayMs: 0,
+    directTimeoutMs: 200,
+    async openDirectConnection() {
+      dialCount++;
+      if (dialCount === 1) throw new Error('TRANSIENT_DIAL_FAILURE');
+      return { async close() {}, send() {} };
+    },
+  });
+  try {
+    const deadline = Date.now() + 3000;
+    while (controller.status.connectedPeers.length === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.ok(dialCount >= 2, `expected retry after failed dial, saw ${dialCount} attempt(s)`);
+    assert.deepEqual(controller.status.connectedPeers, [remoteKey]);
+  } finally {
+    await controller.close();
+    sessionAbort.abort();
+  }
+});
