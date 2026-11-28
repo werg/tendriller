@@ -120,7 +120,7 @@ function retainAttestation(t: Tendril, signed: SignedHostAttestationV2, state: M
     ON CONFLICT(public_key) DO UPDATE SET record=excluded.record,issued_at=excluded.issued_at,expires_at=excluded.expires_at`,
     signed.payload.publicKey, bytes.slice().buffer, signed.payload.issuedAt, signed.payload.expiresAt);
   prunePendingAdmissions(t, state);
-  notifyDiscoveryWatchers(t);
+  notifyDiscoveryWatchers(t, 'a');
 }
 
 export function dropPendingAdmission(t: Tendril, publicKey: string): void {

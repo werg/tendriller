@@ -387,7 +387,7 @@ export async function enforceOrgDepartureOnPage(
     summary: `Gated access & queued key rotation after member left ${affectedGroup}`,
     by: 'host:org-sync',
   });
-  notifyDiscoveryWatchers(t);
+  notifyDiscoveryWatchers(t, 'a');
   return { gated: true, departures: signedDepartures };
 }
 
@@ -529,7 +529,7 @@ export async function handlePageGroups(t: Tendril, req: Request, sub: string, pr
       summary: `Updated org/group admission policy (${verified.rules.length} rule${verified.rules.length === 1 ? '' : 's'})`,
       by: principal.accountId ? `${principal.role}:${principal.accountId}` : `admin:${signed.signer.slice(0, 12)}`,
     });
-    notifyDiscoveryWatchers(t);
+    notifyDiscoveryWatchers(t, 'a');
     return json({ policy: signed });
   }
 

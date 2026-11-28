@@ -3,6 +3,7 @@ import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs
 import { bytesToHex, decodeRecord, decodeSignedOperation, encryptedEnvelopeDigest, hexToBytes, operationIdDigest } from '@chronolog/peer-session';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
+import { createHostRevisionTracker } from '../contract/discovery-watch.mjs';
 export { PEER_TRANSPORT_POLICY };
 const failureCode = (cause, fallback) => { const code = cause?.code ?? cause?.message; return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,95}$/.test(code) ? code : fallback; };
 const pause = (ms, signal) => new Promise(resolve => {
@@ -17,11 +18,17 @@ export function participateApplication(session, {
   configuration = PEER_TRANSPORT_POLICY.configuration,
   directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs,
   upgradeCooldownMs = 30_000,
+  // The higher identity waits this long for the lower one's dial before dialing itself.
+  // It must exceed the lower side's discover -> invite latency: simultaneous dials
+  // supersede each other's channels and both fail (500 ms degraded e2e convergence).
   passiveDialDelayMs = 1500,
   stableLinkMs = 30_000,
   active: initialActive = true,
   onTransport,
   onNotification,
+  // `false` when another controller (the admission controller) owns public-control
+  // sync for this session, so one notification never costs two control syncs.
+  syncControl: ownControlSync = true,
 } = {}) {
   if (!Number.isSafeInteger(upgradeCooldownMs) || upgradeCooldownMs < 0 || upgradeCooldownMs > 600_000) throw TypeError('upgradeCooldownMs must be a bounded integer');
   if (!Number.isSafeInteger(passiveDialDelayMs) || passiveDialDelayMs < 0 || passiveDialDelayMs > 30_000) throw TypeError('passiveDialDelayMs must be a bounded integer');
@@ -360,6 +367,7 @@ export function participateApplication(session, {
           mailboxFailures = 0;
           mailboxCooldownUntil = 0;
           lastMailboxSyncAt = Date.now();
+          revisions.observe('mailbox', resp.revision);
           for (const e of outgoingEnvelopes) uploadedDigests.add(e.digest);
           for (const o of outgoingOps) uploadedOpIds.add(o.opId);
           for (const c of outgoingCas) uploadedCasHashes.add(c.hash);
@@ -415,50 +423,86 @@ export function participateApplication(session, {
     mailboxTimer.unref?.();
   }
 
-  async function refresh() {
+  const ALL_SCOPES = Object.freeze(['control', 'directory', 'mailbox']);
+  const revisions = createHostRevisionTracker();
+  let pendingScopes = new Set();
+
+  async function syncControlFacts(runSignal) {
+    if (!ownControlSync || typeof peers.syncControl !== 'function') return;
+    await seedKnownControlFacts();
+    const synced = await peers.syncControl({
+      knownOpIds: [...knownControlOpIds],
+      knownCasHashes: [...knownControlCasHashes],
+    }, { signal: runSignal }).catch(() => null);
+    if (!synced) return;
+    revisions.observe('control', synced.revision);
+    const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
+    const incomingCas = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
+    for (const raw of incomingOps) {
+      try { knownControlOpIds.add(bytesToHex(operationIdDigest(decodeSignedOperation(raw).coreBytes))); } catch {}
+    }
+    for (const node of incomingCas) knownControlCasHashes.add(node.hash);
+    if (incomingOps.length || incomingCas.length || synced.checkpoints?.length) {
+      await session.mergeFacts({
+        publicOps: incomingOps,
+        encryptedEnvelopes: [],
+        casNodes: incomingCas,
+        retentions: [],
+        checkpoints: (synced.checkpoints ?? []).map(r => decodeRecord(authorityRecordBytes(r, 256 * 1024))),
+      });
+    }
+  }
+
+  async function readDirectory(runSignal) {
+    const directory = await adapter.discovery.readDirectory({ signal: runSignal });
+    revisions.observe('directory', directory.revision);
+    lastDirectory = directory.peers;
+    for (const peer of directory.peers) if (session.isReader(peer.identity)) void connect(peer);
+    if (error?.startsWith('discovery:')) error = null;
+  }
+
+  // Only scopes the host changed since this session last read them cost a request.
+  // A notification arriving during a pass (e.g. the first ready while the boot
+  // refresh is in flight) is judged against that pass's response revisions.
+  let deferredNotification;
+  function evaluateNotification() {
+    if (refreshing || !deferredNotification) return;
+    const notification = deferredNotification;
+    deferredNotification = undefined;
+    const stale = revisions.stale(notification, ownControlSync ? ALL_SCOPES : ['directory', 'mailbox']);
+    if (stale.length) void refresh(stale);
+  }
+
+  /** Re-read the given host scopes (default all). Concurrent calls coalesce into the running pass. */
+  async function refresh(scopes = ALL_SCOPES) {
     if (!networkActive || signal.aborted) return;
+    for (const scope of scopes) pendingScopes.add(scope);
     dirty = true;
     if (refreshing) return refreshing;
     const runSignal = activeRun?.signal ?? signal;
     refreshing = (async () => {
       while (dirty && !runSignal.aborted && networkActive) {
         dirty = false;
+        const want = pendingScopes;
+        pendingScopes = new Set();
         try {
-          if (typeof peers.syncControl === 'function') {
-            await seedKnownControlFacts();
-            const synced = await peers.syncControl({
-              knownOpIds: [...knownControlOpIds],
-              knownCasHashes: [...knownControlCasHashes],
-            }, { signal: runSignal }).catch(() => null);
-            if (synced) {
-              const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
-              const incomingCas = (synced.casNodes ?? []).map(n => ({ hash: n.hash, bytes: hexToBytes(n.bytes), partition: 'public' }));
-              for (const raw of incomingOps) {
-                try { knownControlOpIds.add(bytesToHex(operationIdDigest(decodeSignedOperation(raw).coreBytes))); } catch {}
+          // Peer discovery and connection never wait behind control, snapshot or
+          // mailbox transfers; those stay ordered (keys before snapshot before mailbox).
+          await Promise.all([
+            (async () => {
+              if (want.has('control')) await syncControlFacts(runSignal);
+              if (want.has('control') || want.has('mailbox')) {
+                await maybeHydrateFromSnapshot();
+                await syncMailbox(want.has('mailbox') && links.size === 0 && !want.has('control') ? { force: true } : undefined);
+                maybeUploadSnapshot();
               }
-              for (const node of incomingCas) knownControlCasHashes.add(node.hash);
-              if (incomingOps.length || incomingCas.length || synced.checkpoints?.length) {
-                await session.mergeFacts({
-                  publicOps: incomingOps,
-                  encryptedEnvelopes: [],
-                  casNodes: incomingCas,
-                  retentions: [],
-                  checkpoints: (synced.checkpoints ?? []).map(r => decodeRecord(authorityRecordBytes(r, 256 * 1024))),
-                });
-              }
-            }
-          }
-          await maybeHydrateFromSnapshot();
-          await syncMailbox();
-          maybeUploadSnapshot();
-          const directory = await adapter.discovery.read({ signal: runSignal });
-          lastDirectory = directory;
-          for (const peer of directory) if (session.isReader(peer.identity)) void connect(peer);
-          if (error?.startsWith('discovery:')) error = null;
+            })(),
+            want.has('directory') ? readDirectory(runSignal) : undefined,
+          ]);
         } catch (cause) { if (!runSignal.aborted) { error = `discovery:${failureCode(cause, 'discovery_unavailable')}`; scheduleRetry(); } }
         changed();
       }
-    })().finally(() => { refreshing = undefined; });
+    })().finally(() => { refreshing = undefined; evaluateNotification(); });
     return refreshing;
   }
 
@@ -495,7 +539,8 @@ export function participateApplication(session, {
         void advertise();
       }
       try { onNotification?.(notification); } catch {}
-      void refresh();
+      deferredNotification = notification;
+      evaluateNotification();
     });
     const invitations = observe('invitations', runSignal, async invitation => {
       if (session.isReader(invitation.peer.identity)) void connect(invitation.peer, invitation.token);
@@ -556,10 +601,14 @@ export function participateApplication(session, {
   let annotated = false;
   try { Object.defineProperty(session, 'diagnostics', { value: diagnostics, configurable: true, writable: true }); annotated = true; } catch {}
 
+  let hydrating = null;
   const stopAuthority = session.onChange(() => {
     opsSinceGc += 1;
     if (opsSinceGc >= 200) void maybeCollectGarbage();
     if (!networkActive) return;
+    // A newly admitted device receives its epoch key through a control change, not
+    // a host scope this controller re-reads; try the snapshot bootstrap then.
+    if (!snapshotChecked && !hydrating) hydrating = maybeHydrateFromSnapshot().finally(() => { hydrating = null; });
     void advertise();
     for (const peer of lastDirectory) if (session.isReader(peer.identity)) void connect(peer);
   });

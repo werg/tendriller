@@ -357,7 +357,7 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
   }
   if (stored > 0) {
     notifyMcpSyncWatchers(t);
-    notifyDiscoveryWatchers(t);
+    notifyDiscoveryWatchers(t, 'm');
   }
 
   const missing: Array<{ digest: string; envelopeBase64: string }> = [];
@@ -531,7 +531,7 @@ async function withHostedSession<T>(
     } catch { /* Best-effort encrypted export */ }
     if (addedEnvelopes > 0) {
       notifyMcpSyncWatchers(t);
-      notifyDiscoveryWatchers(t);
+      notifyDiscoveryWatchers(t, 'm');
     }
     try { await session.close(); } catch { /* ignore */ }
     epochKeys.clear();

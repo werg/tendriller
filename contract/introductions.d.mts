@@ -21,6 +21,7 @@ export declare function createPeerIntroductions<Connection extends { close(): vo
     /** Required session invalidations: ready triggers advertise + read; changed triggers only read. */
     notifications(options: { readonly signal: AbortSignal }): AsyncIterable<PeerDiscoveryNotification>;
     read(options: { readonly signal: AbortSignal }): Promise<readonly { readonly identity: string; readonly route: PeerRoute }[]>;
+    readDirectory(options: { readonly signal: AbortSignal }): Promise<{ readonly revision: string | null; readonly peers: readonly { readonly identity: string; readonly route: PeerRoute }[] }>;
     /** Only routing identity and storage ownership are published; session evidence stays within Chronolog. */
     advertise(value: { readonly identity: string; readonly storageId: string }, options: { readonly signal: AbortSignal }): Promise<void>;
     withdraw(options: { readonly signal: AbortSignal }): Promise<void>;

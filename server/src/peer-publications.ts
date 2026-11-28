@@ -221,7 +221,7 @@ export async function exchangePeerPublication(
           receipt = { opId: parsed.opId, revision: 0, version, release, finalized: false };
           t.db.set(`v2_pub_receipt:${parsed.opId}`, receipt);
           t.db.set('v2_bootstrap_pub_receipt', receipt);
-          notifyDiscoveryWatchers(t);
+          notifyDiscoveryWatchers(t, 'c');
         },
       });
       if (receipt === null) throw new HttpError(500, 'peer_publication_receipt_missing');
@@ -278,7 +278,7 @@ export async function exchangePeerPublication(
         // Reconcile `current` according to finality policy (if finality is active and this release is not yet finalized,
         // `current` stays on the last finalized version rather than advancing provisionally!).
         reconcileHostEffects(t, nextState);
-        notifyDiscoveryWatchers(t);
+        notifyDiscoveryWatchers(t, 'c');
       },
     });
     if (receipt === null) throw new HttpError(500, 'peer_publication_receipt_missing');

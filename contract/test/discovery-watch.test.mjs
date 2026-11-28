@@ -240,3 +240,35 @@ test('regaining the network reconnects at once instead of waiting out the offlin
   network.dispatchEvent(new Event('online'));
   assert.equal(sockets.length, 4, 'a closed watch ignores later online events');
 });
+
+test('revision vectors validate strictly and the tracker reports only scopes changed since their last read', async () => {
+  const { createHostRevisionTracker } = await import('../discovery-watch.mjs');
+  const rev = 'a1b2c3d4e5f6.4.2.9.1';
+  assert.deepEqual(validatePeerDiscoveryNotification({ type: 'changed', rev }), { type: 'changed', rev });
+  for (const bad of ['a1b2c3d4e5f6.4.2.9', 'A1B2C3D4E5F6.1.1.1.1', 'a1b2c3d4e5f6.01.1.1.1', 7])
+    assert.throws(() => validatePeerDiscoveryNotification({ type: 'changed', rev: bad }), { code: 'invalid_discovery_notification' });
+  const tracker = createHostRevisionTracker();
+  // Nothing read yet, or no vector at all: everything is stale.
+  assert.deepEqual(tracker.stale({ type: 'ready', rev }), ['control', 'admissions', 'directory', 'mailbox']);
+  tracker.observe('control', 'a1b2c3d4e5f6.4'); tracker.observe('admissions', 'a1b2c3d4e5f6.1');
+  tracker.observe('directory', 'a1b2c3d4e5f6.9'); tracker.observe('mailbox', 'a1b2c3d4e5f6.1');
+  assert.deepEqual(tracker.stale({ type: 'changed', rev }), ['admissions']);
+  assert.deepEqual(tracker.stale({ type: 'changed', rev }, ['control', 'directory']), []);
+  assert.deepEqual(tracker.stale({ type: 'changed' }, ['control']), ['control']);
+  // An older response never rolls a scope back; another host instance resets every scope.
+  tracker.observe('admissions', 'a1b2c3d4e5f6.2'); tracker.observe('admissions', 'a1b2c3d4e5f6.0');
+  assert.deepEqual(tracker.stale({ type: 'changed', rev }), []);
+  assert.deepEqual(tracker.stale({ type: 'ready', rev: '0123456789ab.0.0.0.0' }), ['control', 'admissions', 'directory', 'mailbox']);
+});
+
+test('changed frames queued behind a busy consumer collapse to the newest vector', async t => {
+  let socket;
+  const watcher = createPeerDiscoveryWatcher(() => (socket = new Socket()), { network: null });
+  t.after(() => watcher.close());
+  await flush();
+  socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'ready', rev: 'a1b2c3d4e5f6.0.0.0.0' }) }));
+  for (const n of [1, 2, 3]) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'changed', rev: `a1b2c3d4e5f6.${n}.0.0.0` }) }));
+  const iterator = watcher.notifications[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).value.type, 'ready');
+  assert.deepEqual((await iterator.next()).value, { type: 'changed', rev: 'a1b2c3d4e5f6.3.0.0.0' });
+});

@@ -40,9 +40,10 @@ export function validatePeerAdvertisementPresence(value) {
   return Object.freeze({ advertisement: validatePeerAdvertisement(value.advertisement) });
 }
 export function validatePeerDirectory(value) {
-  if (!exact(value, ['applicationId', 'peers']) || !identifier(value.applicationId) || !Array.isArray(value.peers) ||
-      value.peers.length > PEER_DIRECTORY_LIMITS.peers) invalid('Invalid peer directory');
+  const withRevision = value && typeof value === 'object' && Object.hasOwn(value, 'revision');
+  if (!exact(value, withRevision ? ['applicationId', 'peers', 'revision'] : ['applicationId', 'peers']) || !identifier(value.applicationId) || !Array.isArray(value.peers) ||
+      value.peers.length > PEER_DIRECTORY_LIMITS.peers || withRevision && (typeof value.revision !== 'string' || !/^[0-9a-f]{12}\.(?:0|[1-9][0-9]{0,9})$/.test(value.revision))) invalid('Invalid peer directory');
   const peers = value.peers.map(validatePeerAdvertisementPresence);
   if (new Set(peers.map(peer => peer.advertisement.peerId)).size !== peers.length) invalid('Duplicate directory peer');
-  return Object.freeze({ applicationId: value.applicationId, peers: Object.freeze(peers) });
+  return Object.freeze({ applicationId: value.applicationId, peers: Object.freeze(peers), ...(withRevision ? { revision: value.revision } : {}) });
 }
