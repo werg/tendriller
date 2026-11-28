@@ -26,6 +26,8 @@ const USAGE = `Usage: npm run bench -- [options]
   --throttle          4x CPU (CDP, page main thread) + 150 ms RTT injected at the host
   --cpu N             CPU slowdown factor (overrides --throttle's 4)
   --latency MS        injected RTT in ms (overrides --throttle's 150)
+  --root DIR          checkout whose built dist/ + server/public are measured (default this repo;
+                      e.g. a clean git worktree built with npm run build)
   --port N            loopback HTTPS port (default 8795)
   --out FILE          result JSON (default test-results/bench/<timestamp>.json)
   --headed            show the browser
@@ -34,7 +36,7 @@ const { values } = parseArgs({ options: {
   runs: { type: 'string', default: '5' }, ops: { type: 'string', default: '10' }, scenarios: { type: 'string', default: ALL.join(',') },
   items: { type: 'string', default: '200' }, 'small-items': { type: 'string', default: '10' },
   throttle: { type: 'boolean' }, cpu: { type: 'string' }, latency: { type: 'string' },
-  port: { type: 'string', default: '8795' }, out: { type: 'string' }, headed: { type: 'boolean' }, keep: { type: 'boolean' },
+  port: { type: 'string', default: '8795' }, root: { type: 'string' }, out: { type: 'string' }, headed: { type: 'boolean' }, keep: { type: 'boolean' },
   help: { type: 'boolean' },
 } });
 if (values.help) { console.log(USAGE); process.exit(0); }
@@ -46,17 +48,18 @@ const throttle = { cpu: values.cpu ? Number(values.cpu) : values.throttle ? 4 : 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outPath = resolve(values.out ?? join(root, 'test-results/bench', `${stamp}${throttle.cpu > 1 || throttle.latencyMs ? '-throttled' : ''}.json`));
 
+const measured = resolve(values.root ?? root);
 const dispatcher = createLocalDispatcher();
 setGlobalDispatcher(dispatcher);
 const log = message => console.log(`[${new Date().toISOString().slice(11, 23)}] ${message}`);
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 
-const build = await buildIdentity(root);
-const git = async args => (await execute('git', args, { cwd: root })).stdout.trim();
+const build = await buildIdentity(measured);
+const git = async args => (await execute('git', args, { cwd: measured })).stdout.trim();
 const result = {
   format: 'tendriller-bench-v1', startedAt: new Date().toISOString(),
   options: { runs, ops, items, smallItems, scenarios, throttle, port },
-  environment: { node: process.version, platform: `${process.platform}-${process.arch}`, gitHead: await git(['rev-parse', 'HEAD']),
+  environment: { measuredRoot: measured, node: process.version, platform: `${process.platform}-${process.arch}`, gitHead: await git(['rev-parse', 'HEAD']),
     gitDirtyFiles: (await git(['status', '--porcelain'])).split('\n').filter(Boolean).length, build },
   setup: {}, scenarios: {}, server: {},
 };
@@ -67,7 +70,7 @@ let world, browser, agent;
 const profiles = [];
 try {
   const setupStarted = Date.now();
-  world = await prepareWorld({ root, directory, port, pages: ['small', 'large'], log });
+  world = await prepareWorld({ root: measured, directory, port, pages: ['small', 'large'], log });
   result.setup.worldMs = Date.now() - setupStarted;
   result.setup.pages = world.pages;
   result.setup.chronolog = world.chronolog;
@@ -157,7 +160,7 @@ try {
     const seen = await warm.page.evaluate(() => document.querySelectorAll('#notes li').length);
     for (let index = 0; index < ops; index++) {
       const text = `${name} ${index} ${randomUUID()}`;
-      const remote = warm.page.evaluate(text => window.__bench.waitForText(text), text);
+      const remote = warm.page.evaluate(text => window.__bench.waitForText(text), text).catch(() => null);
       const sample = await author(text, index);
       const remoteAt = await Promise.race([remote, sleep(60_000).then(() => null)]);
       samples.push({ ...sample, remoteMs: remoteAt === null ? null : remoteAt - sample.t0 });
@@ -172,11 +175,14 @@ try {
     const seq = await hostLog.seq();
     const a = ownerTabs.small;
     const outcome = await converge('converge', async text => {
-      const local = a.evaluate(text => window.__bench.waitForText(text), text);
+      const local = a.evaluate(text => window.__bench.waitForText(text), text).catch(() => null);
       const t0 = await a.evaluate(text => {
+        // "New note" first so every operation adds a note rather than editing the last one.
+        document.querySelector('#new').click();
         const t0 = Date.now(); document.querySelector('#note').value = text; document.querySelector('#form').requestSubmit(); return t0;
       }, text);
-      return { t0, localMs: (await local) - t0 };
+      const localAt = await local;
+      return { t0, localMs: localAt === null ? null : localAt - t0 };
     });
     result.scenarios.converge = { ...outcome, summary: { localMs: summarize(outcome.samples.map(s => s.localMs)), remoteMs: summarize(outcome.samples.map(s => s.remoteMs)) },
       transport: { before: transportBefore, after: await hostLog.transport() }, hostRoutes: aggregateRoutes(await hostLog.since(seq)) };
@@ -208,26 +214,24 @@ try {
       const { stdout } = await execute(process.execPath, ['--import', world.preload, world.cli, ...args], { cwd: world.app, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
       return { ms: Date.now() - begun, value: JSON.parse(stdout) };
     };
-    // First attach-CLI round trip to the running agent program.
-    const queryStarted = Date.now();
-    let synced = null;
-    for (let attempt = 0; attempt < 120 && !synced; attempt++) {
-      const reply = await cli(['--page', 'small', 'status']).catch(error => ({ error: error.message }));
-      if (reply.value) synced = reply; else await sleep(500);
+    // First attach-CLI round trip to the running agent program (retried until it answers).
+    const statusStarted = Date.now();
+    for (let attempt = 0; ; attempt++) {
+      try { await cli(['--page', 'small', 'status']); break; }
+      catch (error) { if (attempt >= 60) throw error; await sleep(500); }
     }
-    const statusMs = Date.now() - queryStarted;
+    const firstStatusMs = Date.now() - statusStarted;
     const seq = await hostLog.seq();
-    const samples = [];
-    for (let index = 0; index < ops; index++) {
-      const text = `agent ${index} ${randomUUID()}`;
-      const remote = warm.page.evaluate(text => window.__bench.waitForText(text), text);
+    // The agent authors through the attach CLI; the warm browser profile observes.
+    const outcome = await converge('agent', async text => {
       const t0 = Date.now();
-      const reply = await cli(['--page', 'small', 'command', 'putNote', JSON.stringify({ noteId: randomUUID(), text }), '--operation', randomUUID(), '--wait', 'materialized']);
-      const remoteAt = await Promise.race([remote, sleep(60_000).then(() => null)]);
-      samples.push({ t0, cliMs: reply.ms, remoteMs: remoteAt === null ? null : remoteAt - t0, afterCliMs: remoteAt === null ? null : remoteAt - (t0 + reply.ms) });
-      await sleep(250);
-    }
-    result.scenarios.agent = { hubMs, admittedMs, firstStatusMs: statusMs, samples,
+      const reply = await cli(['--page', 'small', 'command', 'putNote', JSON.stringify({ noteId: randomUUID(), text }),
+        '--operation', randomUUID(), '--wait', 'materialized']);
+      return { t0, cliMs: reply.ms };
+    });
+    for (const sample of outcome.samples) sample.afterCliMs = sample.remoteMs === null ? null : sample.remoteMs - sample.cliMs;
+    const { samples } = outcome;
+    result.scenarios.agent = { hubMs, admittedMs, firstStatusMs, ...outcome,
       summary: { cliMs: summarize(samples.map(s => s.cliMs)), remoteMs: summarize(samples.map(s => s.remoteMs)), afterCliMs: summarize(samples.map(s => s.afterCliMs)) },
       hostRoutes: aggregateRoutes(await hostLog.since(seq)) };
     log(`bench: agent -> browser median ${result.scenarios.agent.summary.remoteMs.median} ms (CLI ${result.scenarios.agent.summary.cliMs.median} ms)`);
@@ -236,6 +240,10 @@ try {
   result.server.scenarios = aggregateRoutes(await hostLog.since(scenarioSeq));
   result.server.setupRequests = setupSeq;
   result.finishedAt = new Date().toISOString();
+  // The engine is snapshotted at setup, but server/public assets are served live from --root.
+  const buildAtEnd = await buildIdentity(measured);
+  result.environment.buildChangedDuringRun = buildAtEnd.engineSha256 !== build.engineSha256 || buildAtEnd.workerBuiltAt !== build.workerBuiltAt;
+  if (result.environment.buildChangedDuringRun) log('bench: WARNING the measured checkout was rebuilt during the run; use --root with a private build for stable numbers');
   await mkdir(resolve(outPath, '..'), { recursive: true });
   await writeFile(outPath, JSON.stringify(result, null, 2) + '\n');
   printReport(result);
@@ -264,8 +272,11 @@ function printReport(result) {
   console.log('\n' + table(rows, ['scenario', 'metric', 'n', 'median', 'p90', 'min', 'max']));
   for (const name of ['cold', 'warm']) {
     const scenario = result.scenarios[name]; if (!scenario) continue;
-    console.log(`\n${name} critical path (run ${scenario.representative.run}, ms since navigation start):`);
-    console.log(table(scenario.representative.waterfall.rows.slice(0, 40).map(row => ({ start: row.start, dur: row.duration, ttfb: row.ttfb,
+    const run = scenario.runs[scenario.representative.run];
+    console.log(`\n${name} waterfall (run ${scenario.representative.run}, ms since navigation start; * = worker request):`);
+    console.log('milestones: ' + Object.entries(run.marks).sort((a, b) => a[1] - b[1]).map(([key, value]) => `${key} ${Math.round(value)}`).join(' | '));
+    console.log('idle gaps >= 20 ms: ' + scenario.representative.waterfall.gaps.map(gap => `${Math.round(gap.from)}-${Math.round(gap.to)}`).join(', '));
+    console.log(table(scenario.representative.waterfall.rows.slice(0, 120).map(row => ({ start: row.start, dur: row.duration, ttfb: row.ttfb,
       type: row.type + (row.worker ? '*' : ''), status: row.status, bytes: row.bytes, cached: row.cached ? 'y' : '', url: row.url.slice(0, 80) })),
       ['start', 'dur', 'ttfb', 'type', 'status', 'bytes', 'cached', 'url']));
   }

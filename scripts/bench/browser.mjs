@@ -137,7 +137,7 @@ export async function measureLoad({ profile, page, url, reload = false, until = 
   metrics.requestBytes = contextRequests.reduce((sum, request) => sum + (request.bytes || 0), 0);
   const hostItems = hostLog ? (await hostLog.since(hostSeq)).filter(item => item.t <= cutoffWall + 5) : [];
   if (hostLog) { metrics.hostRequests = hostItems.length; metrics.hostWebSockets = hostItems.filter(item => item.ws).length; }
-  const waterfall = buildWaterfall({ navigation, contextRequests, resources: pageResources, timeOrigin });
+  const waterfall = buildWaterfall({ navigation, contextRequests, resources: pageResources, timeOrigin, doneAt });
   metrics.idleGapMs = waterfall.idleGapMs;
   return { metrics, marks, timedOut, notes: snapshot.notes, perf: snapshot.perf, waterfall, hostItems, timeOrigin };
 }
@@ -152,10 +152,15 @@ const shortUrl = url => {
 };
 
 /** Requests ordered by start (ms since timeOrigin), with in-flight gaps. */
-export function buildWaterfall({ navigation, contextRequests, resources, timeOrigin }) {
-  const cache = new Map(resources.map(entry => [entry.name, entry]));
+export function buildWaterfall({ navigation, contextRequests, resources, timeOrigin, doneAt = null }) {
+  // Match each request to the page Resource Timing entry for the same URL that started closest to it
+  // (worker requests have no page entry).
+  const byName = new Map();
+  for (const entry of resources) { let list = byName.get(entry.name); if (!list) byName.set(entry.name, list = []); list.push(entry); }
   const rows = contextRequests.map(request => {
-    const entry = cache.get(request.url);
+    const candidates = request.frame ? byName.get(request.url) ?? [] : [];
+    let entry = candidates.reduce((best, entry) => !best || Math.abs(entry.startTime - request.start) < Math.abs(best.startTime - request.start) ? entry : best, null);
+    if (entry && Math.abs(entry.startTime - request.start) > 50) entry = null;
     const duration = request.end >= 0 ? request.end : null;
     return { start: round(request.start), duration: duration === null ? null : round(duration),
       ttfb: request.ttfb >= 0 ? round(request.ttfb) : null, type: request.type, worker: !request.frame,
@@ -170,6 +175,10 @@ export function buildWaterfall({ navigation, contextRequests, resources, timeOri
   for (const row of rows) {
     if (row.start > busyUntil + 1) { const gap = row.start - busyUntil; idleGapMs += gap; if (gap >= 20) gaps.push({ from: round(busyUntil), to: row.start, ms: round(gap) }); }
     busyUntil = Math.max(busyUntil, row.start + (row.duration ?? 0));
+  }
+  // Tail: nothing in flight between the last response and the milestone.
+  if (doneAt !== null && doneAt > busyUntil + 1) {
+    const gap = doneAt - busyUntil; idleGapMs += gap; if (gap >= 20) gaps.push({ from: round(busyUntil), to: round(doneAt), ms: round(gap), tail: true });
   }
   return { rows, gaps, idleGapMs: round(idleGapMs), timeOrigin };
 }

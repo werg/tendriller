@@ -744,3 +744,28 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
     expect(cp.payload.inclusions.some(inc => inc.opId === opId)).toBe(true);
   });
 });
+
+describe('stored control operation decoding', () => {
+  it('decodes verified rows without another signature check and rejects a row under a different identity', async () => {
+    const { storedKernelOp } = await import('../src/authority');
+    const { verifySignedOperation } = await import('@chronolog/peer-session/kernel');
+    const identity = await createSigningIdentity();
+    const signed = await signOperationCore({
+      version: 1, logId: new Uint8Array(32), author: hexToBytes(identity.publicKey), operationId: 'stored-decode',
+      authorTimestampMs: 1n, nonce: new Uint8Array(16), visibility: 'public',
+      updates: [{ topic: '$permissions', input: { action: 'noop' } }],
+    }, identity.privateKey);
+    const raw = encodeSignedOperation(signed);
+    const verified = await verifySignedOperation(signed);
+    const subtle = crypto.subtle, original = subtle.verify;
+    let verifications = 0;
+    subtle.verify = (...args: Parameters<SubtleCrypto['verify']>) => { verifications++; return original.apply(subtle, args); };
+    try {
+      const op = storedKernelOp({ op_id: bytesToHex(verified.opId), raw });
+      expect(bytesToHex(op.opId)).toBe(bytesToHex(verified.opId));
+      expect(op.core.operationId).toBe('stored-decode');
+      expect(verifications).toBe(0);
+      expect(() => storedKernelOp({ op_id: 'f'.repeat(64), raw })).toThrow(/does not match/);
+    } finally { subtle.verify = original; }
+  });
+});

@@ -42,3 +42,12 @@ export function withServerTiming(res: Response, timing: ServerTiming): Response 
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   }
 }
+
+const byRequest = new WeakMap<Request, ServerTiming>();
+
+/** The metrics of one Durable Object request, shared by its nested handlers. */
+export function requestTiming(req: Request): ServerTiming {
+  let timing = byRequest.get(req);
+  if (!timing) byRequest.set(req, timing = new ServerTiming());
+  return timing;
+}

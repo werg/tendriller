@@ -150,3 +150,54 @@ it('pins SCHEMA content to STORAGE_SCHEMA_REVISION so table changes cannot ship 
     schemaSha256: '5e897f43d6db3b2882b32d46d3f3198920b851278378220299a317a97827d1c7',
   });
 });
+
+it('discards only the cached reads a write can affect and keeps metadata per key', async () => {
+  await isolatedDatabase(storage => {
+    const db = new Db(storage);
+    db.init();
+    let reads = 0;
+    const control = () => db.cached('control', () => ++reads, ['v2_public_ops', 'meta:v2_genesis']);
+    const legacy = () => db.cached('legacy', () => ++reads);
+    expect(control()).toBe(1);
+    expect(legacy()).toBe(2);
+    db.set('name', 'Before');
+    expect(db.get('name', '')).toBe('Before');
+    // Page traffic: access timestamps, subscribers and activity keep the control memo.
+    db.set('last_access', 1);
+    db.run("INSERT INTO hub_subscribers(key,kind,agent_id,conn_id,stream_id,state,created_at) VALUES('k','peer','a','c',1,'{}',1)");
+    db.run("INSERT INTO activity(ts,kind,summary,source) VALUES(1,'version','v','server')");
+    expect(control()).toBe(1);
+    expect(db.get('name', '')).toBe('Before');
+    // An undeclared read is still discarded by any write.
+    expect(legacy()).toBe(3);
+    // A dependency write or the named metadata key discards it.
+    db.run("INSERT INTO v2_public_ops(op_id,author,author_ts,raw) VALUES('o','a',1,x'00')");
+    expect(control()).toBe(4);
+    db.set('v2_genesis', { record: 'x' });
+    expect(control()).toBe(5);
+    // A raw metadata statement may touch any key.
+    db.run("UPDATE meta SET v='\"After\"' WHERE k='name'");
+    expect(db.get('name', '')).toBe('After');
+    expect(control()).toBe(6);
+    // DDL or unparsed statements discard everything.
+    db.run('CREATE TABLE IF NOT EXISTS scratch (x INTEGER)');
+    expect(control()).toBe(7);
+  });
+});
+
+it('preloads hot metadata with one statement and reports absent keys as defaults', async () => {
+  await isolatedDatabase(storage => {
+    const db = new Db(storage);
+    db.init();
+    db.set('owner_account', 'acct');
+    const statements: string[] = [];
+    const counted = { transactionSync: storage.transactionSync.bind(storage), sql: { exec: (query: string, ...args: unknown[]) => { statements.push(query); return storage.sql.exec(query, ...args as []); } } } as unknown as DurableObjectStorage;
+    const reopened = new Db(counted);
+    reopened.init();
+    statements.length = 0;
+    expect(reopened.get('owner_account', null)).toBe('acct');
+    expect(reopened.get('disabled', false)).toBe(false);
+    expect(reopened.get('current', 0)).toBe(0);
+    expect(statements).toEqual([]);
+  });
+});

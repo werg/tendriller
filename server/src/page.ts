@@ -29,6 +29,7 @@ import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons, resolveShortcuts } from ".
 import { deletePushSubscription, savePushSubscription, validatePushSubscriptionInput, vapidConfig } from "./push";
 import { listActiveBroadcasts } from "./broadcasts";
 import { etagMatches } from "./immutable-cache";
+import { requestTiming } from "./server-timing";
 
 /** Internal admission result; the Worker consumes it before returning a page response. */
 export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
@@ -83,7 +84,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (!rest.startsWith("_tendril/")) {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method_not_allowed");
-    return servePageFile(t, req, base, rest, principal.role, session?.account_id ?? null, link.id);
+    return servePageFile(t, req, base, rest, principal.role, session?.account_id ?? null, link.id, requestTiming(req));
   }
 
   const sub = rest.slice("_tendril/".length);

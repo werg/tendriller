@@ -22,6 +22,7 @@ import { handleAgent } from './agent';
 import { Db } from './db';
 import { DeadlineAlarm } from './alarm';
 import { admitPageTraffic } from './traffic-budget';
+import { requestTiming, withServerTiming } from './server-timing';
 import { Transactions, type CommitEffect } from './transactions';
 import { createVersion, deleteUnreferencedContent, servedVersion, storeContent, versionFiles, type VersionFile } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
@@ -131,6 +132,14 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async fetch(req: Request): Promise<Response> {
+    const timing = requestTiming(req);
+    const started = Date.now();
+    const res = await this.handle(req);
+    timing.add("object", Date.now() - started);
+    return withServerTiming(res, timing);
+  }
+
+  private async handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const kind = url.pathname.split("/")[1];
     try {

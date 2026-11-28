@@ -16,6 +16,7 @@ import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
 import { createPremiumGrant } from '../src/billing/premium-grants';
 import { currentUsagePeriod } from '../src/billing/plans';
 import { create, inDO, ownerHeaders } from './helpers';
+import { clearIsolateCaches } from '../src/isolate-cache';
 
 const ISSUER = 'https://tendriller.dev', RESOURCE = ISSUER + '/mcp';
 const REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
@@ -248,13 +249,14 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(build.text).toContain('npm run page:new');
   expect(build.text).toContain(origin + '/downloads/tendriller-first-app.tgz');
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
+  clearIsolateCaches();
   try {
     const paused = await readGuide({ topic: 'build' });
     expect(paused.readiness).toMatchObject({ mode: 'creation_paused', creation: { available: false }, writes: { available: true } });
     expect(paused.text).toMatch(/^New application setup is blocked:/);
     expect(paused.text.indexOf('Stop new-app setup before downloading')).toBeLessThan(paused.text.indexOf('npm install'));
     expect(paused.text).not.toContain('https://tendriller.dev');
-  } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
+  } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); clearIsolateCaches(); }
   for (const topic of ['capabilities', 'connect', 'delivery', 'conversation', 'troubleshooting']) {
     const guide = await readGuide({ topic });
     expect(guide.url).toBe(origin + '/docs/' + ({ capabilities: 'CAPABILITIES', connect: 'CLOUDFLARE_ASSISTANT', delivery: 'AGENT_DELIVERY', conversation: 'CONVERSATION_DELIVERY', troubleshooting: 'TROUBLESHOOTING' } as Record<string, string>)[topic] + '.md');

@@ -5,6 +5,13 @@ import type { Env } from '../src/env';
 import { route } from '../src/router';
 import { createAgent, testPublicKey, testWrapKey } from './helpers';
 import { BASE } from './helpers';
+import { clearIsolateCaches } from '../src/isolate-cache';
+
+/** Operator mode is cached for 5 seconds per isolate; an operator flip in D1 is observed after that window. */
+const setMode = async (mode: string) => {
+  await env.ACCOUNTS.prepare('UPDATE service_state SET mode=? WHERE id=1').bind(mode).run();
+  clearIsolateCaches();
+};
 
 const read = (settings: Env = env, method = 'GET') => route(new Request(new URL('/api/readiness', settings.PUBLIC_BASE), { method }), settings);
 const counts = () => env.ACCOUNTS.prepare('SELECT (SELECT COUNT(*) FROM accounts) AS accounts, (SELECT COUNT(*) FROM tendrils) AS pages').first();
@@ -15,7 +22,7 @@ it.each([
   { mode: 'read_only', creation: false, writes: false, creationCode: 'creation_paused', writeCode: 'read_only' },
 ])('reports $mode before installation without reserving a page or claiming authorization', async (state) => {
   const before = await counts();
-  await env.ACCOUNTS.prepare('UPDATE service_state SET mode=? WHERE id=1').bind(state.mode).run();
+  await setMode(state.mode);
   try {
     const response = await read();
     expect(response.status).toBe(200);
@@ -40,7 +47,7 @@ it.each([
     expect(await head.text()).toBe('');
     expect((await read(env, 'POST')).status).toBe(405);
     expect(await counts()).toEqual(before);
-  } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
+  } finally { await setMode('open'); }
 });
 
 it('fails closed when readiness cannot be read and does not expose internal errors', async () => {
@@ -82,7 +89,7 @@ it.each([
 it('rechecks service state at creation after a previously successful preflight', async () => {
   expect((await (await read()).json() as any).creation.available).toBe(true);
   const agent = await createAgent('readiness-owner@example.com');
-  await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
+  await setMode('creation_paused');
   try {
     for (const [path, body, headers] of [
       ['/api/agents', { owner: 'readiness-test@example.com', handle: 'readiness', publicKey: testPublicKey(), wrapKey: testWrapKey() }, {}],
@@ -95,5 +102,5 @@ it('rechecks service state at creation after a previously successful preflight',
       expect(response.status).toBe(503);
       expect(await response.json()).toMatchObject({ error: { code: 'creation_paused' } });
     }
-  } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
+  } finally { await setMode('open'); }
 });

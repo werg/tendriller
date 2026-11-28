@@ -10,6 +10,7 @@ import type { Env } from "./env";
 import { HttpError, isPlainObject, json, readJson } from "./http";
 import type { Tendril } from "./tendril";
 import { publicBase } from "./urls";
+import { TtlCache } from "./isolate-cache";
 
 const DEFAULT_REALTIME_BASE = "https://rtc.live.cloudflare.com/v1";
 const DEFAULT_STUN_SERVER = Object.freeze({ urls: "stun:stun.cloudflare.com:3478" });
@@ -84,6 +85,26 @@ async function mintTurnIceServers(env: Env, ttlSeconds = 3600): Promise<Array<Re
   return [];
 }
 
+/**
+ * Minted TURN credentials live 3600 seconds. One page reuses them for at most
+ * 20 minutes, so every handed-out set stays valid for at least 40 minutes, and
+ * the upstream mint runs at most three times an hour per page and isolate
+ * instead of once per peer connection. Entitlement checks still run on every
+ * request; this only avoids repeating the upstream call.
+ */
+const TURN_TTL_SECONDS = 3600;
+const TURN_REUSE_MS = 20 * 60_000;
+const turnCredentials = new TtlCache<Array<Record<string, unknown>> | null>(TURN_REUSE_MS, 0, 512);
+
+async function pageTurnIceServers(env: Env, pageId: string): Promise<Array<Record<string, unknown>>> {
+  const servers = await turnCredentials.get(`${env.CF_TURN_KEY_ID}|${pageId}`, async () => {
+    const minted = await mintTurnIceServers(env, TURN_TTL_SECONDS);
+    // An empty answer is not remembered, so the next request retries upstream.
+    return minted.length ? minted : null;
+  });
+  return servers ? structuredClone(servers) : [];
+}
+
 async function sfuFetch<T>(env: Env, method: string, path: string, body?: unknown): Promise<T> {
   if (!sfuConfigured(env)) {
     throw new HttpError(503, "sfu_unconfigured", "Cloudflare Realtime SFU is not configured on this host.");
@@ -127,7 +148,7 @@ export async function handleRealtimeIce(t: Tendril, req: Request, principal: Pri
   let turnEnabled = false;
   if (hasTurn) {
     try {
-      const minted = await mintTurnIceServers(t.env, 3600);
+      const minted = await pageTurnIceServers(t.env, t.tid);
       if (minted.length) {
         iceServers = [{ ...DEFAULT_STUN_SERVER }, ...minted];
         turnEnabled = true;

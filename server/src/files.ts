@@ -15,7 +15,8 @@ import { assetResponse, etagMatches, immutableObject } from "./immutable-cache";
 import { brandMark } from "./brand";
 import { icon, renderShell } from "./accounts/ui";
 import { broadcastSummary, publicBroadcastKeys, recordPageVersion } from "./broadcasts";
-import { getAccountEntitlements } from "./billing/entitlements";
+import { cachedAccountEntitlements } from "./billing/entitlements";
+import type { ServerTiming } from "./server-timing";
 import { DEFAULT_VERSION_RETENTION } from "./billing/plans";
 
 function scanContent(body: ArrayBuffer): number {
@@ -132,7 +133,7 @@ export async function storeContent(
     : await (() => {
         const owner = t.db.get<string | null>("owner_account", null);
         return owner
-          ? getAccountEntitlements(t.env, owner, t.now()).then(e => e.quotas.pageStorageBytes, () => undefined)
+          ? cachedAccountEntitlements(t.env, owner).then(e => e.quotas.pageStorageBytes, () => undefined)
           : Promise.resolve(undefined);
       })();
   const resolvedPageLimit = pageLimit ?? undefined;
@@ -192,7 +193,37 @@ export function versionFiles(t: Tendril, version: number): VersionFile[] {
 }
 
 export function versionFile(t: Tendril, version: number, path: string): VersionFile | null {
-  return t.db.one<VersionFile>("SELECT path, hash, type, size FROM version_files WHERE version = ? AND path = ?", version, path);
+  return publicationIndex(t, version)?.files.get(path) ?? null;
+}
+
+interface PublicationIndex {
+  riskScore: number;
+  entry: string;
+  runtime: { id: string; version: string; features: PublicationManifest["runtime"]["features"] };
+  files: ReadonlyMap<string, VersionFile>;
+  assets: PublicationManifest["assets"];
+}
+
+/**
+ * One retained version's row and file map, read once per live object. Versions
+ * and their file lists are immutable once committed; pruning deletes rows, which
+ * discards this memo through its declared table dependencies.
+ */
+function publicationIndex(t: Tendril, version: number): PublicationIndex | null {
+  if (!(version > 0)) return null;
+  return t.db.cached(`files:publication:${version}`, () => {
+    const row = t.db.one<{ risk_score: number; entry: string; runtime_id: string; runtime_version: string; runtime_features: string }>(
+      "SELECT risk_score, entry, runtime_id, runtime_version, runtime_features FROM versions WHERE version = ?", version);
+    if (!row) return null;
+    const list = versionFiles(t, version);
+    return Object.freeze({
+      riskScore: row.risk_score ?? 0,
+      entry: row.entry ?? "index.html",
+      runtime: Object.freeze({ id: row.runtime_id, version: row.runtime_version, features: JSON.parse(row.runtime_features) }),
+      files: new Map(list.map(file => [file.path, Object.freeze(file)])),
+      assets: Object.freeze(list.map(file => Object.freeze({ path: file.path, sha256: file.hash, type: file.type, size: file.size }))) as PublicationManifest["assets"],
+    });
+  }, ["versions", "version_files"]);
 }
 
 /** Creates version latest+1 from a complete signed file map and selects it atomically. */
@@ -215,7 +246,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
   const owner = t.db.get<string | null>("owner_account", null);
   const [account, ent] = await Promise.all([
     owner ? t.env.ACCOUNTS.prepare("SELECT created_at FROM accounts WHERE id = ?").bind(owner).first<{ created_at: number }>() : Promise.resolve(null),
-    owner ? getAccountEntitlements(t.env, owner, t.now()).catch(() => null) : Promise.resolve(null),
+    owner ? cachedAccountEntitlements(t.env, owner).catch(() => null) : Promise.resolve(null),
   ]);
   const retentionCap = ent?.quotas.versionRetention ?? DEFAULT_VERSION_RETENTION;
   const shouldHold = riskScore >= 5 && !!account && account.created_at > t.now() - 7 * 24 * 60 * 60_000;
@@ -305,31 +336,44 @@ export function listVersions(t: Tendril) {
 
 /** The actual immutable URLs used by this publication, including its runtime. */
 export function publicationManifest(t: Tendril, version: number, base: string): PublicationManifest {
-  const release = version > 0
-    ? t.db.one<{ runtime_id: string; runtime_version: string; runtime_features: string }>("SELECT runtime_id,runtime_version,runtime_features FROM versions WHERE version=?", version)
-    : { runtime_id: runtimeRelease.id, runtime_version: runtimeRelease.version, runtime_features: JSON.stringify(runtimeRelease.features) };
-  if (!release) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
-  const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
-  return { id: String(version), base: version > 0 ? `${base}_publications/${version}/` : base, entry: defaultEntry,
-    assets: versionFiles(t, version).map(file => ({ path: file.path, sha256: file.hash, type: file.type, size: file.size })),
-    runtime: { id: release.runtime_id, version: release.runtime_version, features: JSON.parse(release.runtime_features), base: `/_tendril/runtime/${release.runtime_id}/` } };
+  if (version > 0) {
+    const index = publicationIndex(t, version);
+    if (!index) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
+    return { id: String(version), base: `${base}_publications/${version}/`, entry: index.entry, assets: index.assets as PublicationManifest["assets"],
+      runtime: { ...index.runtime, base: `/_tendril/runtime/${index.runtime.id}/` } };
+  }
+  return { id: "0", base, entry: "index.html", assets: [],
+    runtime: { id: runtimeRelease.id, version: runtimeRelease.version, features: runtimeRelease.features as PublicationManifest["runtime"]["features"], base: `/_tendril/runtime/${runtimeRelease.id}/` } };
+}
+
+/** Injected documents keyed by their complete input tag; bounded per live object. */
+const injectedHtml = new WeakMap<Tendril, Map<string, string>>();
+const MAX_INJECTED_DOCUMENTS = 8;
+const MAX_INJECTED_BYTES = 2 * 1024 * 1024;
+
+function rememberInjected(t: Tendril, tag: string, html: string): void {
+  if (html.length > MAX_INJECTED_BYTES) return;
+  let map = injectedHtml.get(t);
+  if (!map) injectedHtml.set(t, map = new Map());
+  if (!map.has(tag) && map.size >= MAX_INJECTED_DOCUMENTS) map.delete(map.keys().next().value!);
+  map.set(tag, html);
 }
 
 /** Serve exact published bytes and their pinned runtime. */
 export async function servePageFile(t: Tendril, req: Request, base: string, rest: string,
-  role: "owner" | "guest" | "display", accountId: string | null, linkId: string | null = null): Promise<Response> {
+  role: "owner" | "guest" | "display", accountId: string | null, linkId: string | null = null, timing?: ServerTiming): Promise<Response> {
   const application = selectedApplication(t);
   // A display link has no peer-introduction permission. Application capabilities
   // remain independently authenticated by Chronolog after connection setup.
-  const introductions = role !== "display" ? peerBootstrap(t) : undefined;
+  const introductions = () => role !== "display" ? peerBootstrap(t) : undefined;
   const pinned = /^_publications\/([1-9][0-9]*)\/(.*)$/.exec(rest);
   let version = pinned ? Number(pinned[1]) : servedVersion(t);
+  const index = Number.isSafeInteger(version) ? publicationIndex(t, version) : null;
   if (pinned) {
-    if (!Number.isSafeInteger(version) || !t.db.one("SELECT 1 AS x FROM versions WHERE version=?", version))
-      throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
+    if (!index) throw new HttpError(404, "publication_not_found", "The publication is no longer retained");
     rest = pinned[2];
   }
-  const risk = version > 0 ? t.db.one<{ risk_score: number }>("SELECT risk_score FROM versions WHERE version = ?", version)?.risk_score ?? 0 : 0;
+  const risk = index?.riskScore ?? 0;
   if (risk >= 5 && role !== "owner") {
     throw new HttpError(403, 'publication_restricted', 'This publication requires owner review');
   }
@@ -347,12 +391,12 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
 
-  const defaultEntry = version > 0 ? t.db.one<{ entry: string }>("SELECT entry FROM versions WHERE version=?", version)?.entry ?? "index.html" : "index.html";
+  const defaultEntry = index?.entry ?? "index.html";
   let path = rest === "" ? defaultEntry : rest;
-  let file = version > 0 ? versionFile(t, version, path) : null;
-  if (!file && version > 0 && (rest === "" || rest.endsWith("/"))) {
+  let file = index?.files.get(path) ?? null;
+  if (!file && index && (rest === "" || rest.endsWith("/"))) {
     path = (rest === "" ? "" : rest) + "index.html";
-    file = versionFile(t, version, path);
+    file = index.files.get(path) ?? null;
   }
   const headers = new Headers({ "Cache-Control": pinned ? "private, max-age=31536000, immutable" : "private, no-cache", "X-Tendril-Version": String(version), "X-Tendril-Publication": String(version), "X-Content-Type-Options": "nosniff" });
   const branding = () => ({ name: t.db.get("name", "Tendril"), shortName: t.db.get<string | null>("short_name", null),
@@ -365,7 +409,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null, viewerRole: role, ...(linkView ? { defaultView: linkView } : {}), branding: branding() });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions(), documentPath: null, features: t.features(), publication: null, viewerRole: role, ...(linkView ? { defaultView: linkView } : {}), branding: branding() });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -375,53 +419,68 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   if (!isHtmlType(file.type)) {
     headers.set("ETag", `"${file.hash}"`);
     if (etagMatches(req.headers.get("If-None-Match"), headers.get("ETag")!)) return new Response(null, { status: 304, headers });
+    // Admission, publication retention, risk review, and file membership have all
+    // been checked. Cache only verified source bytes.
+    const obj = await readStored(t, file, req, timing);
+    if (!obj) return new Response("File content missing", { status: 500 });
+    headers.set("Content-Length", String(file.size));
+    return assetResponse(req, new Response(obj.body, { headers }));
   }
-  // Admission, publication retention, risk review, and file membership have all
-  // been checked. Cache only verified source bytes; rendering and authority stay
-  // live on every request, including a cache hit.
-  const obj = await immutableObject(t.env, fileKey(t, file.hash), {
-    head: req.method === 'HEAD', sha256: file.hash, expectedBytes: file.size, context: t.ctx,
-  });
-  if (!obj) return new Response("File content missing", { status: 500 });
 
-  if (isHtmlType(file.type)) {
-    // The authored publication is immutable; its injected resident addresses are
-    // current host configuration. Reloading may refresh them without changing
-    // the publication or adding a discovery poll to a running application.
-    headers.set("Cache-Control", "private, no-cache");
-    const [broadcastKeys, bcSummary, appleIcon] = await Promise.all([
-      publicBroadcastKeys(t.env).then(r => r.keys).catch(() => []),
-      broadcastSummary(t.env).catch(() => ({ latestSeq: 0, activeCount: 0, criticalCount: 0 })),
-      appleTouchIcon(t, base, new URL(base, req.url).href, { background: true }).catch(() => null),
-    ]);
-    const pubManifest = publicationManifest(t, version, base);
-    const rasterIcon = rasterFavicon(t, base);
-    const brand = branding();
-    const rasterReq = iconRasterRequest(t, role);
-    const etagInput = `${file.hash}|${version}|${base}|${role}|${linkView ?? ""}|${pubManifest.runtime.id}|${bcSummary.latestSeq}|${brand.name}|${brand.icon ?? ""}|${brand.themeColor ?? ""}|${appleIcon?.href ?? ""}|${rasterIcon?.href ?? ""}|${rasterReq?.key ?? ""}|${JSON.stringify(introductions ?? null)}`;
-    const htmlTag = `W/"${(await sha256Hex(etagInput)).slice(0, 24)}"`;
-    headers.set("ETag", htmlTag);
-    const linkHints = [`<${pubManifest.runtime.base}tendril.js>; rel=preload; as=script`];
-    headers.set("Link", linkHints.join(", "));
-    if (etagMatches(req.headers.get("If-None-Match"), htmlTag)) {
-      return new Response(null, { status: 304, headers });
-    }
-    if (req.method === 'HEAD') return new Response(null, { headers });
-    const rawHtml = await obj.text();
-    const html = injectRuntime(rawHtml, { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: pubManifest,
-      broadcastKeys,
-      ...(bcSummary.activeCount > 0 ? { broadcastLatestSeq: bcSummary.latestSeq } : {}),
-      viewerRole: role,
-      ...(linkView ? { defaultView: linkView } : {}),
-      branding: {
-        ...brand,
-        appleIcon,
-        rasterIcon,
-      }, iconRaster: rasterReq });
-    return new Response(html, { headers });
+  // The authored publication is immutable; its injected resident addresses are
+  // current host configuration. Reloading may refresh them without changing
+  // the publication or adding a discovery poll to a running application.
+  // Every injected input is metadata, so a revalidation is answered before any
+  // byte read, and an unchanged document is rendered once per live object.
+  headers.set("Cache-Control", "private, no-cache");
+  const metaStart = Date.now();
+  const [broadcastKeys, bcSummary, appleIcon] = await Promise.all([
+    publicBroadcastKeys(t.env).then(r => r.keys).catch(() => []),
+    broadcastSummary(t.env).catch(() => ({ latestSeq: 0, activeCount: 0, criticalCount: 0 })),
+    appleTouchIcon(t, base, new URL(base, req.url).href, { background: true }).catch(() => null),
+  ]);
+  timing?.add("meta", Date.now() - metaStart);
+  const pubManifest = publicationManifest(t, version, base);
+  const rasterIcon = rasterFavicon(t, base);
+  const brand = branding();
+  const rasterReq = iconRasterRequest(t, role);
+  const peers = introductions();
+  const features = t.features();
+  const config = {
+    id: t.tid, base, version, application, peerBootstrap: peers, documentPath: path, features, publication: pubManifest,
+    broadcastKeys,
+    ...(bcSummary.activeCount > 0 ? { broadcastLatestSeq: bcSummary.latestSeq } : {}),
+    viewerRole: role,
+    ...(linkView ? { defaultView: linkView } : {}),
+    branding: { ...brand, appleIcon, rasterIcon },
+    iconRaster: rasterReq,
+  };
+  // The tag covers the authored bytes (by hash) and every injected value.
+  const htmlTag = `W/"${(await sha256Hex(`${file.hash}|${JSON.stringify(config)}`)).slice(0, 24)}"`;
+  headers.set("ETag", htmlTag);
+  headers.set("Link", `<${pubManifest.runtime.base}tendril.js>; rel=preload; as=script`);
+  if (etagMatches(req.headers.get("If-None-Match"), htmlTag)) return new Response(null, { status: 304, headers });
+  const remembered = injectedHtml.get(t)?.get(htmlTag);
+  if (remembered !== undefined) {
+    timing?.add("html", 0, "memo");
+    return new Response(req.method === "HEAD" ? null : remembered, { headers });
   }
-  headers.set("Content-Length", String(file.size));
-  return assetResponse(req, new Response(obj.body, { headers }));
+  const obj = await readStored(t, file, req, timing);
+  if (!obj) return new Response("File content missing", { status: 500 });
+  if (req.method === 'HEAD') return new Response(null, { headers });
+  const rawHtml = await obj.text();
+  const html = injectRuntime(rawHtml, config);
+  rememberInjected(t, htmlTag, html);
+  return new Response(html, { headers });
+}
+
+async function readStored(t: Tendril, file: VersionFile, req: Request, timing?: ServerTiming) {
+  const start = Date.now();
+  try {
+    return await immutableObject(t.env, fileKey(t, file.hash), {
+      head: req.method === 'HEAD', sha256: file.hash, expectedBytes: file.size, context: t.ctx,
+    });
+  } finally { timing?.add("bytes", Date.now() - start); }
 }
 
 export function filesResponse(t: Tendril, version: number) {

@@ -60,7 +60,32 @@ CPU, lazy cold route modules.
 Client: inline configuration, `modulepreload` hints, non-blocking runtime script, parallel
 participation refresh, single boot `syncControl`, shorter dial delays, stale-while-revalidate first paint.
 
-## 5. Results
+## 5. Results so far (2026-11-28)
 
-Recorded in section 6 as each step lands (bench JSON under chronolog `bench/results/` and
-tendriller `test-results/bench/`).
+**Chronolog sync v3** (chronolog `bffd52c`, `docs/PERFORMANCE.md`; not yet vendored into Tendriller):
+
+| N=400 | KV before | KV after | SQL before | SQL after |
+|---|---|---|---|---|
+| submit ms/op | 22 | ~4 (flat in N) | 26 | ~5 |
+| cold sync | 4.8 s, 18.7 MB | 0.6 s, 154 KB | 9.0 s, 27.5 MB | 1.1 s, 154 KB |
+| live op | 90 ms, 90 KB | 7–25 ms, 0.5 KB | 254 ms, 113 KB | 17 ms, 0.5 KB |
+| reconnect, nothing new | 7.8 s, 41.6 MB | ~20 ms, 4.9 KB | 18.6 s, 60 MB | 29 ms, 4.9 KB |
+
+**Tendriller host** (server cost tests, `server/test/host-cost.public.test.ts`): warm HTML GET and
+HTML 304 need 0 SQL rows and 0 R2/Cache API reads (was 6 SQL / 7 rows + 1 cache read); router D1
+reads on warm page requests 1 → 0; stored ops are no longer re-verified on sync/replay; sync reads
+raw bytes only for rows the caller lacks; dependency-aware `Db` invalidation; TURN credentials reused.
+
+**E2E baseline** (`npm run bench`, `test-results/bench/baseline-d9bb3681*.json`, before chronolog v3):
+cold load to data 2.6 s (7.8 s throttled), warm reload 0.54 s, fresh device with 200 notes 6.1 s
+(3–4 s CPU after the worker is ready), browser→browser op 44 ms.
+
+## 6. Next steps
+
+1. Vendor chronolog v3 (after the incoming chronolog refactor is merged) and re-run `npm run bench`.
+2. Client boot: flatten the worker module graph (7 dependent import waves, ~650 ms cold), stop the
+   page re-downloading worker chunks and QuickJS wasm, preload `configuration.json`, delay the
+   service-worker release cache until after boot, serve warm HTML from the offline cache.
+3. Admission: replace enrollment/discovery polling (~15 requests per new device) with pushed
+   notifications; serve publication subresources without the full DO admission chain.
+4. Kernel: amortize the remaining ~1 ms fresh QuickJS context + module evaluation per reducer call.
