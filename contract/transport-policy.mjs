@@ -1,7 +1,9 @@
 /** Canonical application transport defaults. STUN discovers public addresses;
  * it does not relay application traffic or require a paid TURN account. */
 export const PEER_TRANSPORT_POLICY = Object.freeze({
-  directTimeoutMs: 5000,
+  // ICE over STUN normally settles well under 2 s; a silent stall falls back to the
+  // relay after 3 s (promotion back to direct stays available via reconsiderConnections).
+  directTimeoutMs: 3000,
   configuration: Object.freeze({ iceServers: Object.freeze([
     Object.freeze({ urls: 'stun:stun.cloudflare.com:3478' }),
   ]) }),

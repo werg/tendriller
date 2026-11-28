@@ -10,6 +10,7 @@ import {
   verifyHostAttestationV2, verifyRecord, verifySignedOperation,
 } from '@chronolog/peer-session';
 import { authorityRecord, authorityRecordBytes } from '../contract/authority.mjs';
+import { createHostRevisionTracker } from '../contract/discovery-watch.mjs';
 
 function decodeCasLinks(encoded) {
   const decoded = decodeRecord(encoded);
@@ -363,13 +364,18 @@ function attestedAccountAuthorized(admission, payload) {
  */
 export function createAdmission(session, {
   peers, wrapKey = session.device?.wrapKey, store, subject = 'device', now = () => Date.now(),
-  memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {}, onEpochRotated = null,
+  // `waitingIntervalMs` is the poll while no host push has been observed; once the
+  // discovery watch delivers notifications (`notify`), a waiting device only polls
+  // every `pushedWaitingIntervalMs` as a fallback for a silently dead socket.
+  memberIntervalMs = 0, waitingIntervalMs = 3_000, pushedWaitingIntervalMs = 15_000, onEvent = () => {}, onEpochRotated = null,
 } = {}) {
   const identity = session.device.identity;
   const applicationId = session.logId ?? session.applicationId;
   const listeners = new Set();
   const lifetime = new AbortController();
-  let attestation = null, invite = null, inviteLoaded = false, timer, running, again = false, closed = false;
+  let attestation = null, invite = null, inviteLoaded = false, timer, running, closed = false;
+  let pendingScopes = new Set(), pushed = false, deferredNotification, adminReadCapable = false;
+  const revisions = createHostRevisionTracker();
   let wasMember = session.isMember(identity.publicKey);
   let known = new Set((session.permissions().members ?? []).map(m => m.publicKey));
   let seenPending = new Set();
@@ -567,6 +573,7 @@ export function createAdmission(session, {
       knownOpIds,
       knownCasHashes,
     }, { signal: lifetime.signal });
+    revisions.observe('control', synced.revision);
     for (const o of outgoingOps) uploadedControlOps.add(o.opId);
     for (const c of outgoingCas) uploadedControlCas.add(c.hash);
     const incomingOps = (synced.publicOps ?? []).map(r => authorityRecordBytes(r, 256 * 1024));
@@ -672,7 +679,11 @@ export function createAdmission(session, {
   }
 
   async function adminDuties() {
+    const administrator = session.isAdministrator(identity.publicKey) && typeof peers.groups === 'function';
+    // The org-group read does not depend on pending admissions; fetch both at once.
+    const groupsRead = administrator ? peers.groups({ signal: lifetime.signal }).catch(() => null) : null;
     const result = await peers.admissions({ signal: lifetime.signal });
+    revisions.observe('admissions', result.revision);
     const classified = [];
     for (const item of result.pending ?? []) {
       const entry = await classify(item, { reportRejected: true }).catch(error => ({
@@ -742,7 +753,7 @@ export function createAdmission(session, {
 
     // Org-group admission and departure automation (administrators only).
     if (session.isAdministrator(identity.publicKey) && typeof peers.groups === 'function') {
-      const groupsData = await peers.groups({ signal: lifetime.signal }).catch(() => null);
+      const groupsData = await (groupsRead ?? peers.groups({ signal: lifetime.signal }).catch(() => null));
       const permsNow = session.permissions();
       const hostKey = permsNow.admission?.hostKey;
       const groupPolicy = groupsData?.policy;
@@ -816,25 +827,39 @@ export function createAdmission(session, {
     if (current.has(identity.publicKey)) wasMember = true;
   }
 
-  async function tick() {
+  async function tick(scopes) {
     try {
-      await syncWithHost();
+      const hasHostAdmission = Boolean(session.permissions().admission?.hostKey);
+      // A device that is not (and never was) a member proves its key to the host in
+      // parallel with the control sync instead of after it. A sync showing it was
+      // admitted meanwhile only makes that attestation redundant.
+      const attesting = !session.isMember(identity.publicKey) && !wasMember && hasHostAdmission ? attest() : null;
+      const [synced, attested] = await Promise.allSettled([
+        scopes.has('control') ? syncWithHost() : undefined,
+        attesting ?? undefined,
+      ]);
+      if (synced.status === 'rejected') throw synced.reason;
       observeMembership();
       const me = session.isMember(identity.publicKey);
-      const hasHostAdmission = Boolean(session.permissions().admission?.hostKey);
+      if (!me && attested.status === 'rejected') throw attested.reason;
       const hasCurrentKey = !session.genesis.privateLog || session.currentEpoch() < 0 || session.hasEpochKey(session.currentEpoch());
       if (!me) {
-        if (!wasMember && hasHostAdmission) await attest();
+        if (!wasMember && hasHostAdmission && !attesting) await attest();
       } else {
         // Any admitted key holder proactively heals missing HPKE lockboxes for members
         // (e.g. after multisig admission, delayed wrap keys, or concurrent epoch rotation).
-        if (hasCurrentKey && session.genesis.privateLog && typeof session.backfillMissingEpochBoxes === 'function') {
+        if (scopes.has('control') && hasCurrentKey && session.genesis.privateLog && typeof session.backfillMissingEpochBoxes === 'function') {
           const sealed = await session.backfillMissingEpochBoxes().catch(() => 0);
           if (sealed > 0) await syncWithHost().catch(() => {});
         }
-        if (hasHostAdmission && hasCurrentKey && (session.isAdministrator(identity.publicKey) || session.isReader(identity.publicKey))) {
+        const capable = hasHostAdmission && hasCurrentKey && (session.isAdministrator(identity.publicKey) || session.isReader(identity.publicKey));
+        // Pending requests are re-read when the host says they changed, or when this
+        // device has just become able to act on them.
+        if (capable && (scopes.has('admissions') || !adminReadCapable)) {
           await adminDuties();
+          adminReadCapable = true;
         }
+        if (!capable) adminReadCapable = false;
       }
       lastError = null;
       lastReportedError = null;
@@ -845,6 +870,8 @@ export function createAdmission(session, {
           lastReportedError = lastError;
           notice({ kind: 'error', publicKey: identity.publicKey, error: lastError });
         }
+        // A failed pass leaves its scopes stale for the next notification or poll.
+        for (const scope of scopes) revisions.forget(scope);
       }
     }
     observeMembership();
@@ -858,16 +885,40 @@ export function createAdmission(session, {
     timer.unref?.();
   }
 
-  function refresh() {
+  const ALL_SCOPES = Object.freeze(['control', 'admissions']);
+  /** Re-read the given host scopes (default both). Calls during a pass coalesce into one more pass. */
+  function refresh(scopes = ALL_SCOPES) {
     if (closed) return Promise.resolve(state);
-    if (running) { again = true; return running; }
+    for (const scope of scopes) pendingScopes.add(scope);
+    if (running) return running;
     running = (async () => {
-      do { again = false; await tick(); } while (again && !closed);
+      while (pendingScopes.size && !closed) {
+        const want = pendingScopes;
+        pendingScopes = new Set();
+        await tick(want);
+      }
       const waiting = state.phase !== 'admitted';
-      schedule(lastError ? Math.min(30_000, waitingIntervalMs * 4) : waiting ? waitingIntervalMs : memberIntervalMs);
+      schedule(lastError ? Math.min(30_000, waitingIntervalMs * 4) : waiting ? (pushed ? pushedWaitingIntervalMs : waitingIntervalMs) : memberIntervalMs);
       return state;
-    })().finally(() => { running = undefined; });
+    })().finally(() => { running = undefined; evaluateNotification(); });
     return running;
+  }
+
+  // A host discovery notification costs requests only for the scopes it changed
+  // since this controller last read them. One arriving during a pass (the first
+  // ready while the boot pass is in flight) is judged after that pass.
+  function evaluateNotification() {
+    if (running || closed || !deferredNotification) return;
+    const notification = deferredNotification;
+    deferredNotification = undefined;
+    const stale = revisions.stale(notification, ALL_SCOPES);
+    if (stale.length) void refresh(stale);
+  }
+  function notify(notification) {
+    if (closed) return;
+    pushed = true;
+    deferredNotification = notification;
+    evaluateNotification();
   }
 
   const requireAdmin = () => {
@@ -1128,6 +1179,7 @@ export function createAdmission(session, {
     get state() { return state; },
     subscribe(listener) { listeners.add(listener); try { listener(state); } catch {} return () => listeners.delete(listener); },
     refresh,
+    notify,
     extensions: Object.freeze({
       async call(name, args) { const action = actions[name]; if (!action) throw failure('EXTENSION_UNKNOWN'); return action(...args); },
       subscribe(listener) { const wrapped = value => listener({ topic: 'admission', state: value }); listeners.add(wrapped); return () => listeners.delete(wrapped); },

@@ -91,7 +91,10 @@ export function servePageWorker({
               peers: opened.peers,
               openDirectConnection,
               active: initialNetworkActive,
-              onNotification: () => void admission.refresh(),
+              // The admission controller owns public-control sync; each host push
+              // re-reads only the scopes it changed.
+              syncControl: false,
+              onNotification: notification => admission.notify(notification),
             });
             Object.defineProperty(session, 'participation', { value: participation });
             const pubRecoveryExtension = Object.freeze({

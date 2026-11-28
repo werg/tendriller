@@ -6,10 +6,59 @@ export class PeerDiscoveryWatchError extends Error {
   constructor(code, message) { super(message); this.name = 'PeerDiscoveryWatchError'; this.code = code; this.retryable = false; }
 }
 const fail = (code, message) => new PeerDiscoveryWatchError(code, message);
+const REVISION_VECTOR = /^[0-9a-f]{12}(?:\.(?:0|[1-9][0-9]{0,9})){4}$/;
+const REVISION = /^[0-9a-f]{12}\.(?:0|[1-9][0-9]{0,9})$/;
 export function validatePeerDiscoveryNotification(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).join() !== 'type' ||
-      !['ready', 'changed'].includes(value.type)) throw fail('invalid_discovery_notification', 'Expected only a discovery ready or changed notification');
-  return Object.freeze({ type: value.type });
+  const keys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort().join() : '';
+  if ((keys !== 'type' && keys !== 'rev,type') || !['ready', 'changed'].includes(value.type) ||
+      keys === 'rev,type' && (typeof value.rev !== 'string' || !REVISION_VECTOR.test(value.rev)))
+    throw fail('invalid_discovery_notification', 'Expected only a discovery ready or changed notification');
+  return Object.freeze(value.rev === undefined ? { type: value.type } : { type: value.type, rev: value.rev });
+}
+
+/**
+ * Host invalidation scopes carried by discovery notifications: public control
+ * (`control`), pending admissions (`admissions`), peer directory (`directory`)
+ * and store-and-forward mailbox (`mailbox`). A notification is only a hint to
+ * re-read host state; it carries no state and authorizes nothing.
+ */
+export const HOST_REVISION_SCOPES = Object.freeze(['control', 'admissions', 'directory', 'mailbox']);
+const parseVector = rev => {
+  if (typeof rev !== 'string' || !REVISION_VECTOR.test(rev)) return null;
+  const [nonce, ...counts] = rev.split('.');
+  return { nonce, counts: Object.fromEntries(HOST_REVISION_SCOPES.map((scope, i) => [scope, Number(counts[i])])) };
+};
+const parseRevision = rev => {
+  if (typeof rev !== 'string' || !REVISION.test(rev)) return null;
+  const [nonce, count] = rev.split('.');
+  return { nonce, count: Number(count) };
+};
+
+/**
+ * Remembers the host revision each scope was last read at, from responses that
+ * carry `revision`, and answers which scopes a notification invalidates. A
+ * notification without a vector, from another host instance, or for a scope
+ * never read invalidates that scope.
+ */
+export function createHostRevisionTracker() {
+  const seen = new Map();
+  return Object.freeze({
+    observe(scope, revision) {
+      const parsed = parseRevision(revision);
+      if (!parsed || !HOST_REVISION_SCOPES.includes(scope)) return;
+      const previous = seen.get(scope);
+      if (!previous || previous.nonce !== parsed.nonce || previous.count < parsed.count) seen.set(scope, parsed);
+    },
+    forget(scope) { seen.delete(scope); },
+    stale(notification, scopes = HOST_REVISION_SCOPES) {
+      const vector = parseVector(notification?.rev);
+      return scopes.filter(scope => {
+        if (!vector) return true;
+        const last = seen.get(scope);
+        return !last || last.nonce !== vector.nonce || last.count < vector.counts[scope];
+      });
+    },
+  });
 }
 export function validatePeerDiscoveryWatchOptions({ timeoutMs = PEER_DISCOVERY_WATCH_LIMITS.openTimeoutMs,
   retryMs = PEER_DISCOVERY_WATCH_LIMITS.retryMs, maxRetryMs = PEER_DISCOVERY_WATCH_LIMITS.maxRetryMs } = {}) {
@@ -130,8 +179,9 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
           queue.push(value); resolveReady();
         } else {
           if (!opened) throw fail('invalid_discovery_notification', 'Changed notification before ready');
-          // Changes invalidate one directory read; coalesce while the consumer is busy.
-          if (queue.at(-1)?.type !== 'changed') queue.push(value);
+          // Changes are invalidations; while the consumer is busy only the newest
+          // pending vector matters (host counters only grow).
+          if (queue.at(-1)?.type === 'changed') queue[queue.length - 1] = value; else queue.push(value);
         }
         wake();
       } catch (error) {

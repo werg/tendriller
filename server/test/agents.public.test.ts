@@ -253,7 +253,7 @@ it('multiplexes control streams over one hub connection onto real page socket en
   const peerId = 'ab'.repeat(32);
   connection.send({ t: 'open', s: 2, page: h.id, path: `peers/discovery/watch?peerId=${peerId}`, protocols: [PEER_DISCOVERY_PROTOCOL] });
   expect(await connection.until(frame => frame.s === 2 && frame.t === 'opened')).toEqual({ t: 'opened', s: 2, protocol: PEER_DISCOVERY_PROTOCOL });
-  expect(JSON.parse((await connection.until(frame => frame.s === 2 && frame.t === 'data')).text)).toEqual({ type: 'ready' });
+  expect(JSON.parse((await connection.until(frame => frame.s === 2 && frame.t === 'data')).text)).toEqual({ type: 'ready', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
   // Hub virtual streams use stateless DO-to-DO POSTs — zero outbound WebSockets held on Tendril.
   expect(await inDO(h.id, t => t.ctx.getWebSockets('peer-discovery').length)).toBe(0);
   const routed = await inDO(h.id, t => listHubSubscribers(t, 'peer-discovery').map(sub => sub.state));
@@ -349,7 +349,7 @@ it('runs discovery, invitations, and WebRTC rendezvous end-to-end over stateless
   // 1. Discovery: hub agent watches + advertises; browser direct WS observes changed & reads it.
   connection.send({ t: 'open', s: 1, page: h.id, path: `peers/discovery/watch?peerId=${agentPeerId}`, protocols: [PEER_DISCOVERY_PROTOCOL] });
   expect(await connection.until(f => f.s === 1 && f.t === 'opened')).toEqual({ t: 'opened', s: 1, protocol: PEER_DISCOVERY_PROTOCOL });
-  expect(JSON.parse((await connection.until(f => f.s === 1 && f.t === 'data')).text)).toEqual({ type: 'ready' });
+  expect(JSON.parse((await connection.until(f => f.s === 1 && f.t === 'data')).text)).toEqual({ type: 'ready', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
 
   const browserDiscRes = await req(h.page_url + `_tendril/peers/discovery/watch?peerId=${browserPeerId}`, {
     headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_DISCOVERY_PROTOCOL },
@@ -365,7 +365,7 @@ it('runs discovery, invitations, and WebRTC rendezvous end-to-end over stateless
   });
   browserDiscWs.accept();
   const nextBrowserDisc = () => browserDiscFrames.length ? Promise.resolve(browserDiscFrames.shift()) : new Promise(r => browserDiscWaiters.push(r));
-  expect(await nextBrowserDisc()).toEqual({ type: 'ready' });
+  expect(await nextBrowserDisc()).toEqual({ type: 'ready', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
 
   // Agent advertises via normal HTTP POST; browser WS gets 'changed' and reads the agent's ad.
   const advRes = await api(h, 'POST', 'peers/discovery', {
@@ -373,7 +373,7 @@ it('runs discovery, invitations, and WebRTC rendezvous end-to-end over stateless
     advertisement: { peerId: agentPeerId, storageId: 'agent-store-1', routes: [{ kind: 'invitation', peerId: agentPeerId }] },
   });
   expect(advRes.status).toBe(200);
-  expect(await nextBrowserDisc()).toEqual({ type: 'changed' });
+  expect(await nextBrowserDisc()).toEqual({ type: 'changed', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
   const readRes = await req(h.page_url + '_tendril/peers/discovery', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -390,7 +390,7 @@ it('runs discovery, invitations, and WebRTC rendezvous end-to-end over stateless
     body: JSON.stringify({ action: 'advertise', advertisement: { peerId: browserPeerId, storageId: 'browser-store-1', routes: [{ kind: 'invitation', peerId: browserPeerId }] } }),
   });
   expect(browserAdvRes.status).toBe(200);
-  expect(JSON.parse((await connection.until(f => f.s === 1 && f.t === 'data')).text)).toEqual({ type: 'changed' });
+  expect(JSON.parse((await connection.until(f => f.s === 1 && f.t === 'data')).text)).toEqual({ type: 'changed', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
 
   // 2. Invitations: hub agent listens, browser sends invite, hub receives + ACKs it.
   connection.send({ t: 'open', s: 2, page: h.id, path: `peers/invitations?peerId=${agentPeerId}`, protocols: [PEER_INVITATION_PROTOCOL] });
@@ -459,7 +459,7 @@ it('runs discovery, invitations, and WebRTC rendezvous end-to-end over stateless
   // Closing the hub discovery stream withdraws the agent's advertisement and notifies the browser.
   connection.send({ t: 'close', s: 1, code: 1000, reason: 'done' });
   expect(await connection.until(f => f.s === 1 && f.t === 'closed')).toMatchObject({ t: 'closed', s: 1, code: 1000 });
-  expect(await nextBrowserDisc()).toEqual({ type: 'changed' });
+  expect(await nextBrowserDisc()).toEqual({ type: 'changed', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
   const afterClose = await (await req(h.page_url + '_tendril/peers/discovery', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

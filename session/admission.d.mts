@@ -112,7 +112,10 @@ export interface AdmissionState {
 export interface PageAdmission {
   readonly state: AdmissionState;
   subscribe(listener: (state: AdmissionState) => void): () => void;
-  refresh(): Promise<AdmissionState>;
+  /** Re-read host control state and, for capable members, pending admissions. */
+  refresh(scopes?: readonly ('control' | 'admissions')[]): Promise<AdmissionState>;
+  /** Feed a discovery notification; only host scopes it changed since the last read are re-read. */
+  notify(notification: Readonly<{ type: string; rev?: string }>): void;
   readonly extensions: ApplicationOwnerExtensions;
   call(name: string, ...args: unknown[]): Promise<unknown>;
   close(): void;
@@ -125,6 +128,8 @@ export declare function createAdmission(session: ApplicationSession, options: {
   readonly now?: () => number;
   readonly memberIntervalMs?: number;
   readonly waitingIntervalMs?: number;
+  /** Fallback poll while waiting once host pushes have been observed. Defaults to 15 seconds. */
+  readonly pushedWaitingIntervalMs?: number;
   readonly onEvent?: (notice: AdmissionNotice) => void;
   readonly onEpochRotated?: (info: { epoch: number; reason: string; publicKey: string }) => void | Promise<void>;
 }): PageAdmission;

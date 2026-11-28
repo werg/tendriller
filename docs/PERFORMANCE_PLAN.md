@@ -80,12 +80,31 @@ raw bytes only for rows the caller lacks; dependency-aware `Db` invalidation; TU
 cold load to data 2.6 s (7.8 s throttled), warm reload 0.54 s, fresh device with 200 notes 6.1 s
 (3–4 s CPU after the worker is ready), browser→browser op 44 ms.
 
+**Admission push** (branch `perf/perf-admission`, `npm run bench -- --runs 5`, before/after measured
+back to back on a shared loaded machine, load average 7–26): discovery notifications now carry a
+per-scope host revision vector (`{"type":"changed","rev":"<nonce>.<control>.<admissions>.<directory>.<mailbox>"}`);
+sync, admissions, directory and mailbox replies carry the revision they read at, so a push costs a
+request only for the scopes it changed and the boot does one control sync (the admission controller owns
+it; participation passes `syncControl: false`). Peer discovery no longer waits behind control, snapshot
+and mailbox transfers; a not-yet-member attests in parallel with its first control sync; admins read
+pending admissions and org groups in parallel; a waiting device's fallback poll is 15 s once pushes arrive.
+
+| | before | after | throttled before | throttled after |
+|---|---|---|---|---|
+| cold load, canAuthor (median ms) | 4603 | 4271 | 8575 | 7804 |
+| fresh 200-note device, dataRendered | 8464 | 7664 | 15287 | 13358 |
+| warm reload, dataRendered | 729 | 709 | 4028 | 1719 |
+| host requests per cold load | 96 | 86 | 102 | 84 |
+| `peers/enrollment` requests, all scenarios | 377 | 141 | 412 | 145 |
+| `peers/discovery` requests, all scenarios | 132 | 82 | 134 | 88 |
+| `groups` requests, all scenarios | 78 | 30 | 82 | 30 |
+
 ## 6. Next steps
 
 1. Vendor chronolog v3 (after the incoming chronolog refactor is merged) and re-run `npm run bench`.
 2. Client boot: flatten the worker module graph (7 dependent import waves, ~650 ms cold), stop the
    page re-downloading worker chunks and QuickJS wasm, preload `configuration.json`, delay the
    service-worker release cache until after boot, serve warm HTML from the offline cache.
-3. Admission: replace enrollment/discovery polling (~15 requests per new device) with pushed
-   notifications; serve publication subresources without the full DO admission chain.
+3. Admission push is done (above). Glare-free dialing (deterministic invitation tie-break) would allow a
+   shorter `passiveDialDelayMs` than 1500 ms; 500 ms made simultaneous dials supersede each other.
 4. Kernel: amortize the remaining ~1 ms fresh QuickJS context + module evaluation per reducer call.

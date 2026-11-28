@@ -59,7 +59,8 @@ serveBrowserOwner({
           participation = participateApplication(session, {
             peers: opened.peers,
             openDirectConnection,
-            onNotification: () => void admission.refresh(),
+            syncControl: false,
+            onNotification: notification => admission.notify(notification),
           });
           Object.defineProperty(session, 'participation', { value: participation });
           return {

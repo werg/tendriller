@@ -49,7 +49,7 @@ serveBrowserOwner({
             await session.mergeFacts({ publicOps: opened.publicOps, encryptedEnvelopes: [], casNodes: opened.casNodes, retentions: [], checkpoints: [] });
           }
           admission = admitBrowserSession(session, { peers: opened.peers, wrapKey: opened.wrapKey });
-          participation = participateApplication(session, { peers: opened.peers, openDirectConnection, onNotification: () => void admission.refresh() });
+          participation = participateApplication(session, { peers: opened.peers, openDirectConnection, syncControl: false, onNotification: notification => admission.notify(notification) });
           Object.defineProperty(session, 'participation', { value: participation });
           return {
             session,

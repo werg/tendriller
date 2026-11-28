@@ -80,6 +80,19 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
           signal.throwIfAborted(); const reason = timedOut ? 'direct_timeout' : 'direct_failed'; descriptions.set(connection, Object.freeze({kind:'relay',reason})); selected(peer.identity, 'relay', reason); return connection;
         } catch (error) { relay.close(); throw error; }
   }
+  /** The routable peer hints plus the host directory revision they were read at. */
+  async function readDirectory({ signal }) {
+    signal.throwIfAborted();
+    const directory = await peers.discover({ signal });
+    signal.throwIfAborted();
+    return Object.freeze({ revision: directory.revision ?? null, peers: Object.freeze(directory.peers.flatMap(({ advertisement }) => {
+      const remote = advertisement.peerId;
+      if (!identityKey(remote) || remote === identity) return [];
+      const route = advertisement.routes.find(value => value.kind === 'invitation' && value.peerId === remote)
+        ?? advertisement.routes.find(value => value.kind === 'rendezvous');
+      return route ? [hint(remote, validatePeerRoute(route))] : [];
+    })) });
+  }
   return Object.freeze({
     discovery: Object.freeze({
       async *notifications({ signal }) {
@@ -99,18 +112,8 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
           watcher.close();
         }
       },
-      async read({ signal }) {
-        signal.throwIfAborted();
-        const directory = await peers.discover({ signal });
-        signal.throwIfAborted();
-        return Object.freeze(directory.peers.flatMap(({ advertisement }) => {
-          const remote = advertisement.peerId;
-          if (!identityKey(remote) || remote === identity) return [];
-          const route = advertisement.routes.find(value => value.kind === 'invitation' && value.peerId === remote)
-            ?? advertisement.routes.find(value => value.kind === 'rendezvous');
-          return route ? [hint(remote, validatePeerRoute(route))] : [];
-        }));
-      },
+      async read({ signal }) { return (await readDirectory({ signal })).peers; },
+      readDirectory,
       async advertise(value, { signal }) {
         signal.throwIfAborted();
         if (value.identity !== identity) invalid('An advertisement must identify this owned session');

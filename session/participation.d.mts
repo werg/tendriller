@@ -36,7 +36,11 @@ export interface ApplicationTransportOptions {
   /** Minimum healthy link duration before reconnect retry backoff resets to zero. Defaults to 30 seconds. */
   readonly stableLinkMs?: number;
   /** Called for every host page notification (for example admission requests or key wraps), so an admission controller can refresh promptly. */
-  readonly onNotification?: (notification: Readonly<{ type: string }>) => void;
+  readonly onNotification?: (notification: Readonly<{ type: string; rev?: string }>) => void;
+  /** Delay before the higher identity dials a peer the lower identity should dial. Defaults to 1500 ms. */
+  readonly passiveDialDelayMs?: number;
+  /** Set false when another controller (an admission controller) owns public-control sync for this session. Defaults to true. */
+  readonly syncControl?: boolean;
   readonly onTransport?: (event: Readonly<{ peerId: string; kind: 'direct' | 'relay'; reason?: 'direct_failed' | 'direct_timeout' }>) => void;
 }
 export declare function participateApplication(session: ApplicationSession, options: ApplicationTransportOptions): ApplicationParticipation;

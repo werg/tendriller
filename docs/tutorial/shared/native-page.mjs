@@ -115,7 +115,7 @@ export async function openNativePage(context, { definition, imports, topics, ass
     });
     let phase;
     admission.subscribe(state => { if (state.phase !== phase) { phase = state.phase; context.report({ admission: 'phase', phase }); } });
-    participation = participateNativeApplication(session, { peers: context.host.peers, onNotification: () => void admission.refresh() });
+    participation = participateNativeApplication(session, { peers: context.host.peers, syncControl: false, onNotification: notification => admission.notify(notification) });
     let optional = {};
     try { if (assistant) optional = await assistant({ context, session }); }
     catch (error) { context.report({ state: 'optional_assistant_unavailable', code: /^[A-Za-z0-9_]{1,96}$/.test(error?.code ?? '') ? error.code : 'assistant_configuration_unavailable', participantRunning: true }); }

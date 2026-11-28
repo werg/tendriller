@@ -31,7 +31,7 @@ import {
   admissionAccounts, agentKeyHex, attestDevice, issueAgentAttestation, pendingAdmissions,
   prunePendingAdmissions, type InviteRedemption,
 } from './admissions';
-import { closeDiscoveryHubStream, notifyDiscoveryWatchers, type DiscoveryState } from './discovery';
+import { closeDiscoveryHubStream, hostRevision, notifyDiscoveryWatchers, type DiscoveryState } from './discovery';
 import { closeHubSubscriber, listHubSubscribers, type HubSubscriber } from './hub-streams';
 import { closePeerHubStream, type PeerState } from './peers';
 import { notifyMcpSyncWatchers } from './publication-watch';
@@ -755,6 +755,7 @@ export async function syncControlState(
   addedOps: number;
   addedCasNodes: number;
   addedCheckpoints: number;
+  revision: string;
 }> {
   const genesisBytes = readStoredGenesisBytes(t);
   if (!genesisBytes) throw new HttpError(409, 'application_uninitialized');
@@ -784,10 +785,12 @@ export async function syncControlState(
       };
       t.db.set('v2_control_summary', summary);
     }
+    const revision = hostRevision(t, 'c');
     const missingOps = missingPublicOpRecords(t, knownOps);
     const missingCas = missingPublicCasNodes(t, knownCas);
     const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
     return {
+      revision,
       genesis: authorityRecord(genesisBytes),
       publicOps: missingOps,
       casNodes: missingCas,
@@ -845,10 +848,12 @@ export async function syncControlState(
       };
       t.db.set('v2_control_summary', summary);
     }
+    const revision = hostRevision(t, 'c');
     const missingOps = missingPublicOpRecords(t, knownOps);
     const missingCas = missingPublicCasNodes(t, knownCas);
     const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
     return {
+      revision,
       genesis: authorityRecord(genesisBytes),
       publicOps: missingOps,
       casNodes: missingCas,
@@ -937,10 +942,11 @@ export async function syncControlState(
       }
       prunePendingAdmissions(t, state);
       reconcileHostEffects(t, state);
-      notifyDiscoveryWatchers(t);
+      notifyDiscoveryWatchers(t, 'c');
     });
   }
 
+  const revision = hostRevision(t, 'c');
   const missingOps = missingPublicOpRecords(t, knownOps);
   const missingCas = missingPublicCasNodes(t, knownCas);
   const allCheckpoints = listCheckpointRows(t).map(r => authorityRecord(r.raw));
@@ -956,6 +962,7 @@ export async function syncControlState(
     addedOps: newOps.length,
     addedCasNodes: newCas.length,
     addedCheckpoints: newCps.length,
+    revision,
   };
 }
 
@@ -1157,7 +1164,7 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
           c.hash, c.partition, copy.buffer, now);
       }
       if (newEnvs.length > 0 || newOps.length > 0 || newCas.length > 0) {
-        notifyDiscoveryWatchers(t);
+        notifyDiscoveryWatchers(t, 'm');
         if (newEnvs.length > 0) notifyMcpSyncWatchers(t);
       }
     });
@@ -1167,25 +1174,25 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
   const knownOps = new Set<string>(Array.isArray(input.knownOpIds) ? input.knownOpIds.filter((x): x is string => typeof x === 'string') : []);
   const knownCas = new Set<string>(Array.isArray(input.knownCasHashes) ? input.knownCasHashes.filter((x): x is string => typeof x === 'string') : []);
 
+  const mailboxRevision = hostRevision(t, 'm');
+  let truncated = false;
+  const bounded = <T,>(rows: T[]): T[] => { if (rows.length > 512) truncated = true; return rows.slice(0, 512); };
   const encryptedEnvelopes = state.genesis.privateLog
-    ? t.db.all<{ digest: string; raw: ArrayBuffer }>('SELECT digest, raw FROM v2_mailbox_envelopes ORDER BY stored_at ASC')
-        .filter(r => !knownDigests.has(r.digest))
-        .slice(0, 512)
+    ? bounded(t.db.all<{ digest: string; raw: ArrayBuffer }>('SELECT digest, raw FROM v2_mailbox_envelopes ORDER BY stored_at ASC')
+        .filter(r => !knownDigests.has(r.digest)))
         .map(r => authorityRecord(new Uint8Array(r.raw)))
     : [];
 
   const publicOps = !state.genesis.privateLog
-    ? t.db.all<{ op_id: string; author: string; raw: ArrayBuffer }>('SELECT op_id, author, raw FROM v2_mailbox_ops ORDER BY author_ts ASC, op_id ASC')
-        .filter(r => !knownOps.has(r.op_id) && !state.permissions.blockedAuthors.has(r.author))
-        .slice(0, 512)
+    ? bounded(t.db.all<{ op_id: string; author: string; raw: ArrayBuffer }>('SELECT op_id, author, raw FROM v2_mailbox_ops ORDER BY author_ts ASC, op_id ASC')
+        .filter(r => !knownOps.has(r.op_id) && !state.permissions.blockedAuthors.has(r.author)))
         .map(r => authorityRecord(new Uint8Array(r.raw)))
     : [];
 
   const casNodes = state.genesis.privateLog
     ? []
-    : t.db.all<{ hash: string; partition: string; bytes: ArrayBuffer }>('SELECT hash, partition, bytes FROM v2_mailbox_cas ORDER BY stored_at ASC')
-        .filter(r => !knownCas.has(r.hash))
-        .slice(0, 512)
+    : bounded(t.db.all<{ hash: string; partition: string; bytes: ArrayBuffer }>('SELECT hash, partition, bytes FROM v2_mailbox_cas ORDER BY stored_at ASC')
+        .filter(r => !knownCas.has(r.hash)))
         .map(r => ({
           hash: r.hash,
           partition: (r.partition === 'private' ? 'private' : 'public') as 'public' | 'private',
@@ -1201,6 +1208,8 @@ async function syncMailbox(t: Tendril, principal: Principal, input: Record<strin
     addedEnvelopes: newEnvs.length,
     addedOps: newOps.length,
     addedCasNodes: newCas.length,
+    // A truncated reply is not a complete view of the mailbox at this revision.
+    ...(truncated ? {} : { revision: mailboxRevision }),
   };
 }
 
@@ -1354,7 +1363,7 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
           },
         ];
         t.db.set(JOIN_REQUESTS_KEY, next);
-        notifyDiscoveryWatchers(t);
+        notifyDiscoveryWatchers(t, 'a');
         return json({ accepted: true, count: next.length });
       }
 
@@ -1369,8 +1378,9 @@ export async function handleEnrollment(t: Tendril, req: Request, principal: Prin
 
       if (input.action === 'admissions') {
         fields();
+        const revision = hostRevision(t, 'a');
         const state = await readControlState(t);
-        return json({ pending: pendingAdmissions(t, state) });
+        return json({ pending: pendingAdmissions(t, state), revision });
       }
 
       throw new HttpError(400, 'enrollment_action_invalid');
@@ -1477,7 +1487,7 @@ async function initializeGenesis(
     }
     prunePendingAdmissions(t, state);
     reconcileHostEffects(t, state);
-    notifyDiscoveryWatchers(t);
+    notifyDiscoveryWatchers(t, 'c');
   });
   return applicationMetadata(t);
 }
@@ -1602,7 +1612,7 @@ export async function notarizeBlindFrontier(
     t.db.del('v2_control_summary');
     t.db.del(CONTROL_CACHE_KEY);
   });
-  notifyDiscoveryWatchers(t);
+  notifyDiscoveryWatchers(t, 'c');
   return {
     checkpoint: authorityRecord(rawCp),
     closedThroughMs: closedThroughMs.toString(),

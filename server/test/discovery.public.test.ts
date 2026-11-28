@@ -8,7 +8,7 @@ const advertisement = (peerId = 'peer-a') => ({ peerId, storageId: `store:${peer
 const next = (ws: WebSocket) => new Promise<any>(resolve => ws.addEventListener('message', e => resolve(JSON.parse(e.data as string)), { once: true }));
 async function subscribe(h: Handle, peerId: string) {
   const response = await api(h, 'GET', 'peers/discovery/watch?peerId=' + peerId, undefined, headers);
-  expect(response.status).toBe(101); const socket = response.webSocket!, ready = next(socket); socket.accept(); expect(await ready).toEqual({ type: 'ready' }); return socket;
+  expect(response.status).toBe(101); const socket = response.webSocket!, ready = next(socket); socket.accept(); expect(await ready).toEqual({ type: 'ready', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) }); return socket;
 }
 async function fixtureSocket(socket: ReturnType<Awaited<ReturnType<typeof createTestPage>>['discoverySocket']>) {
   await new Promise<void>((resolve, reject) => { socket.addEventListener('message', () => resolve(), { once: true }); socket.addEventListener('error', reject, { once: true }); }); return socket;
@@ -21,14 +21,14 @@ it('retains bounded socket presence beyond former leases without timers or dupli
   try {
     const beforeAlarm = await inDO(h.id, t => t.ctx.storage.getAlarm());
     const changed = next(observer), value = await peerApiJson(h, 'discovery/advertise', { advertisement: advertisement() });
-    expect(value).toEqual({ advertisement: advertisement() }); expect(await changed).toEqual({ type: 'changed' });
+    expect(value).toEqual({ advertisement: advertisement() }); expect(await changed).toEqual({ type: 'changed', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
     const before = await inDO(h.id, t => t.db.one('SELECT total_changes() AS n'));
     expect(await peerApiJson(h, 'discovery/advertise', { advertisement: advertisement() })).toEqual(value);
     expect(await inDO(h.id, t => t.db.one('SELECT total_changes() AS n'))).toEqual(before);
     await advance(h.id, 3600000);
     expect((await peerApiJson(h, 'discovery/read')).peers).toEqual([value]);
     expect(await inDO(h.id, t => t.ctx.storage.getAlarm())).toEqual(beforeAlarm);
-    const removed = next(observer); await peerApiJson(h, 'discovery/withdraw', { peerId: 'peer-a' }); expect(await removed).toEqual({ type: 'changed' });
+    const removed = next(observer); await peerApiJson(h, 'discovery/withdraw', { peerId: 'peer-a' }); expect(await removed).toEqual({ type: 'changed', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
     expect((await peerApiJson(h, 'discovery/read')).peers).toEqual([]);
   } finally { socket.close(); observer.close(); }
 });
@@ -95,6 +95,25 @@ it('restores socket-owned routing hints and notifications after actual object hi
     const notified = next(observer); await peerApiJson(h, 'discovery/advertise', { advertisement: advertisement() }); await notified;
     await evictDurableObject(stub(h.id));
     expect((await peerApiJson(h, 'discovery/read')).peers).toEqual([{ advertisement: advertisement() }]);
-    const withdrawn = next(observer); await peerApiJson(h, 'discovery/withdraw', { peerId: 'peer-a' }); expect(await withdrawn).toEqual({ type: 'changed' });
+    const withdrawn = next(observer); await peerApiJson(h, 'discovery/withdraw', { peerId: 'peer-a' }); expect(await withdrawn).toEqual({ type: 'changed', rev: expect.stringMatching(/^[0-9a-f]{12}(?:\.\d+){4}$/) });
+  } finally { socket.close(); observer.close(); }
+});
+
+it('carries a per-scope host revision vector so watchers re-read only the scopes that changed', async () => {
+  const h = await create({ listener: false });
+  const vector = (rev: string) => { const [nonce, ...n] = rev.split('.'); return { nonce, c: +n[0], a: +n[1], d: +n[2], m: +n[3] }; };
+  const response = await api(h, 'GET', 'peers/discovery/watch?peerId=peer-a', undefined, headers);
+  const socket = response.webSocket!, readyFrame = next(socket); socket.accept();
+  const observer = await subscribe(h, 'observer');
+  try {
+    const ready = vector((await readyFrame).rev);
+    const read = await peerApiJson(h, 'discovery/read');
+    expect(read.revision).toBe(`${ready.nonce}.${ready.d}`);
+    const changed = next(observer);
+    await peerApiJson(h, 'discovery/advertise', { advertisement: advertisement() });
+    const after = vector((await changed).rev);
+    // A directory change advances only the directory counter of the same host instance.
+    expect(after).toEqual({ ...ready, d: ready.d + 1 });
+    expect((await peerApiJson(h, 'discovery/read')).revision).toBe(`${after.nonce}.${after.d}`);
   } finally { socket.close(); observer.close(); }
 });

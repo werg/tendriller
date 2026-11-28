@@ -63,15 +63,56 @@ const presence = (row: StoredAdvertisement) => ({ advertisement: row.advertiseme
 function removeDiscoveryConnection(t: Tendril, connection: string): void {
   t.transaction(() => {
     const before = t.db.get<StoredAdvertisement[]>(key, []), after = before.filter(row => row.connection !== connection);
-    if (before.length !== after.length) { t.db.set(key, after); notify(t); }
+    if (before.length !== after.length) { t.db.set(key, after); notify(t, 'd'); }
   });
 }
-function notify(t: Tendril, except?: string) {
+/**
+ * Host revision vector, one counter per invalidation scope:
+ *   c: public control ops/checkpoints   a: pending admissions / join requests
+ *   d: peer directory                   m: store-and-forward mailbox
+ * Counters live in this object's memory with a random nonce, so an evicted or
+ * restarted object makes every client treat every scope as stale. A counter is
+ * bumped synchronously with the write that changes its scope; responses capture
+ * their scope's counter before reading, so a client whose last response carries
+ * a counter at least the notified one already observed that change.
+ * Notifications are invalidations only: they carry no state and grant nothing.
+ */
+export type HostScope = 'c' | 'a' | 'd' | 'm';
+interface Revisions { nonce: string; c: number; a: number; d: number; m: number; lastSent?: string }
+const revisions = new WeakMap<Tendril, Revisions>();
+function revisionsOf(t: Tendril): Revisions {
+  let value = revisions.get(t);
+  if (!value) revisions.set(t, value = { nonce: crypto.randomUUID().replace(/-/g, '').slice(0, 12), c: 0, a: 0, d: 0, m: 0 });
+  return value;
+}
+/** The scope's current revision for a response that is about to read that scope. */
+export function hostRevision(t: Tendril, scope: HostScope): string {
+  const value = revisionsOf(t);
+  return `${value.nonce}.${value[scope]}`;
+}
+function revisionVector(t: Tendril): string {
+  const { nonce, c, a, d, m } = revisionsOf(t);
+  return `${nonce}.${c}.${a}.${d}.${m}`;
+}
+function bump(t: Tendril, scope: HostScope): void {
+  const value = revisionsOf(t);
+  if (value[scope] >= 1e9) { revisions.delete(t); revisionsOf(t); return; }
+  value[scope]++;
+}
+const readyFrame = (t: Tendril) => JSON.stringify({ type: 'ready', rev: revisionVector(t) });
+
+function notify(t: Tendril, scope: HostScope, except?: string) {
+  bump(t, scope);
   t.afterCommit(async () => {
+    // Several writes in one commit coalesce into one frame carrying the latest vector.
+    const state = revisionsOf(t), rev = revisionVector(t), sentKey = `${rev}|${except ?? ''}`;
+    if (state.lastSent === sentKey) return;
+    state.lastSent = sentKey;
+    const frame = JSON.stringify({ type: 'changed', rev });
     for (const listener of listeners(t)) {
       if (listener.value.connection === except) continue;
       if (listener.kind === 'ws') {
-        try { await fresh(t, listener.value.principal); if (listener.ws.readyState === WebSocket.READY_STATE_OPEN) listener.ws.send(JSON.stringify({ type: 'changed' })); }
+        try { await fresh(t, listener.value.principal); if (listener.ws.readyState === WebSocket.READY_STATE_OPEN) listener.ws.send(frame); }
         catch (err) {
           const revoked = err instanceof HttpError && err.status === 403;
           try { listener.ws.close(revoked ? 4003 : 1013, revoked ? 'Peer discovery access unavailable' : 'Transient discovery error; reconnect'); } catch {}
@@ -79,7 +120,7 @@ function notify(t: Tendril, except?: string) {
       } else {
         try {
           await fresh(t, listener.value.principal);
-          const delivery = await deliverHubData(t, listener.sub, JSON.stringify({ type: 'changed' }));
+          const delivery = await deliverHubData(t, listener.sub, frame);
           if (delivery === 'gone') {
             closeHubSubscriber(t, listener.sub, 1001, 'Hub stream unavailable', { notify: false });
             removeDiscoveryConnection(t, listener.value.connection);
@@ -96,8 +137,8 @@ function notify(t: Tendril, except?: string) {
   });
 }
 
-/** Admission, key-wrap and membership changes wake every current discovery watcher to re-read host state. */
-export function notifyDiscoveryWatchers(t: Tendril): void { notify(t); }
+/** Admission, key-wrap, control, mailbox and membership changes wake current discovery watchers for that scope. */
+export function notifyDiscoveryWatchers(t: Tendril, scope: HostScope): void { notify(t, scope); }
 
 /** Presence is retained by an inbound hibernating socket, without TTL renewals. */
 export async function handleDiscoveryWatch(t: Tendril, req: Request, url: URL, principal: Principal): Promise<Response> {
@@ -118,14 +159,14 @@ export async function handleDiscoveryWatch(t: Tendril, req: Request, url: URL, p
   t.ctx.acceptWebSocket(server, [TAG]);
   const connection = crypto.randomUUID();
   server.serializeAttachment({ kind: TAG, peerId, owner, principal, connection } satisfies Attachment);
-  server.send(JSON.stringify({ type: 'ready' }));
+  server.send(readyFrame(t));
   // Replacing a presence withdraws its former hint synchronously until it re-advertises.
   if (staleConnections.size) {
     t.transaction(() => {
       const before = t.db.get<StoredAdvertisement[]>(key, []);
       const after = before.filter(row => !staleConnections.has(row.connection));
       if (before.length !== after.length) t.db.set(key, after);
-      notify(t, connection);
+      notify(t, 'd', connection);
     });
   }
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PROTOCOL } });
@@ -158,10 +199,10 @@ export async function openDiscoveryHubStream(
       const before = t.db.get<StoredAdvertisement[]>(key, []);
       const after = before.filter(row => !staleConnections.has(row.connection));
       if (before.length !== after.length) t.db.set(key, after);
-      notify(t, connection);
+      notify(t, 'd', connection);
     });
   }
-  return { protocol: PROTOCOL, initial: [JSON.stringify({ type: 'ready' })] };
+  return { protocol: PROTOCOL, initial: [readyFrame(t)] };
 }
 
 export function closeDiscoverySocket(t: Tendril, ws: WebSocket): void {
@@ -178,6 +219,7 @@ export function closeDiscoveryHubStream(t: Tendril, sub: HubSubscriber<Discovery
 export async function exchangeDiscovery(t: Tendril, principal: Principal, action: 'read' | 'advertise' | 'withdraw', input?: any): Promise<unknown> {
   await fresh(t, principal);
   if (action === 'read') {
+    const revision = hostRevision(t, 'd');
     const before = active(t), principals = new Map(before.map(row => [row.owner, row.principal]));
     const ownerAccount = t.db.get<string | null>('owner_account', null);
     const permitted = new Map(await Promise.all([...principals].map(async ([owner, value]) => {
@@ -192,7 +234,7 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
       } catch { return [owner, false] as const; }
     })));
     identity(t, principal);
-    return { applicationId: selectedApplication(t).id, peers: active(t).filter(row => permitted.get(row.owner)).map(presence) };
+    return { applicationId: selectedApplication(t).id, peers: active(t).filter(row => permitted.get(row.owner)).map(presence), revision };
   }
   let advertisement: PeerAdvertisement | undefined, peerId: string;
   try {
@@ -212,13 +254,13 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
     const retained = t.db.get<StoredAdvertisement[]>(key, []), rows = active(t), previous = rows.find(row => row.advertisement.peerId === peerId);
     if (previous && previous.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');
     if (action === 'withdraw') {
-      if (previous || retained.length !== rows.length) { t.db.set(key, rows.filter(row => row.advertisement.peerId !== peerId)); if (previous) notify(t, bound?.connection); }
+      if (previous || retained.length !== rows.length) { t.db.set(key, rows.filter(row => row.advertisement.peerId !== peerId)); if (previous) notify(t, 'd', bound?.connection); }
       return { withdrawn: peerId };
     }
     if (!bound) throw new HttpError(409, 'peer_discovery_watch_required', 'Open this participant discovery subscription before advertising');
     if (previous && previous.connection === bound.connection && JSON.stringify(previous.advertisement) === JSON.stringify(advertisement)) return presence(previous);
     const row: StoredAdvertisement = { advertisement: advertisement!, owner, principal, connection: bound.connection };
-    t.db.set(key, [...rows.filter(row => row.advertisement.peerId !== peerId), row]); notify(t, bound.connection);
+    t.db.set(key, [...rows.filter(row => row.advertisement.peerId !== peerId), row]); notify(t, 'd', bound.connection);
     return presence(row);
   });
 }

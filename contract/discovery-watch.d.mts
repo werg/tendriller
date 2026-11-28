@@ -5,7 +5,18 @@ export declare class PeerDiscoveryWatchError extends Error {
   readonly retryable: false;
   constructor(code: string, message: string);
 }
-export type PeerDiscoveryNotification = Readonly<{ type: 'ready' | 'changed' }>;
+/** `rev` is the host revision vector `<nonce>.<control>.<admissions>.<directory>.<mailbox>`. */
+export type PeerDiscoveryNotification = Readonly<{ type: 'ready' | 'changed'; rev?: string }>;
+export type HostRevisionScope = 'control' | 'admissions' | 'directory' | 'mailbox';
+export declare const HOST_REVISION_SCOPES: readonly HostRevisionScope[];
+export interface HostRevisionTracker {
+  /** Record the scope revision (`<nonce>.<count>`) a host response was read at. */
+  observe(scope: HostRevisionScope, revision: unknown): void;
+  forget(scope: HostRevisionScope): void;
+  /** Scopes among `scopes` that `notification` invalidates (all of them without a vector). */
+  stale(notification: PeerDiscoveryNotification | undefined, scopes?: readonly HostRevisionScope[]): HostRevisionScope[];
+}
+export declare function createHostRevisionTracker(): HostRevisionTracker;
 export interface PeerDiscoveryWatchOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
