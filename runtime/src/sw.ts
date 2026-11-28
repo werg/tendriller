@@ -13,7 +13,9 @@ const SHARE_INBOX_CACHE = "tendril-share-inbox:" + encodeURIComponent(SCOPE);
 const SHARE_TTL_MS = 5 * 60 * 1000;
 const SHARE_MAX_FILES = 4;
 const SHARE_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
-const NETWORK_TIMEOUT_MS = 600;
+// Saving a release runs beside an executing page. Bound its parallel downloads so it
+// never competes with the page's own boot requests for every connection.
+const SAVE_CONCURRENCY = 4;
 interface Registry {
   latest?: string;
   publications: Record<string, PublicationManifest>;
@@ -87,14 +89,34 @@ function validResource(value: any): value is RuntimeResource {
 async function saveAsset(cache: Cache, url: string, asset: PublicationAsset, publication: PublicationManifest): Promise<void> {
   const saved = await cache.match(url);
   if (saved && !noStore(saved)) return;
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok || noStore(response)) throw new Error("Publication asset is unavailable: " + url);
-  // HTML contains the page's generated config and runtime injection. Its manifest
-  // identifies source content, while the response identifies the publication.
-  if (asset.type.split(";", 1)[0] === "text/html") {
-    if (response.headers.get("X-Tendril-Publication") !== publication.id) throw new Error("Publication response mismatch");
-  } else if (await digest(response) !== asset.sha256) throw new Error("Publication asset integrity mismatch");
-  await cache.put(url, response);
+  const html = asset.type.split(";", 1)[0] === "text/html";
+  // Immutable files usually sit in the HTTP cache already (the executing page just
+  // loaded them), so read through it instead of downloading the release again. Every
+  // byte is still verified against the signed manifest; a mismatching cached copy is
+  // re-read from the network once. HTML carries live host configuration and is
+  // always read from the network.
+  for (const mode of html ? ["no-store"] as const : ["default", "reload"] as const) {
+    const response = await fetch(url, { cache: mode });
+    if (!response.ok || noStore(response)) throw new Error("Publication asset is unavailable: " + url);
+    // HTML contains the page's generated config and runtime injection. Its manifest
+    // identifies source content, while the response identifies the publication.
+    if (html) {
+      if (response.headers.get("X-Tendril-Publication") !== publication.id) throw new Error("Publication response mismatch");
+    } else if (await digest(response) !== asset.sha256) {
+      if (mode === "default") continue;
+      throw new Error("Publication asset integrity mismatch");
+    }
+    await cache.put(url, response);
+    return;
+  }
+}
+
+async function bounded<T>(tasks: (() => Promise<T>)[], limit = SAVE_CONCURRENCY): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let next = 0;
+  const lane = async () => { while (next < tasks.length) { const index = next++; results[index] = await tasks[index](); } };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, lane));
+  return results;
 }
 
 async function savePublication(publication: PublicationManifest, selection?: number): Promise<void> {
@@ -113,9 +135,9 @@ async function savePublication(publication: PublicationManifest, selection?: num
   if (!runtime.assets.every((asset: any) => safePath(asset.path) && /^[a-f0-9]{64}$/.test(asset.sha256))) throw new Error("Invalid runtime asset manifest");
   if (!Array.isArray(runtime.resources) || !runtime.resources.every(validResource)) throw new Error("Invalid runtime resource manifest");
   await cache.put(runtimeURL, runtimeResponse);
-  await Promise.all([
-    ...publication.assets.map(asset => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.base)), asset, publication)),
-    ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.runtime.base)), asset, publication)),
+  await bounded([
+    ...publication.assets.map(asset => () => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.base)), asset, publication)),
+    ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => () => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.runtime.base)), asset, publication)),
   ]);
   if (!meta.complete.includes(publication.id)) meta.complete.push(publication.id);
   if (selection !== undefined && selection >= savedSelectionRequest) {
@@ -159,10 +181,10 @@ async function cleanup(): Promise<void> {
   await writeRegistry(meta);
 }
 
-async function withinDeadline(network: Promise<Response>): Promise<Response | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try { return await Promise.race([network, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS); })]); }
-  finally { if (timer !== undefined) clearTimeout(timer); }
+/** A navigation answer that means this device's saved document must not be reused:
+ * the host now redirects (sign-in), refuses access, or no longer serves the page. */
+function accessChanged(response: Response): boolean {
+  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400) || [401, 403, 404, 410].includes(response.status);
 }
 function offlinePage(): Response {
   return new Response('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Offline</title><main style="font:1.2rem system-ui;padding:2rem"><h1>No connection</h1><p>This page has not been saved on this device yet. It will load when the connection is back.</p></main>', { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } });
@@ -230,11 +252,30 @@ async function navigate(event: FetchEvent): Promise<Response> {
     return response;
   };
   if (!saved) { try { return selectNetwork(await network); } catch { return offlinePage(); } }
-  event.waitUntil(network.then(() => {}).catch(() => {}));
-  try { const response = await withinDeadline(network); if (response) return selectNetwork(response); } catch { /* offline */ }
-  if (event.resultingClientId && publication) await queued(async () => {
+  // Stale-while-revalidate: a saved, complete release opens immediately (online or
+  // offline) and the network response only refreshes caches for the NEXT launch.
+  // Staleness window: one launch. The delivered document carries the host
+  // configuration of the previous successful navigation (peer bootstrap, role,
+  // broadcast sequence), and a newer release is picked up by the page's publication
+  // watch (automatic switch or update prompt) or by the next launch. Host APIs still
+  // authenticate every request; if this revalidation shows that access changed (a
+  // sign-in redirect, refusal or removed page), the saved document is dropped and the
+  // page is told to reload, so the next navigation goes to the network.
+  const bound = event.resultingClientId, savedId = publication!.id;
+  event.waitUntil(network.then(async response => {
+    if (!accessChanged(response) || !savedURL) return;
+    await queued(async () => {
+      await (await caches.open(cacheName(savedId))).delete(savedURL);
+      const next = await readRegistry();
+      next.complete = next.complete.filter(id => id !== savedId);
+      await writeRegistry(next);
+    });
+    const client = bound ? await sw.clients.get(bound) : undefined;
+    client?.postMessage({ t: "navigation_stale" });
+  }).catch(() => {}));
+  if (bound) await queued(async () => {
     const next = await readRegistry();
-    next.clients[event.resultingClientId] = publication.id;
+    next.clients[bound] = savedId;
     await writeRegistry(next);
   });
   return saved;

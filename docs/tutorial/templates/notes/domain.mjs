@@ -1,4 +1,4 @@
-import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 
 const reference = {
   type: 'object',

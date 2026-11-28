@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 
 // Shared team (`custody: "page"`) Tier B connection wrap-key (`K_conn`) storage inside Chronolog.
 // Because every Chronolog event is encrypted under the page's epoch key, only admitted page members

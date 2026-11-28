@@ -1,5 +1,5 @@
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
-import { createApplicationBackend } from '@chronolog/peer-session';
+import { createApplicationBackend } from '@chronolog/peer-session/browser';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { mountCallRoom } from '../../shared/ui/call-room.mjs';
 

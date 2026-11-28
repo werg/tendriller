@@ -1,4 +1,4 @@
-import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 import { validFix, id } from './protocol.mjs';
 
 // Version command/query behavior deliberately; no immutable definition or schema lock orders data.

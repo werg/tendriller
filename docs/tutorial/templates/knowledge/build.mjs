@@ -1,5 +1,6 @@
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { bundlePage } from '../../shared/page-build.mjs';
 
 export async function buildPage(context, { root = new URL('./', import.meta.url), bundle } = {}) {
   const output = new URL('./dist/', root);
@@ -19,22 +20,7 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       page_url: context.page.pageUrl,
     }, null, 2) + '\n');
     await copyFile(new URL('index.html', root), new URL('index.html', output));
-    await bundle({
-      absWorkingDir: fileURLToPath(root),
-      entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
-      outdir: fileURLToPath(output),
-      bundle: true,
-      minify: true,
-      splitting: true,
-      format: 'esm',
-      platform: 'browser',
-      target: 'es2022',
-      outExtension: { '.js': '.mjs' },
-      chunkNames: 'chunks/[name]-[hash]',
-      assetNames: 'assets/[name]-[hash]',
-      loader: { '.wasm': 'file' },
-      logLevel: 'warning',
-    });
+    await bundlePage(bundle, { root, output, extra: { logLevel: 'warning' } });
     return fileURLToPath(output);
   } catch (cause) {
     await rm(output, { recursive: true, force: true });

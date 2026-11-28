@@ -1,4 +1,4 @@
-import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session/browser';
 
 const id = { type: 'string', minLength: 1, maxLength: 128 };
 const quantity = { type: 'integer', minimum: 0, maximum: 1_000_000 };

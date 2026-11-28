@@ -1,5 +1,6 @@
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { bundlePage } from '../../shared/page-build.mjs';
 
 /** Only this page's dedicated dist/ is publishable; reducers live directly in `$reducers` CAS. */
 export async function buildPage(context, { root = new URL('./', import.meta.url), bundle } = {}) {
@@ -23,21 +24,7 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       optionalAnalysisPeer: context.signer.publicKey,
     }, null, 2) + '\n');
     await copyFile(new URL('index.html', root), new URL('index.html', output));
-    await bundle({
-      absWorkingDir: fileURLToPath(root),
-      entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
-      outdir: fileURLToPath(output),
-      bundle: true,
-      minify: true,
-      splitting: true,
-      format: 'esm',
-      platform: 'browser',
-      target: 'es2022',
-      outExtension: { '.js': '.mjs' },
-      chunkNames: 'chunks/[name]-[hash]',
-      assetNames: 'assets/[name]-[hash]',
-      loader: { '.wasm': 'file' },
-    });
+    await bundlePage(bundle, { root, output });
     return fileURLToPath(output);
   } catch (cause) {
     await rm(output, { recursive: true, force: true });

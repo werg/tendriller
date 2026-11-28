@@ -70,7 +70,7 @@ From Navigation Timing: `ttfb` (responseStart), `htmlDone`, `domContentLoaded`,
 | `sessionStatus` | `#connection-status` first shows a session status |
 | `canAuthor` | `#submit` enabled: device admitted, keys available |
 | `tendrilReady` | the page called `window.tendril.ready()` (live view's first snapshot) |
-| `firstItem` / `dataRendered` | first / all expected `#notes li` rendered |
+| `firstItem` / `dataRendered` | first / all expected `#notes li` rendered (a warm reload may paint this device's persisted snapshot before the session opens; `tendrilReady` is then the time to current data, always waited for) |
 
 Counters: `requests` (Playwright, page **and worker** requests started before
 `dataRendered`), `transferBytes` (Resource Timing, page only), `requestBytes`
