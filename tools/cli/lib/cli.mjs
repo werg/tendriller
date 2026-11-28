@@ -74,7 +74,7 @@ Page application session (attaches to tendril agent run; --page <slug|id>):
   reducers [inspect|set <json>|publish <spec> <file.mjs|.ts> [--pack] [--skip-dry-run] [--bind topic=spec[:export]]] [--operation ID] | permissions [inspect|set-member|remove-member|invite|revoke-invite|set-open|set-admin|set-antispam|vouch-author|compartment|multisig-propose|multisig-approve|multisig-cancel|recovery-status|recovery-setup|recovery-request|recovery-approve|recovery-complete <json|id>] [--operation ID]
   mount [inspect|set <alias> <json>|remove <alias>] [--operation ID] | builders [inspect|add <pk> [json]|remove <pk>|set-policy <json>] [--operation ID]
   derive <drv-ref|drv-json> [--wasi] | registry init [out.json] [--name TEXT]
-  finality status | finality op <opId> | finality notarize [--include op1,op2] | finality schedule --kind none|signed-frontier|fixed-validator [--signer PK] [--effective-after MS] --operation ID | finality close --through MS | finality submit <record>
+  finality status | finality op <opId> | finality notarize [--include op1,op2] | finality schedule --kind none|signed-frontier|fixed-validator|predicate [--signer PK] [--module SPEC] [--export NAME] [--config JSON] [--effective-after MS] --operation ID | finality close --through MS | finality submit <record>
   blueprint export [out.json] [--title TEXT] [--no-schema]
   definition | publication | publication-history | publication-operation <id> | publication-recover <rev|opId> [dir] | publication-rollback <rev|opId> --operation ID
   content put <file> [--visibility public|private] [--no-dedup] [--type mime] | content get <hash|ref-json> [out]

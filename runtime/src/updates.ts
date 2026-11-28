@@ -218,6 +218,7 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: {
         emitState(buildUpdate(available, "reload", "deferred", reasons.length ? reasons : ["Reload deferred"], availableOutcome));
       }
     }, 5000);
+    try { navigator.serviceWorker?.controller?.postMessage({ t: "publication_refresh" }); } catch {}
     reload();
   };
 
@@ -458,6 +459,7 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: {
     update() {
       if (closed) return;
       switching = true;
+      try { navigator.serviceWorker?.controller?.postMessage({ t: "publication_refresh" }); } catch {}
       if (options.pinned) location.assign(documentUrl(cfg, new URL(latestUrl())).href);
       else reload();
     },

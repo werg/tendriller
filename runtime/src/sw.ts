@@ -29,6 +29,7 @@ let registry: Registry | null = null;
 // counters are local to this worker lifetime; an old worker's requests cannot
 // complete after that worker has been terminated and restarted.
 let selectionRequest = 0, savedSelectionRequest = 0;
+const pendingRefreshClients = new Set<string>();
 let sequence: Promise<void> = Promise.resolve();
 const queued = (task: () => Promise<void>): Promise<void> => {
   const pending = sequence.then(task, task);
@@ -251,7 +252,14 @@ async function navigate(event: FetchEvent): Promise<Response> {
     }).catch(() => {}));
     return response;
   };
-  if (!saved) { try { return selectNetwork(await network); } catch { return offlinePage(); } }
+  const refreshRequested =
+    event.request.cache === "reload" ||
+    (replaced ? pendingRefreshClients.delete(replaced) : false) ||
+    (event.clientId ? pendingRefreshClients.delete(event.clientId) : false);
+  if (!saved || refreshRequested) {
+    try { return selectNetwork(await network); }
+    catch { if (!saved) return offlinePage(); }
+  }
   // Stale-while-revalidate: a saved, complete release opens immediately (online or
   // offline) and the network response only refreshes caches for the NEXT launch.
   // Staleness window: one launch. The delivered document carries the host
@@ -456,6 +464,10 @@ sw.addEventListener("install", event => { sw.skipWaiting(); event.waitUntil(queu
 sw.addEventListener("activate", event => { event.waitUntil(sw.clients.claim().then(() => Promise.all([queued(update), sweepShareInbox()])).catch(() => {})); });
 sw.addEventListener("message", event => {
   const data = event.data, client = event.source as Client | null;
+  if (data?.t === "publication_refresh") {
+    if (client?.id) pendingRefreshClients.add(client.id);
+    return;
+  }
   if (data?.t !== "publication") return;
   const id = typeof data.publication?.id === "string" ? data.publication.id : null;
   const reply = (status: "ready" | "error", error?: { code: string; message: string }) =>

@@ -173,4 +173,102 @@ describe('Tendriller Edge CAS & Derivation Mirror (/_tendril/cas, /_tendril/deri
 
     await session.close();
   });
+
+  it('evaluates programmable state-defined $finality predicates identically inside the blind Cloudflare Worker runtime', async () => {
+    const { replayBlindHostControl } = await import('@chronolog/peer-session/kernel');
+    const { decodeSignedOperation, operationIdDigest, bytesToHex, encodeLogGenesis } = await import('@chronolog/peer-session');
+    const admin = await createSigningIdentity();
+    const val = await createSigningIdentity();
+    const created = await createLogGenesis({
+      privateLog: true,
+      creator: { publicKey: admin.publicKey, wrapKey: '07'.repeat(32), reader: true, writer: true, administrator: true },
+      topics: { items: { module: 'chronolog/crdt', export: 'lwwMap' } },
+    });
+    const device = await openApplicationDevice({ store: new MemoryBytesStore(), managedSigner: admin, create: true });
+    const session = await createApplicationSession({
+      device,
+      genesis: created.genesisBytes,
+      casNodes: created.casNodes,
+      epochKeys: new Map([[0, created.epoch0Key!]]),
+      wasmModule: quickJsWasm,
+    });
+    try {
+      const t0 = BigInt(Date.now());
+      const op1 = await session.submit({
+        awaitMaterialized: true,
+        authorTimestampMs: t0 + 10n,
+        updates: [{ topic: 'items', input: { action: 'set', key: 'k', value: 'v' } }],
+      });
+      await (await session.submit({
+        visibility: 'public',
+        awaitMaterialized: true,
+        authorTimestampMs: t0 + 20n,
+        updates: [{
+          topic: '$finality',
+          input: {
+            action: 'schedulePolicy',
+            effectiveAfterMs: Number(t0 + 50n),
+            policy: {
+              kind: 'predicate',
+              module: 'chronolog/finality-predicates',
+              export: 'thresholdQuorumPredicate',
+              config: { validators: { [admin.publicKey]: 1, [val.publicKey]: 1 }, threshold: 2 },
+            },
+          },
+        }],
+      })).materialized();
+
+      const canonical = (v: unknown): string => {
+        if (v === null || typeof v !== 'object') return JSON.stringify(v);
+        if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
+        return '{' + Object.keys(v as Record<string, unknown>).sort().map(k => JSON.stringify(k) + ':' + canonical((v as Record<string, unknown>)[k])).join(',') + '}';
+      };
+      const signPayload = async (payload: {
+        logId: string; policyScopeId: string; closedThroughMs: bigint; includedSetDigest: string; historyDigest: string; stateRoot: string;
+        inclusions: readonly { opId: string; authorTimestampMs: bigint; author: string }[];
+      }, signer: { publicKey: string; privateKey: CryptoKey }) => {
+        const jsonSafe = {
+          logId: payload.logId,
+          policyScopeId: payload.policyScopeId,
+          closedThroughMs: Number(payload.closedThroughMs),
+          includedSetDigest: payload.includedSetDigest,
+          historyDigest: payload.historyDigest,
+          stateRoot: payload.stateRoot,
+          inclusions: payload.inclusions.map(i => ({ opId: i.opId, authorTimestampMs: Number(i.authorTimestampMs), author: i.author })),
+        };
+        const msg = new TextEncoder().encode(canonical(['chronolog/finality-predicate/v1', jsonSafe]));
+        const sig = new Uint8Array(await crypto.subtle.sign('Ed25519', signer.privateKey, msg));
+        return { signer: signer.publicKey, signature: bytesToHex(sig) };
+      };
+
+      const { checkpoint } = await session.finality.createCheckpoint({
+        throughMs: t0 + 100n,
+        attestation: async payload => ({
+          kind: 'evidence',
+          data: { signatures: [await signPayload(payload, admin), await signPayload(payload, val)] },
+        }),
+      });
+      expect(session.finality.status().closedThroughMs).toBe(t0 + 100n);
+      expect(session.finalityStatus(op1.id)).toBe('finalized');
+
+      const facts = await session.exportFacts();
+      const { decodeOperationCore } = await import('@chronolog/peer-session/kernel');
+      const publicOps = facts.publicOps.map(raw => {
+        const signed = decodeSignedOperation(raw);
+        return { opId: operationIdDigest(signed.coreBytes), core: decodeOperationCore(signed.coreBytes) };
+      });
+      const blind = await replayBlindHostControl({
+        genesis: created.genesis,
+        publicCasNodes: facts.casNodes.filter(n => n.partition === 'public'),
+        publicOps,
+        checkpoints: [checkpoint],
+        wasmModule: quickJsWasm,
+      });
+      expect(blind.finality.closedThroughMs).toBe(t0 + 100n);
+      expect(blind.finality.includedOpIds.has(op1.id)).toBe(true);
+      expect(encodeLogGenesis(created.genesis).length).toBeGreaterThan(0);
+    } finally {
+      await session.close();
+    }
+  });
 });

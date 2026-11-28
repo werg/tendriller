@@ -80,7 +80,8 @@ async function worker(net, stores = new Map(), clients = new Map(), { beforePut,
       await dispatch("message", { data: { t: "publication", publication }, source: { id: clientId, url },
         ports: replies ? [{ postMessage(value) { replies.push(structuredClone(value)); } }] : [] });
     },
-    request: (path, clientId = "a", navigation = false) => dispatch("fetch", { request: { url: absolute(path), method: "GET", headers: new Headers(), mode: navigation ? "navigate" : "cors" }, clientId: navigation ? "" : clientId, replacesClientId: navigation ? clientId : "", resultingClientId: navigation ? clientId : "" }),
+    request: (path, clientId = "a", navigation = false, extra = {}) => dispatch("fetch", { request: { url: absolute(path), method: "GET", headers: new Headers(), mode: navigation ? "navigate" : "cors", ...extra }, clientId: navigation ? "" : clientId, replacesClientId: navigation ? clientId : "", resultingClientId: navigation ? clientId : "" }),
+    refresh: clientId => dispatch("message", { data: { t: "publication_refresh" }, source: { id: clientId, url: scope }, ports: [] }),
   };
 }
 
@@ -563,4 +564,25 @@ test("a newer discovery selection fences an older delayed navigation save", { ti
   resume.resolve(); await old;
   net.online = false;
   assert.match(await (await sw.request('', 'fresh', true)).text(), /<h1>2<\/h1>/);
+});
+
+test("explicit publication refresh and reload navigations prefer fresh network HTML and fall back offline", async () => {
+  const a = release('1'), b = release('2'), net = network(a), sw = await worker(net);
+  await sw.install(); await sw.announce('a', a.publication);
+  net.current = b;
+  // Normal navigation uses SWR (serves cached 1 immediately)
+  assert.match(await (await sw.request('', 'swr', true)).text(), /<h1>1<\/h1>/);
+  // Reset back to 1 cached and switch server to 2 to test reload + publication_refresh
+  net.current = a; await sw.announce('a', a.publication);
+  net.current = b;
+  // Explicit reload (cache: "reload") bypasses SWR and serves publication 2 immediately
+  assert.match(await (await sw.request('', 'a', true, { cache: 'reload' })).text(), /<h1>2<\/h1>/);
+  // Explicit publication_refresh signal also bypasses SWR even without cache: "reload"
+  net.current = a; await sw.announce('b', a.publication);
+  net.current = b;
+  await sw.refresh('b');
+  assert.match(await (await sw.request('', 'b', true)).text(), /<h1>2<\/h1>/);
+  // When offline, reload falls back cleanly to the saved publication
+  net.online = false;
+  assert.match(await (await sw.request('', 'b', true, { cache: 'reload' })).text(), /<h1>2<\/h1>/);
 });

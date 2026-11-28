@@ -222,8 +222,18 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
           throw Error(`--threshold must be between 1 and ${validators.length}`);
         }
         policy = { kind: 'fixed-validator', validators, threshold };
+      } else if (kind === 'predicate') {
+        const mod = required(options.module, '--module specifier (e.g. chronolog/finality-predicates)');
+        const exp = options.export ? String(options.export) : undefined;
+        const cfg = options.config !== undefined ? parseJson(options.config, '--config') : undefined;
+        policy = {
+          kind: 'predicate',
+          module: String(mod),
+          ...(exp ? { export: exp } : {}),
+          ...(cfg !== undefined ? { config: cfg } : {}),
+        };
       } else {
-        throw Error('Use --kind none, signed-frontier, or fixed-validator');
+        throw Error('Use --kind none, signed-frontier, fixed-validator, or predicate');
       }
       const effectiveAfterMs = options['effective-after'] !== undefined
         ? Number(options['effective-after'])
